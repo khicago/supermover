@@ -63,7 +63,10 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 	if err := s.validate(); err != nil {
 		return protocol.BeginSessionResponse{}, err
 	}
-	unlock := s.lockSession(req.SessionID)
+	unlock, err := s.lockSession(req.SessionID)
+	if err != nil {
+		return protocol.BeginSessionResponse{}, err
+	}
 	defer unlock()
 
 	layout := s.layout()
@@ -120,7 +123,10 @@ func (s FileStore) Status(sessionID string) (protocol.SessionStatusResponse, err
 	if err := transaction.ValidateSessionID(sessionID); err != nil {
 		return protocol.SessionStatusResponse{}, err
 	}
-	unlock := s.lockSession(sessionID)
+	unlock, err := s.lockSession(sessionID)
+	if err != nil {
+		return protocol.SessionStatusResponse{}, err
+	}
 	defer unlock()
 
 	return s.statusLocked(sessionID)
@@ -153,7 +159,10 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 		return protocol.ChunkUploadResponse{}, fmt.Errorf("%w: chunk digest mismatch for %q", ErrIntegrity, req.Path)
 	}
 
-	unlock := s.lockSession(req.SessionID)
+	unlock, err := s.lockSession(req.SessionID)
+	if err != nil {
+		return protocol.ChunkUploadResponse{}, err
+	}
 	defer unlock()
 
 	meta, record, err := s.loadSession(req.SessionID)
@@ -223,7 +232,10 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 	if err := s.validate(); err != nil {
 		return protocol.CommitSessionResponse{}, err
 	}
-	unlock := s.lockSession(req.SessionID)
+	unlock, err := s.lockSession(req.SessionID)
+	if err != nil {
+		return protocol.CommitSessionResponse{}, err
+	}
 	defer unlock()
 
 	meta, record, err := s.loadSession(req.SessionID)
@@ -312,12 +324,23 @@ func (s FileStore) now() time.Time {
 	return time.Now().UTC()
 }
 
-func (s FileStore) lockSession(sessionID string) func() {
-	key := filepath.Clean(s.TargetRoot) + "\x00session\x00" + sessionID
+func (s FileStore) lockSession(sessionID string) (func(), error) {
+	key, err := s.sessionLockKey(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	value, _ := receiverLocks.LoadOrStore(key, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()
-	return mu.Unlock
+	return mu.Unlock, nil
+}
+
+func (s FileStore) sessionLockKey(sessionID string) (string, error) {
+	root, err := pathguard.CanonicalPath(s.TargetRoot)
+	if err != nil {
+		return "", err
+	}
+	return root + "\x00session\x00" + sessionID, nil
 }
 
 func (s FileStore) metaPath(sessionID string) string {

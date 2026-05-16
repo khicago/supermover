@@ -555,8 +555,9 @@ func ValidateSourceTargetSeparation(sourceRoot, targetDir string) error {
 	if inside(targetAbs, sourceAbs) {
 		return fmt.Errorf("source root must not be inside the target directory")
 	}
-	sourceReal, targetReal := evalExistingPath(sourceAbs), evalExistingPath(targetAbs)
-	if sourceReal == "" || targetReal == "" {
+	sourceReal, sourceErr := pathguard.CanonicalPath(sourceAbs)
+	targetReal, targetErr := pathguard.CanonicalPath(targetAbs)
+	if sourceErr != nil || targetErr != nil {
 		return nil
 	}
 	if sourceReal == sourceAbs && targetReal == targetAbs {
@@ -579,28 +580,6 @@ func validateSeparatedAbs(sourceAbs, targetAbs string) error {
 		return fmt.Errorf("source root must not be inside the target directory")
 	}
 	return nil
-}
-
-func evalExistingPath(path string) string {
-	clean := filepath.Clean(path)
-	if real, err := filepath.EvalSymlinks(clean); err == nil {
-		return real
-	}
-
-	var suffix []string
-	current := clean
-	for {
-		parent := filepath.Dir(current)
-		if parent == current {
-			return ""
-		}
-		suffix = append([]string{filepath.Base(current)}, suffix...)
-		if realParent, err := filepath.EvalSymlinks(parent); err == nil {
-			parts := append([]string{realParent}, suffix...)
-			return filepath.Join(parts...)
-		}
-		current = parent
-	}
 }
 
 func inside(parent, child string) bool {

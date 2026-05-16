@@ -22,6 +22,33 @@ func SafeJoin(root, rel string) (string, error) {
 	return filepath.Join(root, clean), nil
 }
 
+// CanonicalPath returns an absolute path with the existing symlink prefix resolved.
+func CanonicalPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	clean := filepath.Clean(abs)
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
+		return real, nil
+	}
+
+	var suffix []string
+	current := clean
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return clean, nil
+		}
+		suffix = append([]string{filepath.Base(current)}, suffix...)
+		if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+			parts := append([]string{realParent}, suffix...)
+			return filepath.Join(parts...), nil
+		}
+		current = parent
+	}
+}
+
 func SafeJoinParent(root, rel string) (string, error) {
 	path, err := SafeJoin(root, rel)
 	if err != nil {

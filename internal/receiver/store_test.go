@@ -145,6 +145,58 @@ func TestFileStoreConcurrentBeginRejectsDifferentMetadata(t *testing.T) {
 	}
 }
 
+func TestFileStoreConcurrentBeginLocksCanonicalTargetRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "target")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q) error = %v, want nil", root, err)
+	}
+	linkRoot := filepath.Join(base, "target-link")
+	if err := os.Symlink(root, linkRoot); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	stores := []FileStore{
+		{TargetRoot: root},
+		{TargetRoot: linkRoot},
+	}
+	first := validBeginRequest([]byte("hello"))
+	second := validBeginRequest([]byte("hello"))
+	second.Manifest.ID = "manifest-2"
+	second.Manifest.Entries[1].Path = "docs/b.txt"
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i, req := range []protocol.BeginSessionRequest{first, second} {
+		wg.Add(1)
+		go func(store FileStore, req protocol.BeginSessionRequest) {
+			defer wg.Done()
+			<-start
+			_, err := store.Begin(req)
+			errs <- err
+		}(stores[i], req)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	conflicts := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("FileStore.Begin(canonical target concurrent different metadata) error = %v, want nil or ErrConflict", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("canonical target concurrent Begin results successes=%d conflicts=%d, want 1/1", successes, conflicts)
+	}
+}
+
 func TestFileStoreStatusReturnsResumeOffset(t *testing.T) {
 	root := t.TempDir()
 	store := FileStore{TargetRoot: root}
