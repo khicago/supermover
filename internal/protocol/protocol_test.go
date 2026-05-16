@@ -26,6 +26,22 @@ func TestBeginSessionRequestValidate(t *testing.T) {
 			{Path: "a.bin", TargetPath: "same.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
 			{Path: "b.bin", TargetPath: "same.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
 		}}), wantErr: true},
+		{name: "file below previous symlink", req: withManifest(valid, TransferManifest{ID: "manifest1", Entries: []ManifestEntry{
+			{Path: "linkdir", Kind: FileKindSymlink, SymlinkTarget: "outside"},
+			{Path: "linkdir/file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
+		}}), wantErr: true},
+		{name: "symlink above previous file", req: withManifest(valid, TransferManifest{ID: "manifest1", Entries: []ManifestEntry{
+			{Path: "linkdir/file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
+			{Path: "linkdir", Kind: FileKindSymlink, SymlinkTarget: "outside"},
+		}}), wantErr: true},
+		{name: "file below symlink target path", req: withManifest(valid, TransferManifest{ID: "manifest1", Entries: []ManifestEntry{
+			{Path: "linkdir", TargetPath: "published-link", Kind: FileKindSymlink, SymlinkTarget: "outside"},
+			{Path: "docs/file.bin", TargetPath: "published-link/file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
+		}}), wantErr: true},
+		{name: "sibling prefix below symlink allowed", req: withManifest(valid, TransferManifest{ID: "manifest1", Entries: []ManifestEntry{
+			{Path: "linkdir", Kind: FileKindSymlink, SymlinkTarget: "outside"},
+			{Path: "linkdir2/file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
+		}})},
 	}
 
 	for _, tt := range tests {

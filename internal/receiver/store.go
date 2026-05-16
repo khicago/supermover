@@ -396,14 +396,6 @@ func (s FileStore) stageNonRegularEntries(meta sessionMeta) error {
 			if err := makeDirectoryInside(s.layout().StagingDir(meta.SessionID), path, 0o755); err != nil {
 				return fmt.Errorf("stage directory %q: %w", entry.Path, err)
 			}
-		case protocol.FileKindSymlink:
-			if err := makeDirectoryInside(s.layout().StagingDir(meta.SessionID), filepath.Dir(path), 0o755); err != nil {
-				return fmt.Errorf("stage symlink parent %q: %w", entry.Path, err)
-			}
-			_ = os.Remove(path)
-			if err := os.Symlink(entry.SymlinkTarget, path); err != nil {
-				return fmt.Errorf("stage symlink %q: %w", entry.Path, err)
-			}
 		}
 	}
 	return nil
@@ -438,10 +430,6 @@ func (s FileStore) verifyFiles(meta sessionMeta) error {
 
 func (s FileStore) publish(meta sessionMeta) error {
 	for _, entry := range meta.Manifest.Entries {
-		stage, err := s.stageFilePath(meta.SessionID, entry.Path)
-		if err != nil {
-			return err
-		}
 		final, err := s.finalPath(entry)
 		if err != nil {
 			return err
@@ -452,11 +440,15 @@ func (s FileStore) publish(meta sessionMeta) error {
 				return err
 			}
 		case protocol.FileKindSymlink:
-			if err := publishSymlinkNoReplace(stage, final, entry); err != nil {
+			if err := publishSymlinkNoReplace(final, entry); err != nil {
 				return err
 			}
 		case protocol.FileKindFile:
 			same, exists, err := finalFileState(final, entry.Size, entry.Digest)
+			if err != nil {
+				return err
+			}
+			stage, err := s.stageFilePath(meta.SessionID, entry.Path)
 			if err != nil {
 				return err
 			}
@@ -489,7 +481,7 @@ func publishPath(entry protocol.ManifestEntry) string {
 	return entry.Path
 }
 
-func publishSymlinkNoReplace(stage, final string, entry protocol.ManifestEntry) error {
+func publishSymlinkNoReplace(final string, entry protocol.ManifestEntry) error {
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
 		return fmt.Errorf("publish symlink parent %q: %w", entry.Path, err)
 	}
@@ -499,9 +491,6 @@ func publishSymlinkNoReplace(stage, final string, entry protocol.ManifestEntry) 
 	}
 	if exists {
 		if same {
-			if err := os.Remove(stage); err != nil {
-				return fmt.Errorf("remove duplicate staged symlink %q: %w", entry.Path, err)
-			}
 			return nil
 		}
 		return fmt.Errorf("%w: target symlink %q already exists with different target; refusing to overwrite", ErrConflict, publishPath(entry))
@@ -515,10 +504,7 @@ func publishSymlinkNoReplace(stage, final string, entry protocol.ManifestEntry) 
 	if err := durable.SyncDirBestEffort(filepath.Dir(final)); err != nil {
 		return err
 	}
-	if err := os.Remove(stage); err != nil {
-		return fmt.Errorf("remove staged symlink %q: %w", entry.Path, err)
-	}
-	return durable.SyncDirBestEffort(filepath.Dir(stage))
+	return nil
 }
 
 func publishDirectory(final, path string) error {

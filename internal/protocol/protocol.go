@@ -171,24 +171,55 @@ func (m TransferManifest) Validate() error {
 	validateToken("manifest.id", m.ID, MaxSessionIDLen, &errs)
 	seen := map[string]struct{}{}
 	seenTargets := map[string]string{}
+	type symlinkEntry struct {
+		index      int
+		path       string
+		targetPath string
+	}
+	var symlinks []symlinkEntry
 	for i, entry := range m.Entries {
 		if err := entry.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: %w", i, err))
+		}
+		if entry.Kind == FileKindSymlink {
+			symlinks = append(symlinks, symlinkEntry{index: i, path: entry.Path, targetPath: entryTargetPath(entry)})
 		}
 		if _, ok := seen[entry.Path]; ok {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: duplicate path %q", i, entry.Path))
 		}
 		seen[entry.Path] = struct{}{}
-		targetPath := entry.Path
-		if entry.TargetPath != "" {
-			targetPath = entry.TargetPath
-		}
+		targetPath := entryTargetPath(entry)
 		if firstPath, ok := seenTargets[targetPath]; ok && firstPath != entry.Path {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: duplicate target path %q also used by %q", i, targetPath, firstPath))
 		}
 		seenTargets[targetPath] = entry.Path
 	}
+	for _, symlink := range symlinks {
+		for i, entry := range m.Entries {
+			if i == symlink.index {
+				continue
+			}
+			if isPathBelow(entry.Path, symlink.path) {
+				errs = append(errs, fmt.Errorf("manifest.entries[%d]: path %q is below symlink path %q", i, entry.Path, symlink.path))
+			}
+			targetPath := entryTargetPath(entry)
+			if isPathBelow(targetPath, symlink.targetPath) {
+				errs = append(errs, fmt.Errorf("manifest.entries[%d]: target path %q is below symlink target path %q", i, targetPath, symlink.targetPath))
+			}
+		}
+	}
 	return joinValidation(errs)
+}
+
+func entryTargetPath(entry ManifestEntry) string {
+	if entry.TargetPath != "" {
+		return entry.TargetPath
+	}
+	return entry.Path
+}
+
+func isPathBelow(path, parent string) bool {
+	return strings.HasPrefix(path, parent+"/")
 }
 
 func (e ManifestEntry) Validate() error {

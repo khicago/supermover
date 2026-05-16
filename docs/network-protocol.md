@@ -66,7 +66,9 @@ The protocol manifest is intentionally close to `control.Manifest`:
 - file entries require `size` and `sha256:` digest;
 - directory entries create target directories at commit;
 - symlink entries require `symlink_target`;
-- `target_path` is optional and defaults to `path`.
+- `target_path` is optional and defaults to `path`;
+- entries may not appear below another entry that is a symlink, either in the
+  source `path` tree or the effective target tree after applying `target_path`.
 
 On begin, the receiver writes:
 
