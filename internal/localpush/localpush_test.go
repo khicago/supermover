@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khicago/supermover/internal/audit"
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
@@ -670,6 +671,15 @@ func TestPreflightReportsSoftDeletes(t *testing.T) {
 	}
 }
 
+func TestPreflightRejectsScanErrorsBeforeSoftDeletes(t *testing.T) {
+	result := scan.Result{
+		Audit: []audit.Record{{Kind: "scan_error", Path: "unreadable"}},
+	}
+	if err := rejectScanErrors(result); err == nil {
+		t.Fatalf("rejectScanErrors(scan_error) error = nil, want scan error")
+	}
+}
+
 func TestRunReadsLegacySymlinkManifestForSoftDeletes(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -759,8 +769,16 @@ func TestRunAllowsExistingIdenticalTargetFile(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
 	target := filepath.Join(dir, "target")
-	mustWriteFile(t, filepath.Join(source, "file.txt"), "same", 0o644)
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "same", 0o600)
 	mustWriteFile(t, filepath.Join(target, "file.txt"), "same", 0o600)
+	sourceTime := time.Date(2026, 5, 16, 1, 2, 3, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(source, "file.txt"), sourceTime, sourceTime); err != nil {
+		t.Fatalf("os.Chtimes(source file) error = %v, want nil", err)
+	}
+	targetTime := time.Date(2026, 5, 15, 1, 2, 3, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(target, "file.txt"), targetTime, targetTime); err != nil {
+		t.Fatalf("os.Chtimes(target file) error = %v, want nil", err)
+	}
 	p := profile.NewDefault("profile-local", "Local profile", source, target)
 
 	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"}); err != nil {
@@ -774,7 +792,10 @@ func TestRunAllowsExistingIdenticalTargetFile(t *testing.T) {
 		t.Fatalf("os.Stat(target file) error = %v, want nil", err)
 	}
 	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("target mode after idempotent Run = %v, want existing 0600 unchanged", info.Mode().Perm())
+		t.Fatalf("target mode after idempotent Run = %v, want source 0600", info.Mode().Perm())
+	}
+	if !info.ModTime().Equal(sourceTime) {
+		t.Fatalf("target mtime after idempotent Run = %v, want source %v", info.ModTime(), sourceTime)
 	}
 }
 

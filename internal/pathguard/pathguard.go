@@ -30,49 +30,73 @@ func IsReservedControlPath(path string) bool {
 	return strings.EqualFold(first, ReservedControlDir)
 }
 
-func EnsurePlainDirectory(dir string, mode os.FileMode) error {
-	abs, err := filepath.Abs(dir)
+func EnsurePlainDirectory(root, dir string, mode os.FileMode) error {
+	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return err
 	}
-	var missing []string
-	current := abs
-	for {
-		info, err := os.Lstat(current)
-		if err == nil {
-			if info.Mode()&os.ModeSymlink != 0 {
-				return fmt.Errorf("%w: directory component %q is a symlink", ErrUnsafePath, current)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("%w: directory component %q is not a directory", ErrUnsafePath, current)
-			}
-			break
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return err
-		}
-		missing = append(missing, current)
-		parent := filepath.Dir(current)
-		if parent == current {
-			break
-		}
-		current = parent
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
 	}
-	for i := len(missing) - 1; i >= 0; i-- {
-		path := missing[i]
-		if err := os.Mkdir(path, mode); err != nil && !errors.Is(err, fs.ErrExist) {
-			return err
+	rel, err := filepath.Rel(rootAbs, dirAbs)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("%w: path escapes root", ErrUnsafePath)
+	}
+	if err := ensurePlainRoot(rootAbs, mode); err != nil {
+		return err
+	}
+	if rel == "." {
+		return nil
+	}
+	current := rootAbs
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" {
+			continue
 		}
-		info, err := os.Lstat(path)
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
 		if err != nil {
-			return err
+			if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			if err := os.Mkdir(current, mode); err != nil && !errors.Is(err, fs.ErrExist) {
+				return err
+			}
+			info, err = os.Lstat(current)
+			if err != nil {
+				return err
+			}
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: directory component %q is a symlink", ErrUnsafePath, path)
+			return fmt.Errorf("%w: directory component %q is a symlink", ErrUnsafePath, current)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("%w: directory component %q is not a directory", ErrUnsafePath, path)
+			return fmt.Errorf("%w: directory component %q is not a directory", ErrUnsafePath, current)
 		}
+	}
+	return nil
+}
+
+func ensurePlainRoot(path string, mode os.FileMode) error {
+	info, err := os.Lstat(path)
+	if err != nil && errors.Is(err, fs.ErrNotExist) {
+		if err := os.MkdirAll(path, mode); err != nil {
+			return err
+		}
+		info, err = os.Lstat(path)
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: directory component %q is a symlink", ErrUnsafePath, path)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: directory component %q is not a directory", ErrUnsafePath, path)
 	}
 	return nil
 }

@@ -161,7 +161,7 @@ func ControlDir(targetRoot string) string {
 }
 
 func EnsureControlDir(targetRoot string) error {
-	return pathguard.EnsurePlainDirectory(ControlDir(targetRoot), 0o755)
+	return pathguard.EnsurePlainDirectory(targetRoot, ControlDir(targetRoot), 0o755)
 }
 
 func Path(targetRoot string, artifact ArtifactType, id string) (string, error) {
@@ -252,7 +252,8 @@ func WriteFile(path string, doc Document) error {
 	if err := doc.Validate(); err != nil {
 		return err
 	}
-	if err := pathguard.EnsurePlainDirectory(filepath.Dir(path), 0o755); err != nil {
+	controlDir := enclosingControlDir(path)
+	if err := pathguard.EnsurePlainDirectory(filepath.Dir(controlDir), filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 
@@ -281,6 +282,20 @@ func WriteFile(path string, doc Document) error {
 		return err
 	}
 	return nil
+}
+
+func enclosingControlDir(path string) string {
+	current := filepath.Clean(path)
+	for {
+		if filepath.Base(current) == DirName {
+			return current
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Dir(path)
+		}
+		current = parent
+	}
 }
 
 func (d ProfileSnapshot) Validate() error {

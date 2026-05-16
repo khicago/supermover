@@ -106,6 +106,9 @@ func Run(opts Options) (Result, error) {
 		return Result{}, err
 	}
 	scanResult = dropControlPlaneEntries(scanResult)
+	if err := rejectScanErrors(scanResult); err != nil {
+		return Result{}, err
+	}
 	influences := agentkb.Detect(scanResult.Entries)
 	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
 	if err != nil {
@@ -224,6 +227,9 @@ func Preflight(opts Options) (Result, error) {
 		return Result{}, err
 	}
 	scanResult = dropControlPlaneEntries(scanResult)
+	if err := rejectScanErrors(scanResult); err != nil {
+		return Result{}, err
+	}
 	warnings := append([]audit.Record(nil), scanResult.Audit...)
 	influences := agentkb.Detect(scanResult.Entries)
 	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
@@ -788,6 +794,15 @@ func isControlPlanePath(path string) bool {
 	return pathguard.IsReservedControlPath(path)
 }
 
+func rejectScanErrors(result scan.Result) error {
+	for _, record := range result.Audit {
+		if record.Kind == "scan_error" {
+			return fmt.Errorf("source scan error at %q; rerun after the source is readable before publishing or recording soft deletes", record.Path)
+		}
+	}
+	return nil
+}
+
 func parseArtifactTime(value string) (time.Time, error) {
 	if strings.TrimSpace(value) == "" {
 		return time.Time{}, fmt.Errorf("timestamp is required")
@@ -1007,6 +1022,13 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 			}
 			if exists {
 				if same {
+					mode := os.FileMode(entry.Mode)
+					if mode == 0 {
+						mode = 0o644
+					}
+					if err := applyFileMetadata(targetPath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+						return err
+					}
 					if err := removeStagedIfPresent(stagePath, entry.Path); err != nil {
 						return err
 					}

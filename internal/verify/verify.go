@@ -35,6 +35,8 @@ const (
 	FindingDigestMismatch    FindingKind = "digest_mismatch"
 	FindingUnsupportedDigest FindingKind = "unsupported_digest"
 	FindingDigestMissing     FindingKind = "digest_missing"
+	FindingModeMismatch      FindingKind = "mode_mismatch"
+	FindingModTimeMismatch   FindingKind = "mtime_mismatch"
 	FindingReadError         FindingKind = "read_error"
 )
 
@@ -79,17 +81,21 @@ type ManifestSummary struct {
 }
 
 type Finding struct {
-	Kind           FindingKind `json:"kind"`
-	Severity       Severity    `json:"severity"`
-	SessionID      string      `json:"session_id"`
-	Path           string      `json:"path"`
-	TargetPath     string      `json:"target_path"`
-	Message        string      `json:"message"`
-	ExpectedSize   int64       `json:"expected_size,omitempty"`
-	ActualSize     int64       `json:"actual_size,omitempty"`
-	ExpectedDigest string      `json:"expected_digest,omitempty"`
-	ActualDigest   string      `json:"actual_digest,omitempty"`
-	Err            string      `json:"error,omitempty"`
+	Kind            FindingKind `json:"kind"`
+	Severity        Severity    `json:"severity"`
+	SessionID       string      `json:"session_id"`
+	Path            string      `json:"path"`
+	TargetPath      string      `json:"target_path"`
+	Message         string      `json:"message"`
+	ExpectedSize    int64       `json:"expected_size,omitempty"`
+	ActualSize      int64       `json:"actual_size,omitempty"`
+	ExpectedDigest  string      `json:"expected_digest,omitempty"`
+	ActualDigest    string      `json:"actual_digest,omitempty"`
+	ExpectedMode    uint32      `json:"expected_mode,omitempty"`
+	ActualMode      uint32      `json:"actual_mode,omitempty"`
+	ExpectedModTime string      `json:"expected_mtime,omitempty"`
+	ActualModTime   string      `json:"actual_mtime,omitempty"`
+	Err             string      `json:"error,omitempty"`
 }
 
 type ArtifactProblem struct {
@@ -450,6 +456,30 @@ func verifyFile(targetRoot, sessionID string, entry control.ManifestEntry) []Fin
 	}
 
 	var findings []Finding
+	if expectedMode := os.FileMode(entry.Mode).Perm(); expectedMode != 0 && info.Mode().Perm() != expectedMode {
+		findings = append(findings, Finding{
+			Kind:         FindingModeMismatch,
+			Severity:     SeverityError,
+			SessionID:    sessionID,
+			Path:         entry.Path,
+			TargetPath:   targetRel,
+			Message:      "target file permissions do not match the manifest",
+			ExpectedMode: uint32(expectedMode),
+			ActualMode:   uint32(info.Mode().Perm()),
+		})
+	}
+	if modTime, ok := parseManifestTime(entry.ModTime); ok && !info.ModTime().Equal(modTime) {
+		findings = append(findings, Finding{
+			Kind:            FindingModTimeMismatch,
+			Severity:        SeverityError,
+			SessionID:       sessionID,
+			Path:            entry.Path,
+			TargetPath:      targetRel,
+			Message:         "target file modification time does not match the manifest",
+			ExpectedModTime: modTime.UTC().Format(time.RFC3339Nano),
+			ActualModTime:   info.ModTime().UTC().Format(time.RFC3339Nano),
+		})
+	}
 	if info.Size() != entry.Size {
 		findings = append(findings, Finding{
 			Kind:         FindingSizeMismatch,
@@ -506,6 +536,19 @@ func verifyFile(targetRoot, sessionID string, entry control.ManifestEntry) []Fin
 		})
 	}
 	return findings
+}
+
+func parseManifestTime(value string) (time.Time, bool) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t.UTC(), true
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t.UTC(), true
+	}
+	return time.Time{}, false
 }
 
 func readErrorFinding(sessionID string, entry control.ManifestEntry, targetRel string, err error) Finding {

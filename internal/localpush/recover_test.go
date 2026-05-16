@@ -69,8 +69,8 @@ func TestRecoverCompletesAlreadyPublishedFileWithoutStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Stat(recovered existing file) error = %v, want nil", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("existing file mode after Recover = %v, want unchanged 0600", info.Mode().Perm())
+	if info.Mode().Perm() != 0o644 {
+		t.Fatalf("existing file mode after Recover = %v, want manifest 0644", info.Mode().Perm())
 	}
 }
 

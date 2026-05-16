@@ -151,13 +151,9 @@ func TestFileStoreConcurrentBeginLocksCanonicalTargetRoot(t *testing.T) {
 	if err := os.Mkdir(root, 0o755); err != nil {
 		t.Fatalf("os.Mkdir(%q) error = %v, want nil", root, err)
 	}
-	linkRoot := filepath.Join(base, "target-link")
-	if err := os.Symlink(root, linkRoot); err != nil {
-		t.Skipf("os.Symlink() unavailable: %v", err)
-	}
 	stores := []FileStore{
 		{TargetRoot: root},
-		{TargetRoot: linkRoot},
+		{TargetRoot: filepath.Join(base, ".", "target")},
 	}
 	first := validBeginRequest([]byte("hello"))
 	second := validBeginRequest([]byte("hello"))

@@ -131,7 +131,7 @@ func (l Layout) EnsureSessionDirs(id string) error {
 	if err := ValidateSessionID(id); err != nil {
 		return err
 	}
-	if err := pathguard.EnsurePlainDirectory(l.StagingDir(id), 0o755); err != nil {
+	if err := pathguard.EnsurePlainDirectory(filepath.Dir(l.ControlDir), l.StagingDir(id), 0o755); err != nil {
 		return fmt.Errorf("create session directories: %w", err)
 	}
 	return nil

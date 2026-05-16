@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khicago/supermover/internal/control"
 )
@@ -267,6 +268,46 @@ func TestBuildReportRejectsSymlinkParentTargetPath(t *testing.T) {
 	}
 	if got.Summary.FilesVerified != 0 {
 		t.Fatalf("BuildReport(%q).Summary.FilesVerified = %d, want 0", target, got.Summary.FilesVerified)
+	}
+}
+
+func TestBuildReportFindsMetadataMismatch(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "file.txt", []byte("same"))
+	path := filepath.Join(target, "file.txt")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("os.Chmod(%q) error = %v, want nil", path, err)
+	}
+	actualTime := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(path, actualTime, actualTime); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", path, err)
+	}
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{{
+			Path:       "file.txt",
+			Kind:       "file",
+			Mode:       0o600,
+			Size:       4,
+			Digest:     digest([]byte("same")),
+			ModTime:    "2026-05-16T00:00:00Z",
+			TargetPath: "file.txt",
+		}},
+	})
+	writePublishedReceipt(t, target, "session")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !hasFinding(got.Findings, FindingModeMismatch, "file.txt") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want mode mismatch", target, got.Findings)
+	}
+	if !hasFinding(got.Findings, FindingModTimeMismatch, "file.txt") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want mtime mismatch", target, got.Findings)
 	}
 }
 

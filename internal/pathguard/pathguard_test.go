@@ -64,12 +64,28 @@ func TestEnsurePlainDirectoryRejectsSymlinkComponent(t *testing.T) {
 		t.Skipf("os.Symlink() unavailable: %v", err)
 	}
 
-	err := EnsurePlainDirectory(filepath.Join(root, "link", "child"), 0o755)
+	err := EnsurePlainDirectory(root, filepath.Join(root, "link", "child"), 0o755)
 	if !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("EnsurePlainDirectory(symlink component) error = %v, want ErrUnsafePath", err)
 	}
 	if _, err := os.Stat(filepath.Join(outside, "child")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("os.Stat(outside child) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestEnsurePlainDirectoryRejectsSymlinkComponentWithExistingTargetSubtree(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "sessions", "session-1", "stage"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(outside subtree) error = %v, want nil", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, ReservedControlDir)); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+
+	err := EnsurePlainDirectory(root, filepath.Join(root, ReservedControlDir, "sessions", "session-1", "stage"), 0o755)
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("EnsurePlainDirectory(existing subtree below symlink) error = %v, want ErrUnsafePath", err)
 	}
 }
 
