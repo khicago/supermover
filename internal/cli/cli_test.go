@@ -41,7 +41,7 @@ func TestRunHelp(t *testing.T) {
 			t.Errorf("Run(%v) stdout = %q, command %q should be listed as available", []string{"help"}, stdout.String(), command)
 		}
 	}
-	for _, command := range []string{"serve", "pair", "prune", "status"} {
+	for _, command := range []string{"serve", "pair", "prune", "status", "discover", "drift"} {
 		commandIndex := strings.Index(stdout.String(), "\n  "+command+" ")
 		if commandIndex == -1 {
 			t.Errorf("Run(%v) stdout = %q, want planned command %q", []string{"help"}, stdout.String(), command)
@@ -54,6 +54,37 @@ func TestRunHelp(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("Run(%v) stderr = %q, want empty", []string{"help"}, stderr.String())
+	}
+}
+
+func TestLeafHelpReturnsSuccess(t *testing.T) {
+	tests := [][]string{
+		{"profile", "--help"},
+		{"profile", "init", "--help"},
+		{"profile", "lint", "--help"},
+		{"profile", "set-target", "--help"},
+		{"scan", "--help"},
+		{"push", "--help"},
+		{"verify", "--help"},
+		{"deleted", "--help"},
+		{"deleted", "list", "--help"},
+		{"health", "--help"},
+		{"recover", "--help"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			got := Run(args, &stdout, &stderr)
+
+			if got != 0 {
+				t.Fatalf("Run(%v) exit = %d, want 0; stdout=%q stderr=%q", args, got, stdout.String(), stderr.String())
+			}
+			if stdout.Len() == 0 && stderr.Len() == 0 {
+				t.Fatalf("Run(%v) produced no help output, want usage text", args)
+			}
+		})
 	}
 }
 

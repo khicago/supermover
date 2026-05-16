@@ -43,14 +43,19 @@ sed -n '1,160p' /path/to/target/.supermover/sessions/<session>/receipt.json
 find /path/to/target/.supermover/warnings -type f -name '*.json' -maxdepth 1 2>/dev/null | sort
 ```
 
-## Mainline Commands Needed To Close The Matrix
+## Mainline Commands
 
-The matrix references current commands and the planned operational surface:
+Current commands:
 
 ```bash
 go run ./cmd/supermover recover --profile ./supermover.profile.json --session <session-id>
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session <session-id>
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
+```
+
+Planned commands, not implemented in the current CLI:
+
+```bash
 go run ./cmd/supermover drift list --target /path/to/target --profile ./supermover.profile.json
 go run ./cmd/supermover prune --target /path/to/target --profile ./supermover.profile.json --dry-run
 ```

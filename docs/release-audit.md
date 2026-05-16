@@ -18,8 +18,8 @@ Current completed slice:
   unless they are already content-identical to the intended result.
 - Profile JSON remains the SSOT; unsupported profile policies fail before push.
 - Target `.supermover` records profile snapshots, transaction state, receipts,
-  manifests, warnings, soft deletes, agent influence records, and health
-  diagnostics.
+  manifests, warnings, soft deletes, and agent influence records. Health is a
+  read-only report over those artifacts.
 - `recover` can replay safely staged local sessions, mark explicitly abandoned
   incomplete sessions as `rolled_back`, and mark non-automatable sessions as
   `needs_repair`.

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -70,6 +71,9 @@ func (r Runner) runProfile(args []string, stdout io.Writer, stderr io.Writer) in
 		return 2
 	}
 	switch args[0] {
+	case "help", "-h", "--help":
+		printProfileUsage(stdout)
+		return 0
 	case "init":
 		return r.runProfileInit(args[1:], stdout, stderr)
 	case "lint":
@@ -92,6 +96,9 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 	profileID := fs.String("id", "profile-local", "profile id to persist")
 	name := fs.String("name", "Local profile", "human-readable profile name")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
@@ -125,6 +132,9 @@ func (r Runner) runProfileLint(args []string, stdout io.Writer, stderr io.Writer
 	fs := newFlagSet("profile lint", stderr)
 	profilePath := fs.String("profile", "", "profile path to lint")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *profilePath == "" {
@@ -147,6 +157,9 @@ func (r Runner) runProfileSetTarget(args []string, stdout io.Writer, stderr io.W
 	targetID := fs.String("target-id", "", "target identity override")
 	name := fs.String("name", "", "human-readable target name override")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
@@ -198,6 +211,9 @@ func (r Runner) runScan(args []string, stdout io.Writer, stderr io.Writer) int {
 	profilePath := fs.String("profile", "", "profile path")
 	format := fs.String("format", "text", "output format: text or json")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *profilePath == "" {
@@ -243,6 +259,9 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 	dryRun := fs.Bool("dry-run", false, "scan and report without writing target files or control-plane artifacts")
 	sessionID := fs.String("session", "", "session id for deterministic tests and controlled reruns")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *profilePath == "" {
@@ -295,6 +314,9 @@ func (r Runner) runVerify(args []string, stdout io.Writer, stderr io.Writer) int
 	sessionID := fs.String("session", "", "session id to verify")
 	format := fs.String("format", "text", "output format: text or json")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *profilePath == "" {
@@ -348,6 +370,9 @@ func (r Runner) runDeleted(args []string, stdout io.Writer, stderr io.Writer) in
 		return 2
 	}
 	switch args[0] {
+	case "help", "-h", "--help":
+		printDeletedUsage(stdout)
+		return 0
 	case "list":
 		return r.runDeletedList(args[1:], stdout, stderr)
 	default:
@@ -363,6 +388,9 @@ func (r Runner) runDeletedList(args []string, stdout io.Writer, stderr io.Writer
 	sessionID := fs.String("session", "", "optional session id filter")
 	format := fs.String("format", "text", "output format: text or json")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *profilePath == "" {
@@ -408,6 +436,9 @@ func (r Runner) runHealth(args []string, stdout io.Writer, stderr io.Writer) int
 	profilePath := fs.String("profile", "", "profile path")
 	format := fs.String("format", "text", "output format: text or json")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *profilePath == "" {
@@ -459,6 +490,9 @@ func (r Runner) runRecover(args []string, stdout io.Writer, stderr io.Writer) in
 	rollbackIncomplete := fs.Bool("rollback-incomplete", false, "mark received/validated sessions as rolled_back when they never reached durable staging")
 	format := fs.String("format", "text", "output format: text or json")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 	if *profilePath == "" {
