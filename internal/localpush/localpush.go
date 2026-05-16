@@ -370,6 +370,9 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 	if manifest.RootID != "" && manifest.RootID != p.Roots[0].ID {
 		return fmt.Errorf("recover manifest root_id %q does not match profile root %q", manifest.RootID, p.Roots[0].ID)
 	}
+	if err := validateRecoverableStagedFiles(layout, targetDir, record.ID, manifest.Entries); err != nil {
+		return err
+	}
 	existingDirs, err := captureExistingPublishDirs(targetDir, manifest.Entries)
 	if err != nil {
 		return err
@@ -385,6 +388,53 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 		return err
 	}
 	return layout.WriteSessionRecord(published)
+}
+
+func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
+	for _, entry := range entries {
+		if entry.Kind != "file" {
+			continue
+		}
+		if strings.TrimSpace(entry.Digest) == "" {
+			return fmt.Errorf("recover file %q is missing digest", entry.Path)
+		}
+		finalPath, err := targetPathForManifestEntry(targetDir, entry)
+		if err != nil {
+			return err
+		}
+		same, exists, err := targetFileState(finalPath, entry.Size, entry.Digest)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if same {
+				continue
+			}
+			return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
+		}
+		stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(stagePath)
+		if err != nil {
+			return fmt.Errorf("stat staged file %q for recovery: %w", entry.Path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("staged file %q is not a regular file", entry.Path)
+		}
+		if info.Size() != entry.Size {
+			return fmt.Errorf("staged file %q size = %d, want %d", entry.Path, info.Size(), entry.Size)
+		}
+		got, err := digestFile(stagePath)
+		if err != nil {
+			return err
+		}
+		if got != entry.Digest {
+			return fmt.Errorf("staged file %q digest = %s, want %s", entry.Path, got, entry.Digest)
+		}
+	}
+	return nil
 }
 
 func markSessionNeedsRepair(layout transaction.Layout, record transaction.SessionRecord, now time.Time, cause error) error {

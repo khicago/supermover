@@ -103,8 +103,9 @@ The public `recover --profile <path>` command executes the conservative local
 recovery subset:
 
 - `staged` sessions are replayed from the durable manifest and stage directory.
-  File publication still uses no-replace semantics. Existing final files are
-  accepted only when size and digest match the manifest.
+  Staged file size and SHA-256 digest must match the manifest before
+  publication. File publication still uses no-replace semantics. Existing final
+  files are accepted only when size and digest match the manifest.
 - `received` and `validated` sessions are not silently discarded. `recover
   --dry-run` reports the rollback action; `recover --rollback-incomplete`
   explicitly marks them `rolled_back` when the operator decides they never

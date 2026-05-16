@@ -4,10 +4,10 @@ Supermover is a Go CLI for one-way, auditable file migration and incremental
 sync from a source machine to a trusted target machine.
 
 The current implementation is a local push vertical slice. Available commands
-are `profile`, `scan`, `push`, `verify`, `deleted list`, and `health`. Network
-receiver, pairing, physical prune, automatic recovery, status, discovery, and
-drift review commands are planned and may appear in design docs before CLI
-wiring exists.
+are `profile`, `scan`, `push`, `verify`, `deleted list`, `health`, and
+`recover`. Network receiver, pairing, physical prune, broader recovery
+reconciliation, status, discovery, and drift review commands are planned and
+may appear in design docs before CLI wiring exists.
 
 ## Quickstart
 
@@ -19,6 +19,7 @@ go run ./cmd/supermover push --profile ./supermover.profile.json --session sessi
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
+go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 ```
 
 Use an empty target directory for first migration. Current publish code refuses

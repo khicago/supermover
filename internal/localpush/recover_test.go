@@ -103,6 +103,37 @@ func TestRecoverMarksDivergentTargetNeedsRepair(t *testing.T) {
 	}
 }
 
+func TestRecoverRejectsCorruptStagedPayload(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+		{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	})
+	writeStageFile(t, layout, "session-recover", "file.txt", "damaged")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(corrupt staged payload) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(corrupt staged payload).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(final file after corrupt recover) error = %v, want os.ErrNotExist", err)
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-recover"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(corrupt staged repair) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "digest") {
+		t.Fatalf("corrupt staged repair record = %#v, want needs_repair with digest note", record)
+	}
+}
+
 func TestRecoverRollbackIncompleteRequiresExplicitOptIn(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
