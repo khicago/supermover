@@ -68,6 +68,9 @@ func TestScanJSONDoesNotExposeObservedIdentity(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("json.Unmarshal(Scan(%q)) error = %v, want nil", root, err)
 	}
+	if len(report.Entries) == 0 {
+		t.Fatalf("json.Unmarshal(Scan(%q)).Entries length = 0, want scanned entries", root)
+	}
 	for _, entry := range report.Entries {
 		if _, ok := entry["observed"]; ok {
 			t.Fatalf("json.Marshal(Scan(%q)) entry keys = %#v, want no observed field", root, entry)
