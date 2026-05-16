@@ -62,8 +62,19 @@ func TestScanJSONDoesNotExposeObservedIdentity(t *testing.T) {
 		t.Fatalf("json.Marshal(Scan(%q)) error = %v, want nil", root, err)
 	}
 
-	if strings.Contains(string(data), "observed") {
-		t.Fatalf("json.Marshal(Scan(%q)) = %s, want no observed field", root, data)
+	var report struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("json.Unmarshal(Scan(%q)) error = %v, want nil", root, err)
+	}
+	for _, entry := range report.Entries {
+		if _, ok := entry["observed"]; ok {
+			t.Fatalf("json.Marshal(Scan(%q)) entry keys = %#v, want no observed field", root, entry)
+		}
+		if _, ok := entry["Observed"]; ok {
+			t.Fatalf("json.Marshal(Scan(%q)) entry keys = %#v, want no Observed field", root, entry)
+		}
 	}
 	if !strings.Contains(string(data), `"file.txt"`) {
 		t.Fatalf("json.Marshal(Scan(%q)) = %s, want scanned file path", root, data)

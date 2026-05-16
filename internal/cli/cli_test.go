@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -268,6 +269,44 @@ func TestScanUsesProfileRoots(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "influences=1") {
 		t.Errorf("scan stdout = %q, want influence count", stdout.String())
+	}
+}
+
+func TestScanJSONDoesNotExposeObservedIdentity(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"scan", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("scan --format json exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+
+	var report struct {
+		Roots []struct {
+			Entries []map[string]any `json:"entries"`
+		} `json:"roots"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal(scan stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if len(report.Roots) != 1 || len(report.Roots[0].Entries) == 0 {
+		t.Fatalf("scan --format json roots = %#v, want one root with entries", report.Roots)
+	}
+	for _, entry := range report.Roots[0].Entries {
+		if _, ok := entry["observed"]; ok {
+			t.Fatalf("scan --format json entry keys = %#v, want no observed field", entry)
+		}
+		if _, ok := entry["Observed"]; ok {
+			t.Fatalf("scan --format json entry keys = %#v, want no Observed field", entry)
+		}
 	}
 }
 
