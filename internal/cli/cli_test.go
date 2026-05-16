@@ -33,7 +33,7 @@ func TestRunHelp(t *testing.T) {
 	}
 	availableIndex := strings.Index(stdout.String(), "Available commands:")
 	plannedIndex := strings.Index(stdout.String(), "Planned commands:")
-	for _, command := range []string{"profile", "scan", "push", "verify", "deleted", "health"} {
+	for _, command := range []string{"profile", "scan", "push", "verify", "deleted", "health", "recover"} {
 		commandIndex := strings.Index(stdout.String(), "\n  "+command+" ")
 		if commandIndex == -1 {
 			t.Errorf("Run(%v) stdout = %q, want available command %q", []string{"help"}, stdout.String(), command)
@@ -41,7 +41,7 @@ func TestRunHelp(t *testing.T) {
 			t.Errorf("Run(%v) stdout = %q, command %q should be listed as available", []string{"help"}, stdout.String(), command)
 		}
 	}
-	for _, command := range []string{"serve", "pair", "prune", "recover", "status"} {
+	for _, command := range []string{"serve", "pair", "prune", "status"} {
 		commandIndex := strings.Index(stdout.String(), "\n  "+command+" ")
 		if commandIndex == -1 {
 			t.Errorf("Run(%v) stdout = %q, want planned command %q", []string{"help"}, stdout.String(), command)
@@ -517,6 +517,64 @@ func TestHealthReturnsFailureForIncompleteSessions(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "session-recover") || !strings.Contains(stdout.String(), "action=recover") {
 		t.Fatalf("health stdout = %q, want recovery item", stdout.String())
+	}
+}
+
+func TestRecoverDryRunReportsIncompleteSession(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	writeSessionRecord(t, layout, "session-incomplete", transaction.StateValidated)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"recover", "--profile", profilePath, "--session", "session-incomplete", "--dry-run"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("recover --dry-run exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "session-incomplete") || !strings.Contains(stdout.String(), "status=would_rollback") {
+		t.Fatalf("recover --dry-run stdout = %q, want would_rollback item", stdout.String())
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-incomplete"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(%q) error = %v, want nil", "session-incomplete", err)
+	}
+	if record.State != transaction.StateValidated {
+		t.Fatalf("recover --dry-run state = %q, want unchanged validated", record.State)
+	}
+}
+
+func TestRecoverRollbackIncompleteUpdatesSession(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	writeSessionRecord(t, layout, "session-incomplete", transaction.StateValidated)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"recover", "--profile", profilePath, "--session", "session-incomplete", "--rollback-incomplete"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("recover --rollback-incomplete exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "status=rolled_back") {
+		t.Fatalf("recover --rollback-incomplete stdout = %q, want rolled_back", stdout.String())
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-incomplete"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(%q) error = %v, want nil", "session-incomplete", err)
+	}
+	if record.State != transaction.StateRolledBack {
+		t.Fatalf("recover --rollback-incomplete state = %q, want rolled_back", record.State)
 	}
 }
 

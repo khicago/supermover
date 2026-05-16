@@ -39,6 +39,34 @@ type Result struct {
 	Deleted    int
 }
 
+type RecoverOptions struct {
+	Profile            profile.Profile
+	TargetDir          string
+	SessionID          string
+	DryRun             bool
+	RollbackIncomplete bool
+	Now                time.Time
+}
+
+type RecoverResult struct {
+	TargetDir    string        `json:"target_dir"`
+	SessionID    string        `json:"session_id,omitempty"`
+	DryRun       bool          `json:"dry_run"`
+	Inspected    int           `json:"inspected"`
+	Recovered    int           `json:"recovered"`
+	Skipped      int           `json:"skipped"`
+	RepairNeeded int           `json:"repair_needed"`
+	Items        []RecoverItem `json:"items,omitempty"`
+}
+
+type RecoverItem struct {
+	SessionID string `json:"session_id"`
+	State     string `json:"state"`
+	Action    string `json:"action"`
+	Status    string `json:"status"`
+	Message   string `json:"message,omitempty"`
+}
+
 func Run(opts Options) (Result, error) {
 	if err := opts.Profile.Validate(); err != nil {
 		return Result{}, err
@@ -123,18 +151,18 @@ func Run(opts Options) (Result, error) {
 		}
 	}
 
-	record, err = record.WithState(transaction.StateStaged, now)
-	if err != nil {
-		return Result{}, err
-	}
-	if err := layout.WriteSessionRecord(record); err != nil {
-		return Result{}, err
-	}
 	existingDirs, err := captureExistingPublishDirs(opts.TargetDir, manifestEntries)
 	if err != nil {
 		return Result{}, err
 	}
 	if err := writeControlArtifacts(opts.TargetDir, opts.Profile, sessionID, now, manifestEntries, warnings, influences, softDeletes); err != nil {
+		return Result{}, err
+	}
+	record, err = record.WithState(transaction.StateStaged, now)
+	if err != nil {
+		return Result{}, err
+	}
+	if err := layout.WriteSessionRecord(record); err != nil {
 		return Result{}, err
 	}
 	if err := publishStaged(layout, opts.TargetDir, sessionID, manifestEntries, existingDirs); err != nil {
@@ -217,6 +245,158 @@ func Preflight(opts Options) (Result, error) {
 		}
 	}
 	return Result{Entries: entries, Copied: copied, Warnings: len(warnings), Influences: len(influences)}, nil
+}
+
+func Recover(opts RecoverOptions) (RecoverResult, error) {
+	if err := opts.Profile.Validate(); err != nil {
+		return RecoverResult{}, err
+	}
+	if err := ValidateProfileForLocalPush(opts.Profile); err != nil {
+		return RecoverResult{}, err
+	}
+	if strings.TrimSpace(opts.TargetDir) == "" {
+		return RecoverResult{}, fmt.Errorf("target directory is required")
+	}
+	if err := ValidateSourceTargetSeparation(opts.Profile.Roots[0].Path, opts.TargetDir); err != nil {
+		return RecoverResult{}, err
+	}
+	layout := transaction.NewLayout(control.ControlDir(opts.TargetDir))
+	scan, err := transaction.ScanRecovery(layout)
+	if err != nil {
+		return RecoverResult{}, err
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	wantSession := strings.TrimSpace(opts.SessionID)
+	if wantSession != "" {
+		if err := transaction.ValidateSessionID(wantSession); err != nil {
+			return RecoverResult{}, err
+		}
+	}
+
+	result := RecoverResult{TargetDir: opts.TargetDir, SessionID: wantSession, DryRun: opts.DryRun}
+	matched := false
+	for _, scanned := range scan.Items {
+		if wantSession != "" && scanned.Record.ID != wantSession {
+			continue
+		}
+		matched = true
+		result.Inspected++
+		item := RecoverItem{
+			SessionID: scanned.Record.ID,
+			State:     string(scanned.Record.State),
+			Action:    string(scanned.Action),
+		}
+		switch scanned.Action {
+		case transaction.ActionRecover:
+			if opts.DryRun {
+				item.Status = "would_recover"
+				item.Message = scanned.Reason
+				result.Skipped++
+				result.Items = append(result.Items, item)
+				continue
+			}
+			if err := recoverStagedSession(layout, opts.Profile, opts.TargetDir, scanned.Record, now); err != nil {
+				marked := markSessionNeedsRepair(layout, scanned.Record, now, err)
+				item.Status = "needs_repair"
+				item.Message = err.Error()
+				result.RepairNeeded++
+				if marked != nil {
+					return result, marked
+				}
+			} else {
+				item.Status = "recovered"
+				item.Message = "published staged payload and wrote receipt"
+				result.Recovered++
+			}
+		case transaction.ActionRollback:
+			if opts.DryRun {
+				item.Status = "would_rollback"
+				item.Message = scanned.Reason
+				result.Skipped++
+			} else if opts.RollbackIncomplete {
+				rolledBack, err := scanned.Record.WithState(transaction.StateRolledBack, now)
+				if err != nil {
+					return result, err
+				}
+				rolledBack.Note = "rolled back by recover: " + scanned.Reason
+				if err := layout.WriteSessionRecord(rolledBack); err != nil {
+					return result, err
+				}
+				item.Status = "rolled_back"
+				item.Message = "session did not reach durable staging; final target files were not published"
+				result.Recovered++
+			} else {
+				item.Status = "skipped"
+				item.Message = "session did not reach durable staging; rerun with --rollback-incomplete to mark terminal"
+				result.Skipped++
+			}
+		case transaction.ActionRepair:
+			item.Status = "needs_repair"
+			item.Message = scanned.Reason
+			result.RepairNeeded++
+		default:
+			item.Status = "skipped"
+			item.Message = scanned.Reason
+			result.Skipped++
+		}
+		result.Items = append(result.Items, item)
+	}
+	if wantSession != "" && !matched {
+		if _, err := transaction.ReadSessionRecord(layout.RecordPath(wantSession)); err != nil {
+			return result, fmt.Errorf("session %q not found in recovery scan: %w", wantSession, err)
+		}
+	}
+	return result, nil
+}
+
+func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDir string, record transaction.SessionRecord, now time.Time) error {
+	if record.State != transaction.StateStaged {
+		return fmt.Errorf("session %q state is %q, want staged", record.ID, record.State)
+	}
+	manifestPath, err := control.Path(targetDir, control.ArtifactManifest, record.ID)
+	if err != nil {
+		return err
+	}
+	manifest, err := control.ReadManifestCompatFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read recover manifest %q: %w", record.ID, err)
+	}
+	if manifest.SessionID != record.ID {
+		return fmt.Errorf("recover manifest session_id %q does not match session %q", manifest.SessionID, record.ID)
+	}
+	if manifest.RootID != "" && manifest.RootID != p.Roots[0].ID {
+		return fmt.Errorf("recover manifest root_id %q does not match profile root %q", manifest.RootID, p.Roots[0].ID)
+	}
+	existingDirs, err := captureExistingPublishDirs(targetDir, manifest.Entries)
+	if err != nil {
+		return err
+	}
+	if err := publishStaged(layout, targetDir, record.ID, manifest.Entries, existingDirs); err != nil {
+		return err
+	}
+	if err := writeSessionReceiptWithTimes(targetDir, p, record.ID, record.CreatedAt, now); err != nil {
+		return err
+	}
+	published, err := record.WithState(transaction.StatePublished, now)
+	if err != nil {
+		return err
+	}
+	return layout.WriteSessionRecord(published)
+}
+
+func markSessionNeedsRepair(layout transaction.Layout, record transaction.SessionRecord, now time.Time, cause error) error {
+	repair, err := record.WithState(transaction.StateNeedsRepair, now)
+	if err != nil {
+		return err
+	}
+	repair.Note = cause.Error()
+	if err := layout.WriteSessionRecord(repair); err != nil {
+		return err
+	}
+	return nil
 }
 
 func targetPathForEntry(targetDir string, entry scan.Entry) (string, error) {
@@ -662,8 +842,8 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 			}
 			if exists {
 				if same {
-					if err := os.Remove(stagePath); err != nil {
-						return fmt.Errorf("remove duplicate staged file %q: %w", entry.Path, err)
+					if err := removeStagedIfPresent(stagePath, entry.Path); err != nil {
+						return err
 					}
 					continue
 				}
@@ -680,6 +860,13 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func removeStagedIfPresent(stagePath string, entryPath string) error {
+	if err := os.Remove(stagePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove duplicate staged file %q: %w", entryPath, err)
 	}
 	return nil
 }
@@ -913,14 +1100,19 @@ func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string
 }
 
 func writeSessionReceipt(targetDir string, p profile.Profile, sessionID string, now time.Time) error {
-	stamp := now.UTC().Format(time.RFC3339Nano)
+	return writeSessionReceiptWithTimes(targetDir, p, sessionID, now, now)
+}
+
+func writeSessionReceiptWithTimes(targetDir string, p profile.Profile, sessionID string, startedAt time.Time, endedAt time.Time) error {
+	started := startedAt.UTC().Format(time.RFC3339Nano)
+	ended := endedAt.UTC().Format(time.RFC3339Nano)
 	receipt := control.SessionReceipt{
 		Version:   control.CurrentVersion,
 		ID:        sessionID,
 		ProfileID: p.ProfileID,
 		TargetID:  p.Target.TargetID,
-		StartedAt: stamp,
-		EndedAt:   stamp,
+		StartedAt: started,
+		EndedAt:   ended,
 		Status:    "published",
 	}
 	if path, err := control.Path(targetDir, control.ArtifactSessionReceipt, sessionID); err != nil {

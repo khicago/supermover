@@ -115,21 +115,25 @@ is needed:
 go run ./cmd/supermover health --profile ./supermover.profile.json
 ```
 
-The public `recover` command is not implemented yet. Until it lands:
-
-1. Preserve the target `.supermover` directory.
-2. Preserve the exact profile file used for the failed run.
-3. Record the command, session ID, stdout, stderr, and filesystem error.
-4. Do not delete staged session state unless the operator has copied the
-   evidence elsewhere.
-5. Rerun only after deciding whether the prior session can be abandoned.
-
-Planned command shape:
+`recover` performs the conservative automated subset. It uses the profile SSOT
+to find `target.local_path` and to write any repaired receipt.
 
 ```bash
-go run ./cmd/supermover recover --target /path/to/target --session <session-id>
+go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
+go run ./cmd/supermover recover --profile ./supermover.profile.json --session <session-id>
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session <session-id>
 ```
+
+For sessions that only reached `received` or `validated`, use an explicit
+rollback decision:
+
+```bash
+go run ./cmd/supermover recover --profile ./supermover.profile.json --session <session-id> --rollback-incomplete
+```
+
+Preserve the target `.supermover` directory and command output before recovery.
+If recovery reports `needs_repair`, do not delete staged session state; inspect
+the manifest, receipt, target file, and `session.json` note.
 
 ## Soft-Delete Procedure
 

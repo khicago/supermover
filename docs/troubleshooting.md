@@ -48,7 +48,7 @@ find /path/to/target/.supermover/warnings -type f -name '*.json' -maxdepth 1 2>/
 The matrix references current commands and the planned operational surface:
 
 ```bash
-go run ./cmd/supermover recover --target /path/to/target --session <session-id>
+go run ./cmd/supermover recover --profile ./supermover.profile.json --session <session-id>
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session <session-id>
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover drift list --target /path/to/target --profile ./supermover.profile.json

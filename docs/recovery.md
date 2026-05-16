@@ -97,12 +97,24 @@ operator output and tests.
 The public `health --profile <path>` command exposes this scanner as a read-only
 operator check. It uses the profile SSOT to find `target.local_path`, reports
 incomplete or invalid session records, and returns non-zero when follow-up is
-needed. It does not modify `.supermover` state or perform recovery.
+needed.
 
-Current open policy choices for later workers:
+The public `recover --profile <path>` command executes the conservative local
+recovery subset:
 
-- Whether `staged` recovery should replay manifest entries directly or first
-  verify staged payload hashes.
-- Whether invalid session records should move to a quarantine directory.
-- Whether promotion should refuse to overwrite an existing final path or allow
-  replace semantics for retry idempotence.
+- `staged` sessions are replayed from the durable manifest and stage directory.
+  File publication still uses no-replace semantics. Existing final files are
+  accepted only when size and digest match the manifest.
+- `received` and `validated` sessions are not silently discarded. `recover
+  --dry-run` reports the rollback action; `recover --rollback-incomplete`
+  explicitly marks them `rolled_back` when the operator decides they never
+  reached durable staging.
+- sessions that cannot be automated, such as missing manifests or divergent
+  final target content, are marked `needs_repair` with the failure note retained
+  in `session.json`.
+
+Open recovery work:
+
+- invalid session records may need a quarantine directory.
+- publish reconciliation should eventually verify the full receipt, manifest,
+  and target state matrix before changing session state.

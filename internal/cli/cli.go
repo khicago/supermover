@@ -54,6 +54,8 @@ func (r Runner) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return r.runDeleted(args[1:], stdout, stderr)
 	case "health":
 		return r.runHealth(args[1:], stdout, stderr)
+	case "recover":
+		return r.runRecover(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "%s: unknown command %q\n", buildinfo.Name, args[0])
 		printUsage(stderr)
@@ -449,6 +451,64 @@ func (r Runner) runHealth(args []string, stdout io.Writer, stderr io.Writer) int
 	return 0
 }
 
+func (r Runner) runRecover(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("recover", stderr)
+	profilePath := fs.String("profile", "", "profile path")
+	sessionID := fs.String("session", "", "optional session id to recover")
+	dryRun := fs.Bool("dry-run", false, "report recovery actions without mutating target state")
+	rollbackIncomplete := fs.Bool("rollback-incomplete", false, "mark received/validated sessions as rolled_back when they never reached durable staging")
+	format := fs.String("format", "text", "output format: text or json")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *profilePath == "" {
+		fmt.Fprintln(stderr, "recover: --profile is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "recover: unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "recover: %v\n", err)
+		return 2
+	}
+	targetDir, err := targetDirFromProfile(p)
+	if err != nil {
+		fmt.Fprintf(stderr, "recover: %v\n", err)
+		return 2
+	}
+	result, err := localpush.Recover(localpush.RecoverOptions{
+		Profile:            p,
+		TargetDir:          targetDir,
+		SessionID:          *sessionID,
+		DryRun:             *dryRun,
+		RollbackIncomplete: *rollbackIncomplete,
+		Now:                r.Now,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "recover: %v\n", err)
+		return 1
+	}
+	switch *format {
+	case "text":
+		printRecoverText(stdout, result)
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintf(stderr, "recover: encode result: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintf(stderr, "recover: unsupported format %q\n", *format)
+		return 2
+	}
+	if result.RepairNeeded > 0 {
+		return 1
+	}
+	return 0
+}
+
 func targetDirFromProfile(p profile.Profile) (string, error) {
 	if strings.TrimSpace(p.Target.LocalPath) != "" {
 		return p.Target.LocalPath, nil
@@ -548,6 +608,20 @@ func printHealthText(w io.Writer, report health.Report) {
 	}
 }
 
+func printRecoverText(w io.Writer, result localpush.RecoverResult) {
+	fmt.Fprintf(w, "recover: target=%s dry_run=%t inspected=%d recovered=%d skipped=%d repair_needed=%d\n",
+		result.TargetDir,
+		result.DryRun,
+		result.Inspected,
+		result.Recovered,
+		result.Skipped,
+		result.RepairNeeded,
+	)
+	for _, item := range result.Items {
+		fmt.Fprintf(w, "%s state=%s action=%s status=%s message=%s\n", item.SessionID, item.State, item.Action, item.Status, item.Message)
+	}
+}
+
 func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -579,12 +653,12 @@ Available commands:
   verify      Verify manifests and restored files
   deleted     Review source-side soft-delete records
   health      Inspect target control-plane health
+  recover     Resume safe local sessions or mark incomplete sessions
 
 Planned commands:
   serve       Run a trusted network target receiver
   pair        Pair with a target by explicit verification
   prune       Apply reviewed physical pruning after policy checks
-  recover     Resume or repair incomplete sessions
   status      Show local profile/session status
   discover    Find local targets without trusting them
   drift       Review target-local drift

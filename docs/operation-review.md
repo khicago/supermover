@@ -12,6 +12,11 @@ The `internal/verify` package builds an operator review report from:
 - `.supermover/warnings/*.json`
 - `.supermover/deleted/*.json`
 
+Manifests and soft-delete records are intended to describe published sessions.
+If a run is interrupted before receipt publication, treat its review artifacts
+as recovery evidence rather than prune input. Use `health` and `recover` first
+to bring the session to a terminal state or to mark it `needs_repair`.
+
 For the selected manifest, it verifies target files by safe relative target
 path, size, and `sha256:` digest. Non-file entries are included in manifest
 summaries but are not hashed. Invalid JSON or unreadable artifacts are retained

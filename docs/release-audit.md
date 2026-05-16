@@ -8,8 +8,8 @@ that directory is intentionally ignored by Git.
 
 Current completed slice:
 
-- Go CLI commands: `profile`, `scan`, `push`, `verify`, `deleted list`, and
-  `health`.
+- Go CLI commands: `profile`, `scan`, `push`, `verify`, `deleted list`,
+  `health`, and `recover`.
 - One-way local push from one source root to a trusted local or mounted target.
 - Hidden files are included by default.
 - Regular files are copied into session staging with source stability checks,
@@ -20,6 +20,9 @@ Current completed slice:
 - Target `.supermover` records profile snapshots, transaction state, receipts,
   manifests, warnings, soft deletes, agent influence records, and health
   diagnostics.
+- `recover` can replay safely staged local sessions, mark explicitly abandoned
+  incomplete sessions as `rolled_back`, and mark non-automatable sessions as
+  `needs_repair`.
 - Receiver protocol library supports resumable chunk upload, integrity checks,
   idempotent begin/commit, and conservative publish semantics.
 
@@ -29,7 +32,7 @@ Known planned surface:
 - Authenticated encrypted transport integration around the receiver protocol.
 - Traffic-shaping implementation beyond the current profile policy model.
 - Reviewed physical prune command.
-- Automatic recover/repair command.
+- Broader automatic repair/reconcile command.
 - Drift review command.
 - Open-source governance files such as `LICENSE`, `SECURITY.md`,
   `CONTRIBUTING.md`, and CI workflow.
@@ -73,8 +76,9 @@ thin entrypoint over `internal/cli`.
 - Soft-delete records are review markers only; no target file is physically
   deleted by current commands.
 - `health` is read-only. It reports incomplete transactions and damaged
-  published artifacts but does not repair them.
-- Automatic publish reconciliation is still planned. If interruption happens
-  during final publish, `health` reports the session as recoverable or needing
-  repair; operators should preserve the target and review the manifest/staging
-  evidence before rerunning.
+  published artifacts. `recover` is the explicit mutating command for the safe
+  local subset.
+- Broader publish reconciliation is still planned. If interruption happens
+  during final publish, `recover` can replay staged files or report
+  `needs_repair`; operators should preserve the target and review the
+  manifest/staging evidence before rerunning.
