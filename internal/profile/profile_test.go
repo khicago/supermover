@@ -131,6 +131,22 @@ func TestReadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestReadRejectsTrailingJSONDocument(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Write(&buf, validProfile()); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	buf.WriteString(`{"ignored":true}`)
+
+	_, err := Read(&buf)
+	if err == nil {
+		t.Fatalf("Read() error = nil, want trailing JSON error")
+	}
+	if !strings.Contains(err.Error(), "trailing JSON") {
+		t.Fatalf("Read() error = %q, want trailing JSON error", err.Error())
+	}
+}
+
 func TestReadForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
 	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}`
 
@@ -143,6 +159,19 @@ func TestReadForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
 	}
 	if got.Target.TargetID != "/tmp/target" || got.Target.LocalPath != "/tmp/target" {
 		t.Fatalf("ReadForTargetRepair target = %#v, want legacy target loaded", got.Target)
+	}
+}
+
+func TestReadForTargetRepairRejectsTrailingJSONDocument(t *testing.T) {
+	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}
+{"ignored":true}`
+
+	_, err := ReadForTargetRepair(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("ReadForTargetRepair() error = nil, want trailing JSON error")
+	}
+	if !strings.Contains(err.Error(), "trailing JSON") {
+		t.Fatalf("ReadForTargetRepair() error = %q, want trailing JSON error", err.Error())
 	}
 }
 

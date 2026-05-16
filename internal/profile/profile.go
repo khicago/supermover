@@ -236,6 +236,9 @@ func Read(r io.Reader) (Profile, error) {
 	if err := decoder.Decode(&p); err != nil {
 		return Profile{}, err
 	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return Profile{}, err
+	}
 	if err := p.Validate(); err != nil {
 		return Profile{}, err
 	}
@@ -259,10 +262,24 @@ func ReadForTargetRepair(r io.Reader) (Profile, error) {
 	if err := decoder.Decode(&p); err != nil {
 		return Profile{}, err
 	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return Profile{}, err
+	}
 	if err := p.validateWithOptions(profileValidationOptions{allowTargetIDLocalPathEquality: true}); err != nil {
 		return Profile{}, err
 	}
 	return p, nil
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing JSON document")
+		}
+		return err
+	}
+	return nil
 }
 
 func WriteFile(path string, p Profile) error {

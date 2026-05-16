@@ -125,6 +125,22 @@ func TestReadWriteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadRejectsTrailingJSONDocument(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Write(&buf, validWarning()); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	buf.WriteString(`{"ignored":true}`)
+
+	_, err := Read[Warning](&buf)
+	if err == nil {
+		t.Fatalf("Read() error = nil, want trailing JSON error")
+	}
+	if !strings.Contains(err.Error(), "trailing JSON") {
+		t.Fatalf("Read() error = %q, want trailing JSON error", err.Error())
+	}
+}
+
 func TestWriteFileRejectsControlPathSymlink(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -142,6 +158,19 @@ func TestWriteFileRejectsControlPathSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "sessions", doc.SessionID, "manifest.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("os.Stat(outside manifest) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestReadManifestCompatRejectsTrailingJSONDocument(t *testing.T) {
+	input := `{"version":1,"id":"manifest1","session_id":"session1","created_at":"2026-05-16T00:00:00Z","entries":[{"path":"link","kind":"symlink","target_path":"link"}]}
+{"ignored":true}`
+
+	_, err := ReadManifestCompat(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("ReadManifestCompat() error = nil, want trailing JSON error")
+	}
+	if !strings.Contains(err.Error(), "trailing JSON") {
+		t.Fatalf("ReadManifestCompat() error = %q, want trailing JSON error", err.Error())
 	}
 }
 

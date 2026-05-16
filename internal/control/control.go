@@ -220,6 +220,9 @@ func Read[T Document](r io.Reader) (T, error) {
 	if err := decoder.Decode(&doc); err != nil {
 		return doc, err
 	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return doc, err
+	}
 	if err := doc.Validate(); err != nil {
 		return doc, err
 	}
@@ -252,10 +255,24 @@ func ReadManifestCompat(r io.Reader) (Manifest, error) {
 	if err := decoder.Decode(&doc); err != nil {
 		return doc, err
 	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return doc, err
+	}
 	if err := doc.validateWithOptions(manifestValidationOptions{allowLegacySymlinkTarget: true}); err != nil {
 		return doc, err
 	}
 	return doc, nil
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing JSON document")
+		}
+		return err
+	}
+	return nil
 }
 
 func Write(w io.Writer, doc Document) error {
