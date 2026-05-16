@@ -366,6 +366,31 @@ func TestBuildReportRecordsMalformedPublishedGlobalArtifact(t *testing.T) {
 	}
 }
 
+func TestBuildReportMalformedPublishedGlobalArtifactIsNotHiddenByLongerUnpublishedPrefix(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "published.txt", []byte("ok"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-published",
+		SessionID: "published",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "published.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok"))}},
+	})
+	writePublishedReceipt(t, target, "published")
+	if err := os.MkdirAll(filepath.Join(target, control.DirName, "sessions", "published-999"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(unpublished longer prefix session) error = %v, want nil", err)
+	}
+	writeRawArtifact(t, target, "warnings", "published-999-bad.json", `{"version":1`)
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if len(got.ArtifactProblems) != 1 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems length = %d, want 1", target, len(got.ArtifactProblems))
+	}
+}
+
 func writeManifest(t *testing.T, target string, manifest control.Manifest) {
 	t.Helper()
 	path, err := control.Path(target, control.ArtifactManifest, manifest.SessionID)

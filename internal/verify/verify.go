@@ -304,13 +304,26 @@ func sessionIDFromArtifactFilename(name string, known map[string]struct{}) (stri
 	base := strings.TrimSuffix(name, filepath.Ext(name))
 	best := ""
 	for sessionID := range known {
-		if base == sessionID || strings.HasPrefix(base, sessionID+"-") {
+		suffix, ok := strings.CutPrefix(base, sessionID)
+		if !ok {
+			continue
+		}
+		if strings.HasPrefix(suffix, "-del_") || hasWarningSequencePrefix(suffix) {
 			if len(sessionID) > len(best) {
 				best = sessionID
 			}
 		}
 	}
 	return best, best != ""
+}
+
+func hasWarningSequencePrefix(suffix string) bool {
+	return len(suffix) > 5 &&
+		suffix[0] == '-' &&
+		suffix[4] == '-' &&
+		suffix[1] >= '0' && suffix[1] <= '9' &&
+		suffix[2] >= '0' && suffix[2] <= '9' &&
+		suffix[3] >= '0' && suffix[3] <= '9'
 }
 
 func documentSessionID[T control.Document](doc T) string {
