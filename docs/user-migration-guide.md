@@ -107,7 +107,7 @@ go run ./cmd/supermover push --profile ./supermover.profile.json --session sessi
 Expected success output:
 
 ```text
-published session session-001: entries=<n> copied=<n> warnings=<n> influences=<n>
+published session session-001: entries=<n> copied=<n> warnings=<n> influences=<n> deleted=<n>
 ```
 
 The target should now contain restored files and a `.supermover` control

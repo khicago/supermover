@@ -250,6 +250,12 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if *dryRun {
+		if len(p.Roots) == 1 {
+			if err := localpush.ValidateSourceTargetSeparation(p.Roots[0].Path, targetDir); err != nil {
+				fmt.Fprintf(stderr, "push: %v\n", err)
+				return 2
+			}
+		}
 		report, err := scanProfile(p)
 		if err != nil {
 			fmt.Fprintf(stderr, "push: %v\n", err)

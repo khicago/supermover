@@ -50,7 +50,7 @@ func Run(opts Options) (Result, error) {
 	if strings.TrimSpace(opts.TargetDir) == "" {
 		return Result{}, fmt.Errorf("target directory is required")
 	}
-	if err := validateSourceTargetSeparation(opts.Profile.Roots[0].Path, opts.TargetDir); err != nil {
+	if err := ValidateSourceTargetSeparation(opts.Profile.Roots[0].Path, opts.TargetDir); err != nil {
 		return Result{}, err
 	}
 	now := opts.Now
@@ -71,7 +71,7 @@ func Run(opts Options) (Result, error) {
 		return Result{}, err
 	}
 	influences := agentkb.Detect(scanResult.Entries)
-	softDeletes, err := softDeletesForRun(opts.TargetDir, scanResult, sessionID, now)
+	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
 	if err != nil {
 		return Result{}, err
 	}
@@ -161,7 +161,7 @@ func ValidateSupportedRules(p profile.Profile) error {
 	return fmt.Errorf("custom include rules are not implemented in local push yet")
 }
 
-func validateSourceTargetSeparation(sourceRoot, targetDir string) error {
+func ValidateSourceTargetSeparation(sourceRoot, targetDir string) error {
 	sourceAbs, err := filepath.Abs(sourceRoot)
 	if err != nil {
 		return err
@@ -179,7 +179,52 @@ func validateSourceTargetSeparation(sourceRoot, targetDir string) error {
 	if inside(targetAbs, sourceAbs) {
 		return fmt.Errorf("source root must not be inside the target directory")
 	}
+	sourceReal, targetReal := evalExistingPath(sourceAbs), evalExistingPath(targetAbs)
+	if sourceReal == "" || targetReal == "" {
+		return nil
+	}
+	if sourceReal == sourceAbs && targetReal == targetAbs {
+		return nil
+	}
+	return validateSeparatedAbs(sourceReal, targetReal)
+}
+
+func validateSeparatedAbs(sourceAbs, targetAbs string) error {
+	if sourceAbs == "" || targetAbs == "" {
+		return nil
+	}
+	if sourceAbs == targetAbs {
+		return fmt.Errorf("source root and target directory must be different")
+	}
+	if inside(sourceAbs, targetAbs) {
+		return fmt.Errorf("target directory must not be inside the source root")
+	}
+	if inside(targetAbs, sourceAbs) {
+		return fmt.Errorf("source root must not be inside the target directory")
+	}
 	return nil
+}
+
+func evalExistingPath(path string) string {
+	clean := filepath.Clean(path)
+	if real, err := filepath.EvalSymlinks(clean); err == nil {
+		return real
+	}
+
+	var suffix []string
+	current := clean
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+		suffix = append([]string{filepath.Base(current)}, suffix...)
+		if realParent, err := filepath.EvalSymlinks(parent); err == nil {
+			parts := append([]string{realParent}, suffix...)
+			return filepath.Join(parts...)
+		}
+		current = parent
+	}
 }
 
 func inside(parent, child string) bool {
@@ -209,7 +254,10 @@ func ensureSessionUnused(targetDir, sessionID string) error {
 	return nil
 }
 
-func softDeletesForRun(targetDir string, scanResult scan.Result, sessionID string, now time.Time) ([]control.SoftDelete, error) {
+func softDeletesForRun(p profile.Profile, targetDir string, scanResult scan.Result, sessionID string, now time.Time) ([]control.SoftDelete, error) {
+	if p.DeletePolicy.Mode == profile.DeleteModeIgnore || len(scanResult.Entries) == 0 {
+		return nil, nil
+	}
 	previous, ok, err := latestPublishedManifest(targetDir)
 	if err != nil {
 		return nil, err

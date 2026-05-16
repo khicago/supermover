@@ -203,6 +203,25 @@ func TestPushDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestPushDryRunRejectsNestedTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(source, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"push", "--profile", profilePath, "--dry-run"}, &stdout, &stderr)
+	if got != 2 {
+		t.Fatalf("push --dry-run nested target exit = %d, stderr = %q, want 2", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "target directory must not be inside the source root") {
+		t.Fatalf("push --dry-run stderr = %q, want nested target error", stderr.String())
+	}
+}
+
 func TestVerifyReportsPublishedSession(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

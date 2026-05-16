@@ -150,6 +150,26 @@ func TestRunRejectsNestedSourceAndTarget(t *testing.T) {
 	}
 }
 
+func TestRunRejectsSymlinkedTargetInsideSource(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	sourceLink := filepath.Join(dir, "source-link")
+	target := filepath.Join(sourceLink, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "payload", 0o644)
+	if err := os.Symlink(source, sourceLink); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil {
+		t.Fatalf("Run(symlinked nested target) error = nil, want nested target error")
+	}
+	if !strings.Contains(err.Error(), "target directory must not be inside the source root") {
+		t.Fatalf("Run(symlinked nested target) error = %q, want nested target error", err.Error())
+	}
+}
+
 func TestRunRejectsExistingSession(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -166,6 +186,33 @@ func TestRunRejectsExistingSession(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already published") {
 		t.Fatalf("second Run(existing session) error = %q, want already published error", err.Error())
+	}
+}
+
+func TestRunHonorsDeletePolicyIgnore(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "keep.txt"), "keep", 0o644)
+	mustWriteFile(t, filepath.Join(source, "gone.txt"), "gone", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.DeletePolicy.Mode = profile.DeleteModeIgnore
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("second Run() error = %v, want nil", err)
+	}
+	if got.Deleted != 0 {
+		t.Fatalf("second Run() deleted = %d, want 0", got.Deleted)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "deleted")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(deleted dir) error = %v, want os.ErrNotExist", err)
 	}
 }
 
