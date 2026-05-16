@@ -20,7 +20,7 @@ func TestGenerateSoftDeleteRecords(t *testing.T) {
 		Entries: []control.ManifestEntry{
 			{Path: "keep.txt", Kind: "file", TargetPath: "keep.txt"},
 			{Path: "deleted.txt", Kind: "file", TargetPath: "deleted.txt"},
-			{Path: "deleted-link", Kind: "symlink", TargetPath: "deleted-link"},
+			{Path: "deleted-link", Kind: "symlink", TargetPath: "deleted-link", SymlinkTarget: "deleted.txt"},
 			{Path: "empty-dir", Kind: "dir", TargetPath: "empty-dir"},
 		},
 	}

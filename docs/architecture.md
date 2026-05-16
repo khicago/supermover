@@ -29,12 +29,12 @@ The target-side `.supermover` area is a first-class artifact surface:
 - history indexes
 - recovery state
 
-The control plane must be machine-readable and stable enough for future
-health, recover, verify, prune, and agent-facing report commands.
+The control plane must be machine-readable and stable enough for current
+`verify` and `deleted list` commands plus future health, recover, prune,
+status, drift, and agent-facing report commands.
 
 ## Implementation Boundary
 
 Supermover preserves and catalogs agent knowledge files, but it does not
 interpret, merge, summarize, embed, or promote semantic memory. Downstream
 agent or knowledge tools can consume manifests after sync.
-

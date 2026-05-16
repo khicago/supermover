@@ -267,6 +267,31 @@ func TestFileStorePublishedSessionRequiresReceipt(t *testing.T) {
 	}
 }
 
+func TestFileStoreManifestPreservesSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	req.Manifest.Entries = append(req.Manifest.Entries, protocol.ManifestEntry{
+		Path:          "docs/link.txt",
+		Kind:          protocol.FileKindSymlink,
+		SymlinkTarget: "a.txt",
+	})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	manifest := readControlDoc[control.Manifest](t, root, control.ArtifactManifest, req.SessionID)
+	for _, entry := range manifest.Entries {
+		if entry.Path == "docs/link.txt" {
+			if entry.SymlinkTarget != "a.txt" {
+				t.Fatalf("manifest symlink target = %q, want a.txt", entry.SymlinkTarget)
+			}
+			return
+		}
+	}
+	t.Fatalf("manifest entries = %#v, want docs/link.txt", manifest.Entries)
+}
+
 func TestFileStoreConcurrentDuplicateChunkSerialized(t *testing.T) {
 	store := FileStore{TargetRoot: t.TempDir()}
 	req := validBeginRequest([]byte("hello"))
@@ -332,4 +357,17 @@ func validBeginRequest(data []byte) protocol.BeginSessionRequest {
 func digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func readControlDoc[T control.Document](t *testing.T, target string, artifact control.ArtifactType, id string) T {
+	t.Helper()
+	path, err := control.Path(target, artifact, id)
+	if err != nil {
+		t.Fatalf("control.Path(%q, %q) error = %v, want nil", artifact, id, err)
+	}
+	doc, err := control.ReadFile[T](path)
+	if err != nil {
+		t.Fatalf("control.ReadFile(%q) error = %v, want nil", path, err)
+	}
+	return doc
 }

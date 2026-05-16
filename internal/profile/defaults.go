@@ -41,7 +41,7 @@ func NewDefault(profileID, name, sourceRoot, targetRoot string) Profile {
 			DiscoveryLowInfo:        true,
 		},
 		Target: TargetIdentity{
-			TargetID:  targetRoot,
+			TargetID:  "local:" + profileID,
 			Name:      filepath.Base(filepath.Clean(targetRoot)),
 			LocalPath: filepath.Clean(targetRoot),
 		},

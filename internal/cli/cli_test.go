@@ -23,6 +23,33 @@ func TestRunHelp(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Usage:") {
 		t.Errorf("Run(%v) stdout = %q, want usage text", []string{"help"}, stdout.String())
 	}
+	if !strings.Contains(stdout.String(), "Available commands:") {
+		t.Errorf("Run(%v) stdout = %q, want available command section", []string{"help"}, stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "Planned commands:") {
+		t.Errorf("Run(%v) stdout = %q, want planned command section", []string{"help"}, stdout.String())
+	}
+	availableIndex := strings.Index(stdout.String(), "Available commands:")
+	plannedIndex := strings.Index(stdout.String(), "Planned commands:")
+	for _, command := range []string{"profile", "scan", "push", "verify", "deleted"} {
+		commandIndex := strings.Index(stdout.String(), "\n  "+command+" ")
+		if commandIndex == -1 {
+			t.Errorf("Run(%v) stdout = %q, want available command %q", []string{"help"}, stdout.String(), command)
+		} else if commandIndex < availableIndex || commandIndex > plannedIndex {
+			t.Errorf("Run(%v) stdout = %q, command %q should be listed as available", []string{"help"}, stdout.String(), command)
+		}
+	}
+	for _, command := range []string{"serve", "pair", "prune", "recover", "status"} {
+		commandIndex := strings.Index(stdout.String(), "\n  "+command+" ")
+		if commandIndex == -1 {
+			t.Errorf("Run(%v) stdout = %q, want planned command %q", []string{"help"}, stdout.String(), command)
+		} else if commandIndex < plannedIndex {
+			t.Errorf("Run(%v) stdout = %q, command %q should be listed as planned", []string{"help"}, stdout.String(), command)
+		}
+	}
+	if strings.Contains(stdout.String(), "Core commands:") {
+		t.Errorf("Run(%v) stdout = %q, should not label planned commands as core", []string{"help"}, stdout.String())
+	}
 	if stderr.Len() != 0 {
 		t.Errorf("Run(%v) stderr = %q, want empty", []string{"help"}, stderr.String())
 	}
@@ -66,6 +93,9 @@ func TestProfileInitAndLint(t *testing.T) {
 	if p.Target.LocalPath != target {
 		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, target)
 	}
+	if p.Target.TargetID == filepath.Clean(target) {
+		t.Errorf("profile target id = %q, want identity separate from local path", p.Target.TargetID)
+	}
 
 	stdout.Reset()
 	stderr.Reset()
@@ -86,6 +116,10 @@ func TestProfileSetTargetUpdatesProfileSSOT(t *testing.T) {
 	profilePath := filepath.Join(dir, "profile.json")
 	mustMkdir(t, source)
 	writeDefaultProfile(t, profilePath, source, target)
+	before, err := profile.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("profile.ReadFile(%q) before set-target error = %v, want nil", profilePath, err)
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -102,6 +136,36 @@ func TestProfileSetTargetUpdatesProfileSSOT(t *testing.T) {
 	}
 	if p.Target.Name != "Next target" {
 		t.Errorf("profile target name = %q, want %q", p.Target.Name, "Next target")
+	}
+	if p.Target.TargetID != before.Target.TargetID {
+		t.Errorf("profile target id = %q, want unchanged %q without --target-id", p.Target.TargetID, before.Target.TargetID)
+	}
+}
+
+func TestProfileSetTargetExplicitlyUpdatesTargetID(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	nextTarget := filepath.Join(dir, "next-target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--target-id", "local:next-target"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile set-target --target-id exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	p, err := profile.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
+	}
+	if p.Target.TargetID != "local:next-target" {
+		t.Errorf("profile target id = %q, want local:next-target", p.Target.TargetID)
+	}
+	if p.Target.LocalPath != nextTarget {
+		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, nextTarget)
 	}
 }
 

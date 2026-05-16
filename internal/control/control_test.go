@@ -66,6 +66,7 @@ func TestValidateDocuments(t *testing.T) {
 		{name: "recovery state", doc: validRecoveryState()},
 		{name: "invalid recovery", doc: RecoveryState{Version: CurrentVersion, Status: "unknown", UpdatedAt: "2026-05-16T00:00:00Z"}, wantErr: "status must be one of"},
 		{name: "invalid manifest entry", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Kind: "file"}}}, wantErr: "entries[0].path is required"},
+		{name: "invalid symlink manifest entry", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "link", Kind: "symlink"}}}, wantErr: "entries[0].symlink_target is required"},
 		{name: "invalid snapshot payload", doc: ProfileSnapshot{Version: CurrentVersion, ID: "snap1", ProfileID: "p1", CapturedAt: "2026-05-16T00:00:00Z", Profile: []byte(`{`)}, wantErr: "profile must contain valid JSON"},
 	}
 

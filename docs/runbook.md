@@ -35,8 +35,12 @@ network features are complete.
    - `delete_policy.require_review` is true.
    - `privacy_policy.allow_plaintext_restore` is true only for trusted targets.
    - `privacy_policy.discovery_low_info` is true for traffic level 2.
-   - `target.target_id` names the intended target identity.
+   - `target.target_id` names the intended target identity and is not a local
+     filesystem path.
    - `target.local_path` points at the trusted local restore directory.
+
+   Changing `target.local_path` must not change `target.target_id` unless the
+   operator is intentionally switching targets and passes `--target-id`.
 
 ## Dry-Run Gate
 

@@ -64,6 +64,9 @@ func TestRunCopiesFilesAndWritesControlArtifacts(t *testing.T) {
 	if receipt.Status != "published" {
 		t.Errorf("receipt status = %q, want published", receipt.Status)
 	}
+	if receipt.TargetID != p.Target.TargetID || receipt.TargetID == filepath.Clean(target) {
+		t.Errorf("receipt target id = %q, want profile target id %q and not target path %q", receipt.TargetID, p.Target.TargetID, filepath.Clean(target))
+	}
 	snapshot := readControlDoc[control.ProfileSnapshot](t, target, control.ArtifactProfileSnapshot, "profile-session-test")
 	if snapshot.ProfileID != p.ProfileID {
 		t.Errorf("profile snapshot id = %q, want %q", snapshot.ProfileID, p.ProfileID)
@@ -111,6 +114,10 @@ func TestRunRecordsSymlinkWarningWithoutCopyingTarget(t *testing.T) {
 	}
 	if warning.Code != "symlink_not_copied" {
 		t.Fatalf("warning code = %q, want symlink_not_copied", warning.Code)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-test")
+	if !manifestContainsSymlinkTarget(manifest, "link.txt", "real.txt") {
+		t.Fatalf("manifest entries = %#v, want symlink target for link.txt", manifest.Entries)
 	}
 	if _, err := os.Lstat(filepath.Join(target, "link.txt")); !os.IsNotExist(err) {
 		t.Fatalf("os.Lstat(target symlink) error = %v, want os.ErrNotExist", err)
@@ -214,6 +221,71 @@ func TestRunRejectsExistingSession(t *testing.T) {
 	}
 }
 
+func TestCopyRegularRejectsChangedSourceBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	target := filepath.Join(dir, "target.txt")
+	mustWriteFile(t, source, "old", 0o644)
+	initial := time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(source, initial, initial); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", source, err)
+	}
+	if err := os.WriteFile(target, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", target, err)
+	}
+
+	_, err := copyRegularWithPostCopy(source, target, 0o644, initial, func() error {
+		next := initial.Add(time.Second)
+		if err := os.WriteFile(source, []byte("new"), 0o644); err != nil {
+			return err
+		}
+		return os.Chtimes(source, next, next)
+	})
+	if err == nil {
+		t.Fatalf("copyRegularWithPostCopy(changed source) error = nil, want source changed error")
+	}
+	if !strings.Contains(err.Error(), "changed during copy") {
+		t.Fatalf("copyRegularWithPostCopy(changed source) error = %q, want source changed error", err.Error())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
+		t.Fatalf("target after failed copy = (%q, %v), want existing", string(got), err)
+	}
+}
+
+func TestCopyRegularRejectsReplacedSourceBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	target := filepath.Join(dir, "target.txt")
+	stamp := time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)
+	mustWriteFile(t, source, "old", 0o644)
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", source, err)
+	}
+	if err := os.WriteFile(target, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", target, err)
+	}
+
+	_, err := copyRegularWithPostCopy(source, target, 0o644, stamp, func() error {
+		replacement := filepath.Join(dir, "replacement.txt")
+		if err := os.WriteFile(replacement, []byte("old"), 0o644); err != nil {
+			return err
+		}
+		if err := os.Chtimes(replacement, stamp, stamp); err != nil {
+			return err
+		}
+		return os.Rename(replacement, source)
+	})
+	if err == nil {
+		t.Fatalf("copyRegularWithPostCopy(replaced source) error = nil, want source changed error")
+	}
+	if !strings.Contains(err.Error(), "changed during copy") {
+		t.Fatalf("copyRegularWithPostCopy(replaced source) error = %q, want source changed error", err.Error())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
+		t.Fatalf("target after failed copy = (%q, %v), want existing", string(got), err)
+	}
+}
+
 func TestRunHonorsDeletePolicyIgnore(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -298,6 +370,15 @@ func readControlDoc[T control.Document](t *testing.T, target string, artifact co
 func manifestContainsDigest(manifest control.Manifest, path string) bool {
 	for _, entry := range manifest.Entries {
 		if entry.Path == path && strings.HasPrefix(entry.Digest, "sha256:") {
+			return true
+		}
+	}
+	return false
+}
+
+func manifestContainsSymlinkTarget(manifest control.Manifest, path string, target string) bool {
+	for _, entry := range manifest.Entries {
+		if entry.Path == path && entry.Kind == "symlink" && entry.SymlinkTarget == target {
 			return true
 		}
 	}

@@ -1,8 +1,9 @@
 # Control Plane
 
 The target-side `.supermover` directory stores machine-readable artifacts for
-health, recover, verify, prune, history, and agent-facing reporting commands.
-The Go schema foundation lives in `internal/control`.
+current `verify` and `deleted list` commands and planned health, recover,
+prune, history, drift, and agent-facing reporting commands. The Go schema
+foundation lives in `internal/control`.
 
 All control-plane documents use JSON with `version: 1`. Writers emit stable,
 indented JSON and readers reject unknown fields so schema drift is visible.

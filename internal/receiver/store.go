@@ -509,12 +509,13 @@ func (s FileStore) writeManifestArtifact(req protocol.BeginSessionRequest) error
 	}
 	for _, entry := range req.Manifest.Entries {
 		manifest.Entries = append(manifest.Entries, control.ManifestEntry{
-			Path:       entry.Path,
-			Kind:       string(entry.Kind),
-			Size:       entry.Size,
-			ModTime:    formatOptionalTime(entry.ModTime),
-			Digest:     entry.Digest,
-			TargetPath: entry.TargetPath,
+			Path:          entry.Path,
+			Kind:          string(entry.Kind),
+			Size:          entry.Size,
+			ModTime:       formatOptionalTime(entry.ModTime),
+			Digest:        entry.Digest,
+			TargetPath:    entry.TargetPath,
+			SymlinkTarget: entry.SymlinkTarget,
 		})
 	}
 	path, err := control.Path(s.TargetRoot, control.ArtifactManifest, req.SessionID)

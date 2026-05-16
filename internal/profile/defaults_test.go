@@ -23,6 +23,12 @@ func TestNewDefaultBuildsValidProfile(t *testing.T) {
 	if got.Target.LocalPath != filepath.Clean(target) {
 		t.Errorf("NewDefault() target local path = %q, want %q", got.Target.LocalPath, filepath.Clean(target))
 	}
+	if got.Target.TargetID != "local:profile-local" {
+		t.Errorf("NewDefault() target id = %q, want local:profile-local", got.Target.TargetID)
+	}
+	if got.Target.TargetID == got.Target.LocalPath {
+		t.Errorf("NewDefault() target id = target local path = %q, want separate identity and reachability path", got.Target.TargetID)
+	}
 	if got.DeletePolicy.Mode != DeleteModeRecord || !got.DeletePolicy.RequireReview {
 		t.Errorf("NewDefault() delete policy = (%q, %t), want record with review", got.DeletePolicy.Mode, got.DeletePolicy.RequireReview)
 	}

@@ -344,8 +344,19 @@ func latestPublishedManifest(targetDir string) (control.Manifest, bool, error) {
 }
 
 func copyRegular(sourcePath, targetPath string, mode os.FileMode, modTime time.Time) (string, error) {
+	return copyRegularWithPostCopy(sourcePath, targetPath, mode, modTime, nil)
+}
+
+func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, modTime time.Time, postCopy func() error) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return "", fmt.Errorf("create target parent %q: %w", filepath.Dir(targetPath), err)
+	}
+	before, err := os.Stat(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("stat source file %q before copy: %w", sourcePath, err)
+	}
+	if !before.Mode().IsRegular() {
+		return "", fmt.Errorf("source file %q is no longer regular", sourcePath)
 	}
 	in, err := os.Open(sourcePath)
 	if err != nil {
@@ -377,6 +388,18 @@ func copyRegular(sourcePath, targetPath string, mode os.FileMode, modTime time.T
 	if err := temp.Close(); err != nil {
 		return "", fmt.Errorf("close temp file: %w", err)
 	}
+	if postCopy != nil {
+		if err := postCopy(); err != nil {
+			return "", err
+		}
+	}
+	after, err := os.Stat(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("stat source file %q after copy: %w", sourcePath, err)
+	}
+	if !sameSourceFile(before, after) {
+		return "", fmt.Errorf("source file %q changed during copy; rerun after the source is stable", sourcePath)
+	}
 	if err := durable.PromoteFile(tempName, targetPath); err != nil {
 		return "", err
 	}
@@ -389,14 +412,24 @@ func copyRegular(sourcePath, targetPath string, mode os.FileMode, modTime time.T
 	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+func sameSourceFile(before, after os.FileInfo) bool {
+	return before.Mode().IsRegular() &&
+		after.Mode().IsRegular() &&
+		os.SameFile(before, after) &&
+		before.Size() == after.Size() &&
+		before.Mode().Perm() == after.Mode().Perm() &&
+		before.ModTime().Equal(after.ModTime())
+}
+
 func manifestEntry(entry scan.Entry, kind string, digest string) control.ManifestEntry {
 	return control.ManifestEntry{
-		Path:       entry.Path,
-		Kind:       kind,
-		Size:       entry.Size,
-		ModTime:    entry.ModTime.UTC().Format(time.RFC3339Nano),
-		Digest:     digest,
-		TargetPath: entry.Path,
+		Path:          entry.Path,
+		Kind:          kind,
+		Size:          entry.Size,
+		ModTime:       entry.ModTime.UTC().Format(time.RFC3339Nano),
+		Digest:        digest,
+		TargetPath:    entry.Path,
+		SymlinkTarget: entry.SymlinkTarget,
 	}
 }
 

@@ -82,7 +82,8 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 	fs := newFlagSet("profile init", stderr)
 	profilePath := fs.String("profile", "", "profile path to create")
 	sourceRoot := fs.String("source", "", "source root to persist in the profile")
-	targetRoot := fs.String("target", "", "target directory identity to persist in the profile")
+	targetRoot := fs.String("target", "", "trusted local target directory to persist")
+	targetID := fs.String("target-id", "", "stable target identity to persist")
 	profileID := fs.String("id", "profile-local", "profile id to persist")
 	name := fs.String("name", "Local profile", "human-readable profile name")
 	if err := fs.Parse(args); err != nil {
@@ -104,6 +105,9 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 		return 1
 	}
 	p := profile.NewDefault(*profileID, *name, *sourceRoot, *targetRoot)
+	if strings.TrimSpace(*targetID) != "" {
+		p.Target.TargetID = *targetID
+	}
 	if err := profile.WriteFile(*profilePath, p); err != nil {
 		fmt.Fprintf(stderr, "profile init: %v\n", err)
 		return 1
@@ -159,8 +163,6 @@ func (r Runner) runProfileSetTarget(args []string, stdout io.Writer, stderr io.W
 	p.Target.LocalPath = cleanTarget
 	if strings.TrimSpace(*targetID) != "" {
 		p.Target.TargetID = *targetID
-	} else if p.Target.TargetID == "" || p.Target.TargetID == oldLocalPath {
-		p.Target.TargetID = cleanTarget
 	}
 	if strings.TrimSpace(*name) != "" {
 		p.Target.Name = *name
@@ -481,20 +483,22 @@ func printUsage(w io.Writer) {
 Usage:
   supermover <command> [flags]
 
-Core commands:
+Available commands:
   profile     Manage profile SSOT configuration
   scan        Scan configured profile roots without writing target state
-  push        Push source roots to a paired target or local target slice
-  serve       Run a trusted target receiver
-  discover    Find local targets without trusting them
-  pair        Pair with a target by explicit verification
-  status      Show local profile/session status
-  health      Inspect target control-plane health
-  recover     Resume or repair incomplete sessions
+  push        Push source roots to the local target recorded in the profile
   verify      Verify manifests and restored files
-  deleted     Review and apply source-side soft deletes
+  deleted     Review source-side soft-delete records
+
+Planned commands:
+  serve       Run a trusted network target receiver
+  pair        Pair with a target by explicit verification
+  prune       Apply reviewed physical pruning after policy checks
+  recover     Resume or repair incomplete sessions
+  status      Show local profile/session status
+  discover    Find local targets without trusting them
+  health      Inspect target control-plane health
   drift       Review target-local drift
-  prune       Reclaim history after review and policy checks
 
 Use "supermover help" for this overview.
 `, buildinfo.Name, buildinfo.Description)

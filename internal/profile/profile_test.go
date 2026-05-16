@@ -62,6 +62,14 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			mutate:  func(p *Profile) { p.Target.TargetID = "" },
 			wantErr: "target.target_id is required",
 		},
+		{
+			name: "target id equals local path",
+			mutate: func(p *Profile) {
+				p.Target.LocalPath = "/tmp/target"
+				p.Target.TargetID = "/tmp/target"
+			},
+			wantErr: "target.target_id must not equal target.local_path",
+		},
 	}
 
 	for _, tt := range tests {

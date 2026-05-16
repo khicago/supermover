@@ -29,7 +29,7 @@ evidence before rerunning or deleting files.
 | Disk full or quota error during publish | Target filesystem cannot accept staged or final files. | stderr, free-space output, session state under `.supermover`. | Free space, preserve session evidence, then retry or recover according to session state. |
 | Cross-device rename or promotion failure | Temporary and final files were not on the same filesystem. | Error text, source/target mount information, session state. | Keep staging on the same target filesystem; rerun after layout fix. |
 | Operator wants to change delete, privacy, or metadata behavior for one run | Runtime override would break auditability. | Requested change and profile diff. | Change the profile, lint it, and keep the profile snapshot. |
-| Operator wants to change the local target for one run | Target selection is profile-owned. | Requested target path and current profile target section. | Run `profile set-target --profile <path> --target <target>`, lint, then push. |
+| Operator wants to change the local target for one run | Target selection is profile-owned. | Requested target path and current profile target section. | Run `profile set-target --profile <path> --target <target>`, lint, then push. Do not change `target.target_id` unless the target identity changes intentionally. |
 
 ## Evidence Commands
 
@@ -44,8 +44,7 @@ find /path/to/target/.supermover/warnings -type f -name '*.json' -maxdepth 1 2>/
 
 ## Mainline Commands Needed To Close The Matrix
 
-The matrix references these planned commands because the CLI help already names
-the operational surface:
+The matrix references current commands and the planned operational surface:
 
 ```bash
 go run ./cmd/supermover health --target /path/to/target

@@ -7,9 +7,9 @@ serve/discover/pair transfer is planned, but not required for this workflow.
 ## Guarantees And Boundaries
 
 - Migration is one-way: `source -> trusted target`.
-- The profile JSON is the single source of truth for source roots, target
-  identity, consistency, delete policy, metadata policy, privacy policy, and
-  agent knowledge handling.
+- The profile JSON is the single source of truth for source roots, stable target
+  identity, the current trusted local target path, consistency, delete policy,
+  metadata policy, privacy policy, and agent knowledge handling.
 - The target receives plaintext files. Do not use Supermover v1 to restore into
   an untrusted target.
 - Warnings are audit records. A warning is not a quiet best-effort note; it is
@@ -47,6 +47,10 @@ writes session control artifacts.
    go run ./cmd/supermover profile init --profile ./supermover.profile.json --source /path/to/source --target /path/to/target
    ```
 
+   `--target` sets `target.local_path`. The default `target.target_id` is a
+   separate local identity; pass `--target-id` only when the intended target
+   identity should change.
+
 3. Review the profile before running migration:
 
    ```bash
@@ -64,8 +68,8 @@ writes session control artifacts.
    - `privacy_policy.allow_plaintext_restore`: confirms the target may receive
      plaintext files.
    - `privacy_policy.discovery_low_info`: required for traffic level 2.
-   - `target.target_id`: the expected target identity, not a transient
-     discovery label.
+   - `target.target_id`: the expected target identity, not a local path or
+     transient discovery label.
    - `target.local_path`: trusted local restore directory for the local push
      slice.
    - `agent_knowledge.categories`: agent rule and state files to catalog.
@@ -73,7 +77,8 @@ writes session control artifacts.
 Do not pass ad hoc runtime flags to change policy. If behavior should change,
 edit the profile, lint it, and keep the changed profile with the run records.
 Use `profile set-target` when the trusted local target path changes; it updates
-the profile instead of bypassing the SSOT at push time.
+`target.local_path` instead of bypassing the SSOT at push time. It keeps
+`target.target_id` unchanged unless `--target-id` is explicitly supplied.
 
 ## Run A Dry Run
 

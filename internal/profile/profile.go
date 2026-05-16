@@ -194,6 +194,12 @@ func (p Profile) Validate() error {
 	if strings.TrimSpace(p.Target.TargetID) == "" {
 		errs = append(errs, errors.New("target.target_id is required"))
 	}
+	if strings.TrimSpace(p.Target.LocalPath) != "" {
+		cleanLocalPath := filepath.Clean(p.Target.LocalPath)
+		if p.Target.TargetID == cleanLocalPath {
+			errs = append(errs, errors.New("target.target_id must not equal target.local_path"))
+		}
+	}
 	for i, category := range p.AgentKnowledge.Categories {
 		if strings.TrimSpace(category.Name) == "" {
 			errs = append(errs, fmt.Errorf("agent_knowledge.categories[%d].name is required", i))

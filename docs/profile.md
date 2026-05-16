@@ -33,7 +33,8 @@ Required top-level fields:
 - `delete_policy`: deletion handling policy.
 - `metadata_policy`: metadata preservation policy.
 - `privacy_policy`: plaintext/restoration privacy policy.
-- `target`: pinned target identity and pairing references.
+- `target`: pinned target identity, local reachability path, and pairing
+  references.
 - `agent_knowledge`: categories of agent knowledge files to preserve/catalog.
 
 Optional top-level fields:
@@ -79,6 +80,9 @@ Optional top-level fields:
 - `local_path`: trusted local target directory for the local push slice.
   Commands update this through `profile set-target` instead of accepting an ad
   hoc push-time override.
+  `local_path` is a reachability/write location, not a durable target identity;
+  changing it must not change `target_id` unless the operator intentionally
+  switches targets and passes `--target-id`.
 - `device_public_key`: optional pinned target device public key.
 - `pairing_receipt_id`: optional `.supermover` pairing receipt reference.
 - `paired_at`: optional pairing timestamp.

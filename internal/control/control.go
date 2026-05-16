@@ -69,12 +69,13 @@ type Manifest struct {
 }
 
 type ManifestEntry struct {
-	Path       string `json:"path"`
-	Kind       string `json:"kind"`
-	Size       int64  `json:"size,omitempty"`
-	ModTime    string `json:"mod_time,omitempty"`
-	Digest     string `json:"digest,omitempty"`
-	TargetPath string `json:"target_path,omitempty"`
+	Path          string `json:"path"`
+	Kind          string `json:"kind"`
+	Size          int64  `json:"size,omitempty"`
+	ModTime       string `json:"mod_time,omitempty"`
+	Digest        string `json:"digest,omitempty"`
+	TargetPath    string `json:"target_path,omitempty"`
+	SymlinkTarget string `json:"symlink_target,omitempty"`
 }
 
 type Warning struct {
@@ -287,6 +288,9 @@ func (d Manifest) Validate() error {
 		}
 		if strings.TrimSpace(entry.Kind) == "" {
 			errs = append(errs, fmt.Errorf("entries[%d].kind is required", i))
+		}
+		if entry.Kind == "symlink" && strings.TrimSpace(entry.SymlinkTarget) == "" {
+			errs = append(errs, fmt.Errorf("entries[%d].symlink_target is required for symlinks", i))
 		}
 		if entry.Size < 0 {
 			errs = append(errs, fmt.Errorf("entries[%d].size cannot be negative", i))
