@@ -13,10 +13,12 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/protocol"
 	"github.com/khicago/supermover/internal/transaction"
 )
@@ -40,6 +42,8 @@ type FileStore struct {
 	TargetRoot string
 	Now        Clock
 }
+
+var receiverLocks sync.Map
 
 type sessionMeta struct {
 	ProtocolVersion string                    `json:"protocol_version"`
@@ -143,7 +147,7 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 	if err != nil {
 		return protocol.ChunkUploadResponse{}, err
 	}
-	if record.State == transaction.StatePublished || record.State == transaction.StateRolledBack {
+	if record.State == transaction.StatePublished || record.State == transaction.StateRolledBack || record.State == transaction.StateNeedsRepair {
 		return protocol.ChunkUploadResponse{}, fmt.Errorf("%w: session %q is terminal", ErrConflict, req.SessionID)
 	}
 
@@ -157,6 +161,9 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 	if req.Offset+int64(len(req.Data)) > entry.Size {
 		return protocol.ChunkUploadResponse{}, fmt.Errorf("%w: chunk exceeds declared size for %q", ErrConflict, req.Path)
 	}
+
+	unlock := s.lock(req.SessionID, req.Path)
+	defer unlock()
 
 	path, err := s.stageFilePath(req.SessionID, req.Path)
 	if err != nil {
@@ -211,6 +218,12 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 		return protocol.CommitSessionResponse{}, err
 	}
 	if record.State == transaction.StatePublished {
+		if err := s.ensurePublishedArtifacts(meta); err != nil {
+			if repair, markErr := record.WithState(transaction.StateNeedsRepair, s.now()); markErr == nil {
+				_ = s.layout().WriteSessionRecord(repair)
+			}
+			return protocol.CommitSessionResponse{}, err
+		}
 		return protocol.CommitSessionResponse{
 			SessionID: req.SessionID,
 			State:     protocol.SessionStatePublished,
@@ -219,6 +232,9 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 	}
 	if record.State == transaction.StateRolledBack {
 		return protocol.CommitSessionResponse{}, fmt.Errorf("%w: session %q is rolled back", ErrConflict, req.SessionID)
+	}
+	if record.State == transaction.StateNeedsRepair {
+		return protocol.CommitSessionResponse{}, fmt.Errorf("%w: session %q needs repair", ErrConflict, req.SessionID)
 	}
 	if err := s.stageNonRegularEntries(meta); err != nil {
 		return protocol.CommitSessionResponse{}, err
@@ -244,14 +260,18 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 		}
 		return protocol.CommitSessionResponse{}, err
 	}
+	if err := s.writeReceipt(meta, req.EndedAt); err != nil {
+		repair, markErr := staged.WithState(transaction.StateNeedsRepair, s.now())
+		if markErr == nil {
+			_ = s.layout().WriteSessionRecord(repair)
+		}
+		return protocol.CommitSessionResponse{}, err
+	}
 	published, err := staged.WithState(transaction.StatePublished, s.now())
 	if err != nil {
 		return protocol.CommitSessionResponse{}, err
 	}
 	if err := s.layout().WriteSessionRecord(published); err != nil {
-		return protocol.CommitSessionResponse{}, err
-	}
-	if err := s.writeReceipt(meta, req.EndedAt); err != nil {
 		return protocol.CommitSessionResponse{}, err
 	}
 	return protocol.CommitSessionResponse{
@@ -279,12 +299,24 @@ func (s FileStore) now() time.Time {
 	return time.Now().UTC()
 }
 
+func (s FileStore) lock(sessionID, path string) func() {
+	key := filepath.Clean(s.TargetRoot) + "\x00" + sessionID + "\x00" + path
+	value, _ := receiverLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 func (s FileStore) metaPath(sessionID string) string {
 	return filepath.Join(s.layout().SessionDir(sessionID), "network-session.json")
 }
 
 func (s FileStore) stageFilePath(sessionID, rel string) (string, error) {
-	return safeJoin(s.layout().StagingDir(sessionID), rel)
+	path, err := pathguard.SafeJoin(s.layout().StagingDir(sessionID), rel)
+	if err != nil {
+		return "", protocolPathError(err)
+	}
+	return path, nil
 }
 
 func (s FileStore) finalPath(entry protocol.ManifestEntry) (string, error) {
@@ -292,7 +324,19 @@ func (s FileStore) finalPath(entry protocol.ManifestEntry) (string, error) {
 	if entry.TargetPath != "" {
 		target = entry.TargetPath
 	}
-	return safeJoin(s.TargetRoot, target)
+	var (
+		path string
+		err  error
+	)
+	if entry.Kind == protocol.FileKindDir {
+		path, err = pathguard.SafeJoinDirectory(s.TargetRoot, target)
+	} else {
+		path, err = pathguard.SafeJoinParent(s.TargetRoot, target)
+	}
+	if err != nil {
+		return "", protocolPathError(err)
+	}
+	return path, nil
 }
 
 func (s FileStore) loadSession(sessionID string) (sessionMeta, transaction.SessionRecord, error) {
@@ -429,15 +473,29 @@ func (s FileStore) publish(meta sessionMeta) error {
 	return nil
 }
 
-func safeJoin(root, rel string) (string, error) {
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("%w: absolute path %q", protocol.ErrValidation, rel)
+func (s FileStore) ensurePublishedArtifacts(meta sessionMeta) error {
+	manifestPath, err := control.Path(s.TargetRoot, control.ArtifactManifest, meta.SessionID)
+	if err != nil {
+		return err
 	}
-	clean := filepath.Clean(filepath.FromSlash(rel))
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: unsafe relative path %q", protocol.ErrValidation, rel)
+	if _, err := control.ReadFile[control.Manifest](manifestPath); err != nil {
+		return fmt.Errorf("%w: published session %q is missing manifest: %v", ErrConflict, meta.SessionID, err)
 	}
-	return filepath.Join(root, clean), nil
+	receiptPath, err := control.Path(s.TargetRoot, control.ArtifactSessionReceipt, meta.SessionID)
+	if err != nil {
+		return err
+	}
+	if _, err := control.ReadFile[control.SessionReceipt](receiptPath); err != nil {
+		return fmt.Errorf("%w: published session %q is missing receipt: %v", ErrConflict, meta.SessionID, err)
+	}
+	return nil
+}
+
+func protocolPathError(err error) error {
+	if errors.Is(err, pathguard.ErrUnsafePath) {
+		return fmt.Errorf("%w: %v", protocol.ErrValidation, err)
+	}
+	return err
 }
 
 func (s FileStore) writeManifestArtifact(req protocol.BeginSessionRequest) error {

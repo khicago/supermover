@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,6 +180,132 @@ func TestFileStoreCommitRejectsIncompleteDigest(t *testing.T) {
 	}
 	if record.State != transaction.StateNeedsRepair {
 		t.Errorf("transaction.ReadSessionRecord(%q).State = %q, want %q", req.SessionID, record.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStoreNeedsRepairRejectsNormalTraffic(t *testing.T) {
+	store := FileStore{TargetRoot: t.TempDir()}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hell")}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want ErrIntegrity", commitReq, err)
+	}
+
+	fixup := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 4, Data: []byte("o"), Final: true}
+	if _, err := store.AppendChunk(fixup); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.AppendChunk(needs repair) error = %v, want ErrConflict", err)
+	}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(needs repair) error = %v, want ErrConflict", err)
+	}
+}
+
+func TestFileStoreCommitRejectsSymlinkParentEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "docs")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, protocol.ErrValidation) {
+		t.Fatalf("FileStore.Commit(symlink parent) error = %v, want protocol.ErrValidation", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(outside file) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestFileStorePublishedSessionRequiresReceipt(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want nil", commitReq, err)
+	}
+	receiptPath, err := control.Path(root, control.ArtifactSessionReceipt, req.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	if err := os.Remove(receiptPath); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v, want nil", receiptPath, err)
+	}
+
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(missing receipt) error = %v, want ErrConflict", err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if record.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after missing receipt = %q, want %q", record.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStoreConcurrentDuplicateChunkSerialized(t *testing.T) {
+	store := FileStore{TargetRoot: t.TempDir()}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("he")}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	responses := make(chan protocol.ChunkUploadResponse, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := store.AppendChunk(chunk)
+			if err != nil {
+				errs <- err
+				return
+			}
+			responses <- resp
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(responses)
+
+	for err := range errs {
+		t.Errorf("FileStore.AppendChunk(concurrent duplicate) error = %v, want nil", err)
+	}
+	states := map[protocol.ChunkState]int{}
+	for resp := range responses {
+		if resp.CommittedSize != 2 {
+			t.Errorf("FileStore.AppendChunk(concurrent duplicate).CommittedSize = %d, want 2", resp.CommittedSize)
+		}
+		states[resp.ChunkState]++
+	}
+	if states[protocol.ChunkStateAccepted] != 1 || states[protocol.ChunkStateDuplicate] != 1 {
+		t.Fatalf("concurrent duplicate chunk states = %#v, want one accepted and one duplicate", states)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/deleted"
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
 	"github.com/khicago/supermover/internal/transaction"
@@ -93,7 +94,10 @@ func Run(opts Options) (Result, error) {
 			continue
 		}
 		sourcePath := filepath.Join(root.Path, filepath.FromSlash(entry.Path))
-		targetPath := filepath.Join(opts.TargetDir, filepath.FromSlash(entry.Path))
+		targetPath, err := targetPathForEntry(opts.TargetDir, entry)
+		if err != nil {
+			return Result{}, err
+		}
 		switch entry.Kind {
 		case scan.KindDir:
 			if err := os.MkdirAll(targetPath, entry.Mode.Perm()); err != nil {
@@ -146,6 +150,15 @@ func Run(opts Options) (Result, error) {
 		Influences: len(influences),
 		Deleted:    len(softDeletes),
 	}, nil
+}
+
+func targetPathForEntry(targetDir string, entry scan.Entry) (string, error) {
+	switch entry.Kind {
+	case scan.KindDir:
+		return pathguard.SafeJoinDirectory(targetDir, entry.Path)
+	default:
+		return pathguard.SafeJoinParent(targetDir, entry.Path)
+	}
 }
 
 func ValidateSupportedRules(p profile.Profile) error {

@@ -1,8 +1,9 @@
 # Network Protocol
 
-Supermover v1 uses an authenticated, encrypted transport boundary, but this
-slice defines only the stable receiver protocol and a testable server library.
-CLI wiring, pairing lookup, and TLS or Noise setup remain integration work.
+Supermover v1 is intended to run behind an authenticated, encrypted transport
+boundary. This slice defines only the stable receiver protocol and a testable
+server library. CLI wiring, pairing lookup, and TLS or Noise setup remain
+integration work.
 
 ## Transport Contract
 

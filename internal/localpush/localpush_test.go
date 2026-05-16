@@ -170,6 +170,31 @@ func TestRunRejectsSymlinkedTargetInsideSource(t *testing.T) {
 	}
 }
 
+func TestRunRejectsSymlinkedParentInsideTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "dir", "file.txt"), "payload", 0o644)
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", target, err)
+	}
+	if err := os.Symlink(filepath.Join(source, "dir"), filepath.Join(target, "dir")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil {
+		t.Fatalf("Run(symlinked target parent) error = nil, want unsafe path error")
+	}
+	if !strings.Contains(err.Error(), "unsafe path") {
+		t.Fatalf("Run(symlinked target parent) error = %q, want unsafe path error", err.Error())
+	}
+	if got, err := os.ReadFile(filepath.Join(source, "dir", "file.txt")); err != nil || string(got) != "payload" {
+		t.Fatalf("source file after failed Run = (%q, %v), want unchanged payload", string(got), err)
+	}
+}
+
 func TestRunRejectsExistingSession(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
