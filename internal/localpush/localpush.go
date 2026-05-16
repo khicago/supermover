@@ -989,9 +989,13 @@ func ancestorDirs(root, dir string) []string {
 func publishStaged(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry, existingDirs map[string]existingDirMeta) error {
 	defer restoreExistingDirs(existingDirs)
 	for _, entry := range entries {
+		entryTarget := targetPath(entry)
 		targetPath, err := targetPathForManifestEntry(targetDir, entry)
 		if err != nil {
 			return err
+		}
+		if pathguard.IsReservedControlPath(entryTarget) {
+			return fmt.Errorf("manifest target path %q uses reserved control directory", entryTarget)
 		}
 		switch entry.Kind {
 		case "dir":

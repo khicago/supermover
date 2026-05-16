@@ -359,7 +359,7 @@ func (r Runner) runVerify(args []string, stdout io.Writer, stderr io.Writer) int
 		fmt.Fprintf(stderr, "verify: unsupported format %q\n", *format)
 		return 2
 	}
-	if report.Summary.ErrorFindings > 0 || report.Summary.ArtifactProblems > 0 {
+	if report.Summary.ErrorFindings > 0 || report.Summary.WarningFindings > 0 || report.Summary.ArtifactProblems > 0 {
 		return 1
 	}
 	if report.Summary.ManifestCount == 0 {

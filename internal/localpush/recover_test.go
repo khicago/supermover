@@ -172,6 +172,30 @@ func TestRecoverRecordsWarningForUnpublishedSymlinkEntry(t *testing.T) {
 	}
 }
 
+func TestRecoverRejectsReservedControlPlaneTargetPath(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+		{Path: "payload.json", TargetPath: ".supermover/sessions/forged/receipt.json", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	})
+	writeStageFile(t, layout, "session-recover", "payload.json", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(reserved target path) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(reserved target path).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "forged", "receipt.json")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(forged receipt) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRecoverRollbackIncompleteRequiresExplicitOptIn(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

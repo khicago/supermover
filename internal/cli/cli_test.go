@@ -12,6 +12,7 @@ import (
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/transaction"
+	"github.com/khicago/supermover/internal/verify"
 )
 
 func TestRunHelp(t *testing.T) {
@@ -566,6 +567,56 @@ func TestVerifyReturnsFailureForMissingFile(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "missing_file") {
 		t.Fatalf("verify stdout = %q, want missing_file finding", stdout.String())
+	}
+}
+
+func TestVerifyReturnsFailureForWarningFinding(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(target, "file.txt"), "payload")
+	writeDefaultProfile(t, profilePath, source, target)
+	manifest := control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Size: 7}},
+	}
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "session")
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	if err := control.WriteFile(manifestPath, manifest); err != nil {
+		t.Fatalf("control.WriteFile(manifest) error = %v, want nil", err)
+	}
+	receipt := control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        "session",
+		ProfileID: "profile-local",
+		TargetID:  "local:profile-local",
+		StartedAt: "2026-05-16T00:00:00Z",
+		Status:    "published",
+	}
+	receiptPath, err := control.Path(target, control.ArtifactSessionReceipt, "session")
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	if err := control.WriteFile(receiptPath, receipt); err != nil {
+		t.Fatalf("control.WriteFile(receipt) error = %v, want nil", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"verify", "--profile", profilePath, "--session", "session"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("verify warning finding exit = %d, stdout = %q, stderr = %q, want 1", got, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), string(verify.FindingDigestMissing)) {
+		t.Fatalf("verify warning finding stdout = %q, want digest_missing", stdout.String())
 	}
 }
 

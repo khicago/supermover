@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/khicago/supermover/internal/durable"
 	"github.com/khicago/supermover/internal/pathguard"
@@ -168,6 +169,11 @@ func Path(targetRoot string, artifact ArtifactType, id string) (string, error) {
 	if strings.TrimSpace(id) == "" && artifact != ArtifactHistoryIndex && artifact != ArtifactRecoveryState {
 		return "", errors.New("id is required")
 	}
+	if id != "" {
+		if err := validateArtifactID(id); err != nil {
+			return "", err
+		}
+	}
 
 	base := ControlDir(targetRoot)
 	switch artifact {
@@ -192,6 +198,19 @@ func Path(targetRoot string, artifact ArtifactType, id string) (string, error) {
 	default:
 		return "", fmt.Errorf("unknown artifact type %q", artifact)
 	}
+}
+
+func validateArtifactID(id string) error {
+	for _, r := range id {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("._-:", r) {
+			continue
+		}
+		return fmt.Errorf("id %q contains unsafe character %q", id, r)
+	}
+	if strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("id %q contains unsafe path segment", id)
+	}
+	return nil
 }
 
 func Read[T Document](r io.Reader) (T, error) {

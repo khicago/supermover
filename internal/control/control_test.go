@@ -51,6 +51,16 @@ func TestPathRejectsMissingID(t *testing.T) {
 	}
 }
 
+func TestPathRejectsUnsafeID(t *testing.T) {
+	for _, id := range []string{"../escape", "bad/id", `bad\id`} {
+		t.Run(id, func(t *testing.T) {
+			if _, err := Path("/target", ArtifactManifest, id); err == nil {
+				t.Fatalf("Path(%q) error = nil, want unsafe id error", id)
+			}
+		})
+	}
+}
+
 func TestValidateDocuments(t *testing.T) {
 	tests := []struct {
 		name    string
