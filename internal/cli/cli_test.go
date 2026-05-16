@@ -6,9 +6,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/profile"
+	"github.com/khicago/supermover/internal/transaction"
 )
 
 func TestRunHelp(t *testing.T) {
@@ -31,7 +33,7 @@ func TestRunHelp(t *testing.T) {
 	}
 	availableIndex := strings.Index(stdout.String(), "Available commands:")
 	plannedIndex := strings.Index(stdout.String(), "Planned commands:")
-	for _, command := range []string{"profile", "scan", "push", "verify", "deleted"} {
+	for _, command := range []string{"profile", "scan", "push", "verify", "deleted", "health"} {
 		commandIndex := strings.Index(stdout.String(), "\n  "+command+" ")
 		if commandIndex == -1 {
 			t.Errorf("Run(%v) stdout = %q, want available command %q", []string{"help"}, stdout.String(), command)
@@ -380,6 +382,48 @@ func TestDeletedListShowsSoftDeleteRecords(t *testing.T) {
 	}
 }
 
+func TestHealthReportsHealthyTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"health", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("health exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "healthy=true") {
+		t.Fatalf("health stdout = %q, want healthy=true", stdout.String())
+	}
+}
+
+func TestHealthReturnsFailureForIncompleteSessions(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	writeSessionRecord(t, layout, "session-recover", transaction.StateStaged)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"health", "--profile", profilePath}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("health incomplete exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "session-recover") || !strings.Contains(stdout.String(), "action=recover") {
+		t.Fatalf("health stdout = %q, want recovery item", stdout.String())
+	}
+}
+
 func writeDefaultProfile(t *testing.T, path string, source string, target string) {
 	t.Helper()
 	p := profile.NewDefault("profile-local", "Local profile", source, target)
@@ -402,5 +446,21 @@ func mustWrite(t *testing.T, path string, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
+	}
+}
+
+func writeSessionRecord(t *testing.T, layout transaction.Layout, id string, state transaction.State) {
+	t.Helper()
+	now := time.Date(2026, 5, 16, 1, 2, 3, 0, time.UTC)
+	record, err := transaction.NewSessionRecord(id, now)
+	if err != nil {
+		t.Fatalf("transaction.NewSessionRecord(%q) error = %v, want nil", id, err)
+	}
+	record, err = record.WithState(state, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(%q) error = %v, want nil", state, err)
+	}
+	if err := layout.WriteSessionRecord(record); err != nil {
+		t.Fatalf("Layout.WriteSessionRecord(%+v) error = %v, want nil", record, err)
 	}
 }

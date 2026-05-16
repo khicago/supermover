@@ -4,9 +4,10 @@ Supermover is a planned Go CLI for one-way, auditable file migration and
 incremental sync from a source machine to a trusted target machine.
 
 The current implementation is a local push vertical slice. Available commands
-are `profile`, `scan`, `push`, `verify`, and `deleted list`. Network receiver,
-pairing, physical prune, recovery, status, discovery, health, and drift review
-commands are planned and may appear in design docs before CLI wiring exists.
+are `profile`, `scan`, `push`, `verify`, `deleted list`, and `health`. Network
+receiver, pairing, physical prune, automatic recovery, status, discovery, and
+drift review commands are planned and may appear in design docs before CLI
+wiring exists.
 
 The v1 direction is intentionally conservative:
 

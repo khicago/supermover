@@ -94,6 +94,11 @@ validates each record, filters terminal states, and returns incomplete sessions
 with their recommended action. Results are sorted by session ID for stable
 operator output and tests.
 
+The public `health --profile <path>` command exposes this scanner as a read-only
+operator check. It uses the profile SSOT to find `target.local_path`, reports
+incomplete or invalid session records, and returns non-zero when follow-up is
+needed. It does not modify `.supermover` state or perform recovery.
+
 Current open policy choices for later workers:
 
 - Whether `staged` recovery should replay manifest entries directly or first

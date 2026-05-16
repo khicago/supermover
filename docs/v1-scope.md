@@ -89,6 +89,7 @@ go run ./cmd/supermover push --profile <path> --dry-run
 go run ./cmd/supermover push --profile <path> --session <session-id>
 go run ./cmd/supermover verify --profile <path> --session <session-id>
 go run ./cmd/supermover deleted list --profile <path>
+go run ./cmd/supermover health --profile <path>
 ```
 
 Planned mainline surface:
@@ -98,7 +99,6 @@ go run ./cmd/supermover serve --profile <target-profile>
 go run ./cmd/supermover discover
 go run ./cmd/supermover pair --profile <path> --target <address-or-advertisement-id>
 go run ./cmd/supermover status --profile <path>
-go run ./cmd/supermover health --target <path>
 go run ./cmd/supermover recover --target <path> --session <session-id>
 go run ./cmd/supermover drift list --target <path> --profile <path>
 go run ./cmd/supermover prune --target <path> --profile <path> --dry-run

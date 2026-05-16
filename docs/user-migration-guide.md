@@ -30,12 +30,15 @@ go run ./cmd/supermover profile set-target --profile ./supermover.profile.json -
 go run ./cmd/supermover scan --profile ./supermover.profile.json
 go run ./cmd/supermover push --profile ./supermover.profile.json --dry-run
 go run ./cmd/supermover push --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover health --profile ./supermover.profile.json
 ```
 
 `push --dry-run` scans and reports counts without writing target files or
 control-plane artifacts. The target path comes from the profile. A non-dry-run
 local push copies supported regular files, records manifests and warnings, and
 writes session control artifacts.
+`health` is read-only: it reports incomplete or invalid session records under
+the target `.supermover` directory and does not repair them.
 
 ## Prepare A Profile
 

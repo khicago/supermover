@@ -12,6 +12,7 @@ import (
 
 	"github.com/khicago/supermover/internal/agentkb"
 	"github.com/khicago/supermover/internal/buildinfo"
+	"github.com/khicago/supermover/internal/health"
 	"github.com/khicago/supermover/internal/localpush"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
@@ -51,6 +52,8 @@ func (r Runner) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return r.runVerify(args[1:], stdout, stderr)
 	case "deleted":
 		return r.runDeleted(args[1:], stdout, stderr)
+	case "health":
+		return r.runHealth(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "%s: unknown command %q\n", buildinfo.Name, args[0])
 		printUsage(stderr)
@@ -393,6 +396,54 @@ func (r Runner) runDeletedList(args []string, stdout io.Writer, stderr io.Writer
 	return 0
 }
 
+func (r Runner) runHealth(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("health", stderr)
+	profilePath := fs.String("profile", "", "profile path")
+	format := fs.String("format", "text", "output format: text or json")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *profilePath == "" {
+		fmt.Fprintln(stderr, "health: --profile is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "health: unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "health: %v\n", err)
+		return 2
+	}
+	targetDir, err := targetDirFromProfile(p)
+	if err != nil {
+		fmt.Fprintf(stderr, "health: %v\n", err)
+		return 2
+	}
+	report, err := health.BuildReport(health.Options{TargetRoot: targetDir})
+	if err != nil {
+		fmt.Fprintf(stderr, "health: %v\n", err)
+		return 1
+	}
+	switch *format {
+	case "text":
+		printHealthText(stdout, report)
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			fmt.Fprintf(stderr, "health: encode report: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintf(stderr, "health: unsupported format %q\n", *format)
+		return 2
+	}
+	if !report.Healthy {
+		return 1
+	}
+	return 0
+}
+
 func targetDirFromProfile(p profile.Profile) (string, error) {
 	if strings.TrimSpace(p.Target.LocalPath) != "" {
 		return p.Target.LocalPath, nil
@@ -459,6 +510,21 @@ func printDeletedText(w io.Writer, report verify.Report) {
 	}
 }
 
+func printHealthText(w io.Writer, report health.Report) {
+	fmt.Fprintf(w, "health: target=%s healthy=%t incomplete_sessions=%d invalid_records=%d\n",
+		report.TargetRoot,
+		report.Healthy,
+		report.Summary.IncompleteSessions,
+		report.Summary.InvalidRecords,
+	)
+	for _, item := range report.Items {
+		fmt.Fprintf(w, "%s state=%s action=%s reason=%s path=%s\n", item.SessionID, item.State, item.Action, item.Reason, item.Path)
+	}
+	for _, invalid := range report.Invalid {
+		fmt.Fprintf(w, "invalid path=%s error=%s\n", invalid.Path, invalid.Error)
+	}
+}
+
 func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -467,9 +533,9 @@ func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 
 func printProfileUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
-  supermover profile init --profile <path> --source <path> --target <path>
+  supermover profile init --profile <path> --source <path> --target <path> [--target-id <id>]
   supermover profile lint --profile <path>
-  supermover profile set-target --profile <path> --target <path>`)
+  supermover profile set-target --profile <path> --target <path> [--target-id <id>]`)
 }
 
 func printDeletedUsage(w io.Writer) {
@@ -489,6 +555,7 @@ Available commands:
   push        Push source roots to the local target recorded in the profile
   verify      Verify manifests and restored files
   deleted     Review source-side soft-delete records
+  health      Inspect target control-plane health
 
 Planned commands:
   serve       Run a trusted network target receiver
@@ -497,7 +564,6 @@ Planned commands:
   recover     Resume or repair incomplete sessions
   status      Show local profile/session status
   discover    Find local targets without trusting them
-  health      Inspect target control-plane health
   drift       Review target-local drift
 
 Use "supermover help" for this overview.

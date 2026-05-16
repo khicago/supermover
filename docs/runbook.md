@@ -107,8 +107,15 @@ or block release.
 
 ## Recovery Procedure
 
-Current recovery internals classify interrupted local sessions, but the public
-`recover` command is not implemented yet. Until it lands:
+`health` exposes the current read-only recovery classifier. It reports
+interrupted or invalid local sessions and returns non-zero when operator action
+is needed:
+
+```bash
+go run ./cmd/supermover health --profile ./supermover.profile.json
+```
+
+The public `recover` command is not implemented yet. Until it lands:
 
 1. Preserve the target `.supermover` directory.
 2. Preserve the exact profile file used for the failed run.
@@ -120,7 +127,6 @@ Current recovery internals classify interrupted local sessions, but the public
 Planned command shape:
 
 ```bash
-go run ./cmd/supermover health --target /path/to/target
 go run ./cmd/supermover recover --target /path/to/target --session <session-id>
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session <session-id>
 ```
