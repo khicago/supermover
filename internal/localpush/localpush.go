@@ -640,10 +640,6 @@ func latestPublishedManifest(p profile.Profile, targetDir string) (control.Manif
 	return latest, found, nil
 }
 
-func copyRegular(sourcePath, targetPath string, mode os.FileMode, modTime time.Time) (string, error) {
-	return copyRegularWithPostCopy(sourcePath, targetPath, mode, modTime, nil)
-}
-
 func copyRegularToStage(sourcePath, stagePath string, mode os.FileMode) (string, error) {
 	return copyRegularToStageWithPostCopy(sourcePath, stagePath, mode, nil)
 }
