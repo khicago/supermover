@@ -23,6 +23,22 @@ func TestLayoutEnsureSessionDirs(t *testing.T) {
 	}
 }
 
+func TestLayoutEnsureSessionDirsRejectsControlSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, ".supermover")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	layout := NewLayout(filepath.Join(root, ".supermover"))
+
+	if err := layout.EnsureSessionDirs("session-1"); err == nil {
+		t.Fatalf(`Layout.EnsureSessionDirs("session-1") error = nil, want symlink directory error`)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sessions", "session-1", "stage")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(outside stage) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestSessionRecordRoundTrip(t *testing.T) {
 	layout := NewLayout(t.TempDir())
 	now := time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)

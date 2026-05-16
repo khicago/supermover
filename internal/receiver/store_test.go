@@ -228,6 +228,20 @@ func TestFileStoreBeginRejectsUnsafeTargetPath(t *testing.T) {
 	}
 }
 
+func TestFileStoreBeginRejectsReservedControlPlaneTargetPath(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	req.Manifest.Entries[1].TargetPath = ".supermover/sessions/fake/receipt.json"
+
+	if _, err := store.Begin(req); !errors.Is(err, protocol.ErrValidation) {
+		t.Fatalf("FileStore.Begin(reserved control path) error = %v, want protocol.ErrValidation", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, control.DirName, "sessions", "fake", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(forged control artifact) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestFileStoreAppendChunkRejectsGapAndMismatchReplay(t *testing.T) {
 	store := FileStore{TargetRoot: t.TempDir()}
 	req := validBeginRequest([]byte("hello"))
@@ -247,6 +261,39 @@ func TestFileStoreAppendChunkRejectsGapAndMismatchReplay(t *testing.T) {
 	badReplay := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("HE")}
 	if _, err := store.AppendChunk(badReplay); !errors.Is(err, ErrConflict) {
 		t.Errorf("FileStore.AppendChunk(%+v) error = %v, want ErrConflict", badReplay, err)
+	}
+}
+
+func TestFileStoreAppendChunkRejectsStagedLeafSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	outsideFile := filepath.Join(outside, "a.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", outsideFile, err)
+	}
+	stagePath := filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "stage", "docs", "a.txt")
+	if err := os.MkdirAll(filepath.Dir(stagePath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(stagePath), err)
+	}
+	if err := os.Symlink(outsideFile, stagePath); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); !errors.Is(err, protocol.ErrValidation) {
+		t.Fatalf("FileStore.AppendChunk(staged leaf symlink) error = %v, want protocol.ErrValidation", err)
+	}
+	got, err := os.ReadFile(outsideFile)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", outsideFile, err)
+	}
+	if string(got) != "outside" {
+		t.Fatalf("outside file after AppendChunk = %q, want outside", got)
 	}
 }
 

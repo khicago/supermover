@@ -1,9 +1,12 @@
 package durable
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 func PromoteFile(tempPath string, finalPath string) error {
@@ -50,8 +53,59 @@ func PromoteFileNoReplace(tempPath string, finalPath string) error {
 		}
 		return SyncDirBestEffort(filepath.Dir(finalPath))
 	} else {
-		return wrap("link without replace", finalPath, err)
+		if !canFallbackNoReplace(err) {
+			return wrap("link without replace", finalPath, err)
+		}
+		if err := copyFileNoReplace(tempPath, finalPath); err != nil {
+			return wrap("copy without replace", finalPath, err)
+		}
+		if err := SyncDirBestEffort(filepath.Dir(finalPath)); err != nil {
+			return err
+		}
+		if err := os.Remove(tempPath); err != nil {
+			return wrap("remove temp", tempPath, err)
+		}
+		return SyncDirBestEffort(filepath.Dir(finalPath))
 	}
+}
+
+func canFallbackNoReplace(err error) bool {
+	return errors.Is(err, syscall.EXDEV) ||
+		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EOPNOTSUPP) ||
+		errors.Is(err, syscall.ENOTSUP)
+}
+
+func copyFileNoReplace(tempPath, finalPath string) error {
+	src, err := os.Open(tempPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.OpenFile(finalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(finalPath)
+		}
+	}()
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	if err := dst.Sync(); err != nil {
+		_ = dst.Close()
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 func SyncFile(path string) error {

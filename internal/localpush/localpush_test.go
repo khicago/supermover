@@ -1,9 +1,11 @@
 package localpush
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,6 +141,74 @@ func TestRunSkipsCaseVariantSourceControlPlaneDirectory(t *testing.T) {
 	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-real")
 	if manifestContainsPath(manifest, ".Supermover/sessions/forged/receipt.json") {
 		t.Fatalf("manifest entries = %#v, want source .Supermover omitted", manifest.Entries)
+	}
+}
+
+func TestRunRejectsTargetControlPlaneSymlink(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	outside := filepath.Join(dir, "outside-control")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "payload", 0o644)
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", target, err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", outside, err)
+	}
+	if err := os.Symlink(outside, filepath.Join(target, control.DirName)); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"}); err == nil {
+		t.Fatalf("Run(target .supermover symlink) error = nil, want control path error")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sessions", "session-test")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(outside session) error = %v, want os.ErrNotExist", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target file) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRunConcurrentSameSessionAllowsSinglePublisher(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "payload", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	successes := 0
+	existing := 0
+	for err := range errs {
+		switch {
+		case err == nil:
+			successes++
+		case strings.Contains(err.Error(), "already published"):
+			existing++
+		default:
+			t.Fatalf("Run(concurrent same session) error = %v, want nil or already published", err)
+		}
+	}
+	if successes != 1 || existing != 1 {
+		t.Fatalf("Run(concurrent same session) successes=%d existing=%d, want 1/1", successes, existing)
 	}
 }
 
@@ -571,6 +641,32 @@ func TestRunRecordsSoftDeleteWithoutRemovingTargetFile(t *testing.T) {
 	}
 	if record.PreviousSessionID != "session-one" || record.PreviousManifestID != "manifest-session-one" || record.Kind != "file" {
 		t.Fatalf("soft-delete previous evidence = %#v, want previous manifest/session and file kind", record)
+	}
+}
+
+func TestPreflightReportsSoftDeletes(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "keep.txt"), "keep", 0o644)
+	mustWriteFile(t, filepath.Join(source, "gone.txt"), "gone", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+
+	got, err := Preflight(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Preflight(soft delete) error = %v, want nil", err)
+	}
+	if got.Deleted != 1 {
+		t.Fatalf("Preflight(soft delete).Deleted = %d, want 1", got.Deleted)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "deleted")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(deleted dir after Preflight) error = %v, want os.ErrNotExist", err)
 	}
 }
 

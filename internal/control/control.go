@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/pathguard"
 )
 
 const (
@@ -159,6 +160,10 @@ func ControlDir(targetRoot string) string {
 	return filepath.Join(targetRoot, DirName)
 }
 
+func EnsureControlDir(targetRoot string) error {
+	return pathguard.EnsurePlainDirectory(ControlDir(targetRoot), 0o755)
+}
+
 func Path(targetRoot string, artifact ArtifactType, id string) (string, error) {
 	if strings.TrimSpace(id) == "" && artifact != ArtifactHistoryIndex && artifact != ArtifactRecoveryState {
 		return "", errors.New("id is required")
@@ -247,7 +252,7 @@ func WriteFile(path string, doc Document) error {
 	if err := doc.Validate(); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := pathguard.EnsurePlainDirectory(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 

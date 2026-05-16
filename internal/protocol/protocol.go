@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/transport"
 )
 
@@ -189,6 +190,9 @@ func (m TransferManifest) Validate() error {
 		}
 		seen[entry.Path] = struct{}{}
 		targetPath := entryTargetPath(entry)
+		if pathguard.IsReservedControlPath(targetPath) {
+			errs = append(errs, fmt.Errorf("manifest.entries[%d]: target path %q uses reserved control directory", i, targetPath))
+		}
 		if firstPath, ok := seenTargets[targetPath]; ok && firstPath != entry.Path {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: duplicate target path %q also used by %q", i, targetPath, firstPath))
 		}

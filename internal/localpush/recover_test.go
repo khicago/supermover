@@ -210,6 +210,32 @@ func TestRecoverRollbackIncompleteRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
+func TestRecoverReportsInvalidSessionRecords(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	badPath := layout.RecordPath("session-bad")
+	if err := os.MkdirAll(filepath.Dir(badPath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(badPath), err)
+	}
+	if err := os.WriteFile(badPath, []byte(`{"id":"session-bad","state":"unknown"}`), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", badPath, err)
+	}
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target})
+	if err != nil {
+		t.Fatalf("Recover(invalid session record) error = %v, want nil", err)
+	}
+	if got.RepairNeeded != 1 || got.Inspected != 1 {
+		t.Fatalf("Recover(invalid session record) = %#v, want one repair-needed item", got)
+	}
+	if len(got.Items) != 1 || got.Items[0].SessionID != "session-bad" || got.Items[0].Status != "needs_repair" || got.Items[0].State != "invalid" {
+		t.Fatalf("Recover(invalid session record).Items = %#v, want invalid needs_repair item", got.Items)
+	}
+}
+
 func writeStagedLocalSession(t *testing.T, layout transaction.Layout, target string, sessionID string, entries []control.ManifestEntry) {
 	t.Helper()
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)

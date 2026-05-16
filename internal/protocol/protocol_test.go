@@ -17,6 +17,8 @@ func TestBeginSessionRequestValidate(t *testing.T) {
 		{name: "wrong protocol", req: withProtocolVersion(valid, "supermover/2"), wantErr: true},
 		{name: "absolute path", req: withManifestEntry(valid, ManifestEntry{Path: "/abs", Kind: FileKindFile, Size: 1, Digest: validDigest()}), wantErr: true},
 		{name: "unsafe target path", req: withManifestEntry(valid, ManifestEntry{Path: "file.bin", TargetPath: "../escape.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()}), wantErr: true},
+		{name: "reserved target path", req: withManifestEntry(valid, ManifestEntry{Path: "file.bin", TargetPath: ".supermover/sessions/fake/receipt.json", Kind: FileKindFile, Size: 1, Digest: validDigest()}), wantErr: true},
+		{name: "reserved path without target override", req: withManifestEntry(valid, ManifestEntry{Path: ".Supermover/sessions/fake/receipt.json", Kind: FileKindFile, Size: 1, Digest: validDigest()}), wantErr: true},
 		{name: "missing file digest", req: withManifestEntry(valid, ManifestEntry{Path: "file.bin", Kind: FileKindFile, Size: 1}), wantErr: true},
 		{name: "duplicate path", req: withManifest(valid, TransferManifest{ID: "manifest1", Entries: []ManifestEntry{
 			{Path: "file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},

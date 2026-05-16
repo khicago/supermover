@@ -85,6 +85,33 @@ func TestPromoteFileNoReplaceRefusesExistingFinal(t *testing.T) {
 	}
 }
 
+func TestCopyFileNoReplaceRefusesExistingFinal(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "file.tmp")
+	finalPath := filepath.Join(dir, "file.txt")
+
+	if err := os.WriteFile(tempPath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
+	}
+	if err := os.WriteFile(finalPath, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", finalPath, err)
+	}
+
+	if err := copyFileNoReplace(tempPath, finalPath); err == nil {
+		t.Fatalf("copyFileNoReplace(%q, %q) error = nil, want existing final error", tempPath, finalPath)
+	}
+	got, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", finalPath, err)
+	}
+	if string(got) != "existing" {
+		t.Fatalf("copyFileNoReplace(%q, %q) final content = %q, want existing", tempPath, finalPath, got)
+	}
+	if _, err := os.Stat(tempPath); err != nil {
+		t.Fatalf("os.Stat(%q) error = %v, want temp retained", tempPath, err)
+	}
+}
+
 func TestPromoteFileValidationFailure(t *testing.T) {
 	err := PromoteFile("", "final")
 	if err == nil {

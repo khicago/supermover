@@ -35,6 +35,44 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 	}
 }
 
+func TestIsReservedControlPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: ".supermover", want: true},
+		{path: ".supermover/sessions/session-1/receipt.json", want: true},
+		{path: ".Supermover/warnings/w1.json", want: true},
+		{path: "docs/.supermover/file.txt", want: false},
+		{path: ".supermover-backup/file.txt", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			got := IsReservedControlPath(tt.path)
+			if got != tt.want {
+				t.Fatalf("IsReservedControlPath(%q) = %t, want %t", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEnsurePlainDirectoryRejectsSymlinkComponent(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "link")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+
+	err := EnsurePlainDirectory(filepath.Join(root, "link", "child"), 0o755)
+	if !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("EnsurePlainDirectory(symlink component) error = %v, want ErrUnsafePath", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "child")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(outside child) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestCanonicalPathResolvesExistingSymlinkPrefix(t *testing.T) {
 	base := t.TempDir()
 	real := filepath.Join(base, "real")

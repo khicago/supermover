@@ -2,6 +2,8 @@ package control
 
 import (
 	"bytes"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,6 +112,26 @@ func TestReadWriteRoundTrip(t *testing.T) {
 	}
 	if len(got.Entries) != 1 || got.Entries[0].Path != "notes/a.md" {
 		t.Fatalf("Read() entries = %#v, want notes/a.md entry", got.Entries)
+	}
+}
+
+func TestWriteFileRejectsControlPathSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, DirName)); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	doc := validManifest()
+	path, err := Path(root, ArtifactManifest, doc.SessionID)
+	if err != nil {
+		t.Fatalf("Path(%q, %q) error = %v, want nil", ArtifactManifest, doc.SessionID, err)
+	}
+
+	if err := WriteFile(path, doc); err == nil {
+		t.Fatalf("WriteFile(%q, manifest) error = nil, want symlink control path error", path)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "sessions", doc.SessionID, "manifest.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(outside manifest) error = %v, want os.ErrNotExist", err)
 	}
 }
 

@@ -11,6 +11,8 @@ import (
 
 var ErrUnsafePath = errors.New("unsafe path")
 
+const ReservedControlDir = ".supermover"
+
 func SafeJoin(root, rel string) (string, error) {
 	if filepath.IsAbs(rel) {
 		return "", fmt.Errorf("%w: absolute path %q", ErrUnsafePath, rel)
@@ -20,6 +22,59 @@ func SafeJoin(root, rel string) (string, error) {
 		return "", fmt.Errorf("%w: unsafe relative path %q", ErrUnsafePath, rel)
 	}
 	return filepath.Join(root, clean), nil
+}
+
+func IsReservedControlPath(path string) bool {
+	path = filepath.ToSlash(path)
+	first, _, _ := strings.Cut(path, "/")
+	return strings.EqualFold(first, ReservedControlDir)
+}
+
+func EnsurePlainDirectory(dir string, mode os.FileMode) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	var missing []string
+	current := abs
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("%w: directory component %q is a symlink", ErrUnsafePath, current)
+			}
+			if !info.IsDir() {
+				return fmt.Errorf("%w: directory component %q is not a directory", ErrUnsafePath, current)
+			}
+			break
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	for i := len(missing) - 1; i >= 0; i-- {
+		path := missing[i]
+		if err := os.Mkdir(path, mode); err != nil && !errors.Is(err, fs.ErrExist) {
+			return err
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: directory component %q is a symlink", ErrUnsafePath, path)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%w: directory component %q is not a directory", ErrUnsafePath, path)
+		}
+	}
+	return nil
 }
 
 // CanonicalPath returns an absolute path with the existing symlink prefix resolved.

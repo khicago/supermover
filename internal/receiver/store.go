@@ -741,6 +741,16 @@ func appendAt(root, path string, data []byte) error {
 	if err := makeDirectoryInside(root, filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return protocolPathError(fmt.Errorf("%w: staged file %q is a symlink", pathguard.ErrUnsafePath, path))
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: staged file %q is not regular", ErrConflict, path)
+		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -805,6 +815,9 @@ func makeDirectoryInside(root, dir string, mode os.FileMode) error {
 }
 
 func chunkMatches(path string, offset int64, data []byte) (bool, error) {
+	if err := ensurePlainFile(path); err != nil {
+		return false, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return false, err
@@ -819,20 +832,26 @@ func chunkMatches(path string, offset int64, data []byte) (bool, error) {
 }
 
 func fileSize(path string) (int64, error) {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return 0, nil
 		}
 		return 0, err
 	}
-	if info.IsDir() {
-		return 0, fmt.Errorf("%w: staged path %q is a directory", ErrConflict, path)
+	if info.Mode()&os.ModeSymlink != 0 {
+		return 0, protocolPathError(fmt.Errorf("%w: staged file %q is a symlink", pathguard.ErrUnsafePath, path))
+	}
+	if !info.Mode().IsRegular() {
+		return 0, fmt.Errorf("%w: staged path %q is not a regular file", ErrConflict, path)
 	}
 	return info.Size(), nil
 }
 
 func fileDigest(path string) (string, error) {
+	if err := ensurePlainFile(path); err != nil {
+		return "", err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -843,6 +862,20 @@ func fileDigest(path string) (string, error) {
 		return "", err
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func ensurePlainFile(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return protocolPathError(fmt.Errorf("%w: file %q is a symlink", pathguard.ErrUnsafePath, path))
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: file %q is not regular", ErrConflict, path)
+	}
+	return nil
 }
 
 func sha256Digest(data []byte) string {

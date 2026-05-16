@@ -287,12 +287,12 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if *dryRun {
-		result, err := localpush.Preflight(localpush.Options{Profile: p, TargetDir: targetDir})
+		result, err := localpush.Preflight(localpush.Options{Profile: p, TargetDir: targetDir, SessionID: *sessionID, Now: r.Now})
 		if err != nil {
 			fmt.Fprintf(stderr, "push: %v\n", err)
 			return 2
 		}
-		fmt.Fprintf(stdout, "dry run: profile=%s roots=%d entries=%d warnings=%d influences=%d target=%s\n", p.ProfileID, len(p.Roots), result.Entries, result.Warnings, result.Influences, targetDir)
+		fmt.Fprintf(stdout, "dry run: profile=%s roots=%d entries=%d warnings=%d influences=%d deleted=%d target=%s\n", p.ProfileID, len(p.Roots), result.Entries, result.Warnings, result.Influences, result.Deleted, targetDir)
 		return 0
 	}
 	effectiveSessionID := *sessionID

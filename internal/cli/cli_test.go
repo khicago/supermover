@@ -384,6 +384,39 @@ func TestPushDryRunWritesNothing(t *testing.T) {
 	}
 }
 
+func TestPushDryRunReportsSoftDeletes(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"push", "--profile", profilePath, "--dry-run", "--session", "session-two"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("push --dry-run soft delete exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "deleted=1") {
+		t.Fatalf("push --dry-run stdout = %q, want deleted=1", stdout.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "deleted")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(deleted dir after dry-run) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestPushDryRunRejectsNestedTarget(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/pathguard"
 )
 
 type State string
@@ -130,7 +131,7 @@ func (l Layout) EnsureSessionDirs(id string) error {
 	if err := ValidateSessionID(id); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(l.StagingDir(id), 0o755); err != nil {
+	if err := pathguard.EnsurePlainDirectory(l.StagingDir(id), 0o755); err != nil {
 		return fmt.Errorf("create session directories: %w", err)
 	}
 	return nil

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/khicago/supermover/internal/agentkb"
@@ -38,6 +39,8 @@ type Result struct {
 	Influences int
 	Deleted    int
 }
+
+var localPushLocks sync.Map
 
 type RecoverOptions struct {
 	Profile            profile.Profile
@@ -88,6 +91,11 @@ func Run(opts Options) (Result, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		sessionID = "session-" + now.UTC().Format("20060102T150405Z")
 	}
+	unlock, err := lockTargetSession(opts.TargetDir, sessionID)
+	if err != nil {
+		return Result{}, err
+	}
+	defer unlock()
 	if err := ensureSessionUnused(opts.TargetDir, sessionID); err != nil {
 		return Result{}, err
 	}
@@ -202,6 +210,14 @@ func Preflight(opts Options) (Result, error) {
 	if err := ValidateSourceTargetSeparation(opts.Profile.Roots[0].Path, opts.TargetDir); err != nil {
 		return Result{}, err
 	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	sessionID := strings.TrimSpace(opts.SessionID)
+	if sessionID == "" {
+		sessionID = "dry-run-" + now.UTC().Format("20060102T150405Z")
+	}
 	root := opts.Profile.Roots[0]
 	scanResult, err := scan.Scan(root.Path)
 	if err != nil {
@@ -210,6 +226,10 @@ func Preflight(opts Options) (Result, error) {
 	scanResult = dropControlPlaneEntries(scanResult)
 	warnings := append([]audit.Record(nil), scanResult.Audit...)
 	influences := agentkb.Detect(scanResult.Entries)
+	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
+	if err != nil {
+		return Result{}, err
+	}
 	entries := 0
 	copied := 0
 	for _, entry := range scanResult.Entries {
@@ -246,7 +266,7 @@ func Preflight(opts Options) (Result, error) {
 			))
 		}
 	}
-	return Result{Entries: entries, Copied: copied, Warnings: len(warnings), Influences: len(influences)}, nil
+	return Result{SessionID: sessionID, Entries: entries, Copied: copied, Warnings: len(warnings), Influences: len(influences), Deleted: len(softDeletes)}, nil
 }
 
 func Recover(opts RecoverOptions) (RecoverResult, error) {
@@ -280,6 +300,21 @@ func Recover(opts RecoverOptions) (RecoverResult, error) {
 
 	result := RecoverResult{TargetDir: opts.TargetDir, SessionID: wantSession, DryRun: opts.DryRun}
 	matched := false
+	for _, invalid := range scan.Invalid {
+		if wantSession != "" && sessionIDFromRecordPath(invalid.Path) != wantSession {
+			continue
+		}
+		matched = true
+		result.Inspected++
+		result.RepairNeeded++
+		result.Items = append(result.Items, RecoverItem{
+			SessionID: sessionIDFromRecordPath(invalid.Path),
+			State:     "invalid",
+			Action:    string(transaction.ActionRepair),
+			Status:    "needs_repair",
+			Message:   invalid.Err.Error(),
+		})
+	}
 	for _, scanned := range scan.Items {
 		if wantSession != "" && scanned.Record.ID != wantSession {
 			continue
@@ -352,6 +387,14 @@ func Recover(opts RecoverOptions) (RecoverResult, error) {
 		}
 	}
 	return result, nil
+}
+
+func sessionIDFromRecordPath(path string) string {
+	sessionDir := filepath.Dir(path)
+	if filepath.Base(path) != "session.json" {
+		return ""
+	}
+	return filepath.Base(sessionDir)
 }
 
 func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDir string, record transaction.SessionRecord, now time.Time) error {
@@ -582,6 +625,18 @@ func validateSeparatedAbs(sourceAbs, targetAbs string) error {
 	return nil
 }
 
+func lockTargetSession(targetDir, sessionID string) (func(), error) {
+	target, err := pathguard.CanonicalPath(targetDir)
+	if err != nil {
+		return nil, err
+	}
+	key := target + "\x00session\x00" + sessionID
+	value, _ := localPushLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock, nil
+}
+
 func inside(parent, child string) bool {
 	rel, err := filepath.Rel(parent, child)
 	if err != nil {
@@ -730,9 +785,7 @@ func dropControlPlaneEntries(result scan.Result) scan.Result {
 }
 
 func isControlPlanePath(path string) bool {
-	path = filepath.ToSlash(path)
-	first, _, _ := strings.Cut(path, "/")
-	return strings.EqualFold(first, control.DirName)
+	return pathguard.IsReservedControlPath(path)
 }
 
 func parseArtifactTime(value string) (time.Time, error) {
@@ -1258,6 +1311,12 @@ func writeAgentInfluence(targetDir, sessionID, stamp string, influences []agentk
 		Influence []agentkb.Influence `json:"influence"`
 	}
 	path := filepath.Join(control.ControlDir(targetDir), "agent", sessionID+"-influence.json")
+	if err := control.EnsureControlDir(targetDir); err != nil {
+		return err
+	}
+	if err := pathguard.EnsureDirectory(control.ControlDir(targetDir), filepath.Dir(path)); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -1266,5 +1325,38 @@ func writeAgentInfluence(targetDir, sessionID, stamp string, influences []agentk
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return writeBytesAtomic(path, data)
+}
+
+func writeBytesAtomic(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".control-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempName)
+		}
+	}()
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, path); err != nil {
+		return err
+	}
+	if err := durable.SyncDirBestEffort(filepath.Dir(path)); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
