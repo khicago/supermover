@@ -111,6 +111,38 @@ func TestGenerateDoesNotPhysicallyDelete(t *testing.T) {
 	}
 }
 
+func TestGenerateRecordsKindChangeAsSoftDelete(t *testing.T) {
+	now := time.Date(2026, 5, 16, 1, 2, 3, 4, time.UTC)
+	previous := control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-one",
+		SessionID: "session-one",
+		RootID:    "root",
+		CreatedAt: "2026-05-15T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "item", Kind: "file", TargetPath: "item", Size: 3, Digest: "sha256:old"}},
+	}
+	current := scan.Result{Entries: []scan.Entry{{Path: ".", Kind: scan.KindDir}, {Path: "item", Kind: scan.KindSymlink, SymlinkTarget: "real-target"}}}
+
+	got, err := Generate(Options{
+		PreviousManifest: previous,
+		CurrentScan:      current,
+		SessionID:        "session-two",
+		ProfileID:        "profile-local",
+		TargetID:         "local:profile-local",
+		RootID:           "root",
+		DetectedAt:       now,
+	})
+	if err != nil {
+		t.Fatalf("Generate(kind change) error = %v, want nil", err)
+	}
+	if len(got.Records) != 1 {
+		t.Fatalf("Generate(kind change).Records length = %d, want 1", len(got.Records))
+	}
+	if got.Records[0].SourcePath != "item" || !strings.Contains(got.Records[0].Reason, "current source scan observes symlink") {
+		t.Fatalf("Generate(kind change).Records[0] = %#v, want kind-change soft delete evidence", got.Records[0])
+	}
+}
+
 func TestStableIDDeterministic(t *testing.T) {
 	got := StableID("session-one", "a/../deleted.txt", "./target.txt")
 	want := StableID("session-one", "deleted.txt", "target.txt")

@@ -134,6 +134,44 @@ func TestRecoverRejectsCorruptStagedPayload(t *testing.T) {
 	}
 }
 
+func TestRecoverRecordsWarningForUnpublishedSymlinkEntry(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+		{Path: "link.txt", TargetPath: "link.txt", Kind: "symlink", SymlinkTarget: "real.txt"},
+	})
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(symlink-only staged session) error = %v, want nil", err)
+	}
+	if got.Recovered != 1 || got.RepairNeeded != 0 {
+		t.Fatalf("Recover(symlink-only staged session) = %#v, want recovered with warning", got)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "link.txt")); !os.IsNotExist(err) {
+		t.Fatalf("os.Lstat(recovered symlink target) error = %v, want os.ErrNotExist", err)
+	}
+	warningDir := filepath.Join(target, control.DirName, "warnings")
+	entries, err := os.ReadDir(warningDir)
+	if err != nil {
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", warningDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("warning artifacts = %d, want 1", len(entries))
+	}
+	warning, err := control.ReadFile[control.Warning](filepath.Join(warningDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("control.ReadFile(recover warning) error = %v, want nil", err)
+	}
+	if warning.Code != "symlink_not_copied" || warning.SessionID != "session-recover" || warning.Detected["target"] != "real.txt" {
+		t.Fatalf("recover warning = %#v, want symlink_not_copied with target evidence", warning)
+	}
+}
+
 func TestRecoverRollbackIncompleteRequiresExplicitOptIn(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

@@ -40,14 +40,14 @@ func Generate(opts Options) (Result, error) {
 		sessionID = opts.PreviousManifest.SessionID
 	}
 
-	current := currentPaths(opts.CurrentScan)
+	current := currentEntries(opts.CurrentScan)
 	var records []control.SoftDelete
 	for _, entry := range opts.PreviousManifest.Entries {
 		if entry.Path == "." || entry.Kind == "dir" {
 			continue
 		}
 		sourcePath := cleanRel(entry.Path)
-		if _, ok := current[sourcePath]; ok {
+		if currentEntry, ok := current[sourcePath]; ok && sameLogicalSourceKind(entry.Kind, currentEntry.Kind) {
 			continue
 		}
 		targetPath := cleanRel(entry.TargetPath)
@@ -69,7 +69,7 @@ func Generate(opts Options) (Result, error) {
 			Size:               entry.Size,
 			Digest:             entry.Digest,
 			DetectedAt:         detectedAt.UTC().Format(time.RFC3339Nano),
-			Reason:             "present in previous manifest and absent from current source scan",
+			Reason:             softDeleteReason(entry.Kind, current[sourcePath]),
 		}
 		if err := record.Validate(); err != nil {
 			return Result{}, err
@@ -117,12 +117,30 @@ func artifactPrefix(sessionID string) string {
 	return b.String()
 }
 
-func currentPaths(result scan.Result) map[string]struct{} {
-	paths := make(map[string]struct{}, len(result.Entries))
+func currentEntries(result scan.Result) map[string]scan.Entry {
+	paths := make(map[string]scan.Entry, len(result.Entries))
 	for _, entry := range result.Entries {
-		paths[cleanRel(entry.Path)] = struct{}{}
+		paths[cleanRel(entry.Path)] = entry
 	}
 	return paths
+}
+
+func sameLogicalSourceKind(previous string, current scan.Kind) bool {
+	switch previous {
+	case "file":
+		return current == scan.KindRegular
+	case "symlink":
+		return current == scan.KindSymlink
+	default:
+		return true
+	}
+}
+
+func softDeleteReason(previous string, current scan.Entry) string {
+	if strings.TrimSpace(string(current.Kind)) == "" {
+		return "present in previous manifest and absent from current source scan"
+	}
+	return fmt.Sprintf("present in previous manifest as %s and current source scan observes %s", previous, current.Kind)
 }
 
 func cleanRel(path string) string {

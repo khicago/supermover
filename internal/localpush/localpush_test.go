@@ -357,6 +357,74 @@ func TestCopyRegularRejectsReplacedSourceBeforePublish(t *testing.T) {
 	}
 }
 
+func TestCopyRegularRejectsSymlinkSource(t *testing.T) {
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "outside.txt")
+	source := filepath.Join(dir, "source.txt")
+	target := filepath.Join(dir, "target.txt")
+	mustWriteFile(t, outside, "outside", 0o644)
+	if err := os.Symlink(outside, source); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	if err := os.WriteFile(target, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", target, err)
+	}
+
+	_, err := copyRegularToStage(source, target+".stage", 0o644)
+	if err == nil {
+		t.Fatalf("copyRegularToStage(symlink source) error = nil, want non-regular source error")
+	}
+	if !strings.Contains(err.Error(), "no longer regular") {
+		t.Fatalf("copyRegularToStage(symlink source) error = %q, want non-regular source error", err.Error())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
+		t.Fatalf("target after symlink copy rejection = (%q, %v), want existing", string(got), err)
+	}
+}
+
+func TestRunRecordsSoftDeleteWhenFileBecomesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "item"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	if err := os.Remove(filepath.Join(source, "item")); err != nil {
+		t.Fatalf("os.Remove(source item) error = %v, want nil", err)
+	}
+	if err := os.Symlink("real-target", filepath.Join(source, "item")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("second Run(file to symlink) error = %v, want nil", err)
+	}
+	if got.Deleted != 1 || got.Warnings != 1 {
+		t.Fatalf("second Run(file to symlink) deleted=%d warnings=%d, want 1/1", got.Deleted, got.Warnings)
+	}
+	deletedDir := filepath.Join(target, control.DirName, "deleted")
+	entries, err := os.ReadDir(deletedDir)
+	if err != nil {
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", deletedDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("soft-delete artifacts = %d, want 1", len(entries))
+	}
+	record, err := control.ReadFile[control.SoftDelete](filepath.Join(deletedDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("control.ReadFile(soft delete) error = %v, want nil", err)
+	}
+	if record.SourcePath != "item" || !strings.Contains(record.Reason, "current source scan observes symlink") {
+		t.Fatalf("soft-delete record = %#v, want kind-change evidence for item", record)
+	}
+	if bytes, err := os.ReadFile(filepath.Join(target, "item")); err != nil || string(bytes) != "old" {
+		t.Fatalf("target retained file = (%q, %v), want old retained for review", string(bytes), err)
+	}
+}
+
 func TestRunHonorsDeletePolicyIgnore(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

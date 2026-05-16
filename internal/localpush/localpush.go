@@ -375,6 +375,12 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 	if err := validateRecoverableStagedFiles(layout, targetDir, record.ID, manifest.Entries); err != nil {
 		return err
 	}
+	recoveryWarnings := recoverWarningsForUnsupportedEntries(manifest.Entries)
+	if len(recoveryWarnings) > 0 {
+		if err := writeWarningArtifacts(targetDir, record.ID, now, recoveryWarnings); err != nil {
+			return err
+		}
+	}
 	existingDirs, err := captureExistingPublishDirs(targetDir, manifest.Entries)
 	if err != nil {
 		return err
@@ -437,6 +443,24 @@ func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string,
 		}
 	}
 	return nil
+}
+
+func recoverWarningsForUnsupportedEntries(entries []control.ManifestEntry) []audit.Record {
+	var warnings []audit.Record
+	for _, entry := range entries {
+		switch entry.Kind {
+		case "dir", "file":
+			continue
+		case "symlink":
+			warnings = append(warnings, audit.WithDetected(
+				audit.New(entry.Path, targetPath(entry), audit.SeverityWarning, "symlink_not_copied", "symlink copy is not implemented in local recover"),
+				map[string]string{"target": entry.SymlinkTarget},
+			))
+		default:
+			warnings = append(warnings, audit.New(entry.Path, targetPath(entry), audit.SeverityWarning, "unsupported_manifest_entry_not_published", "manifest entry kind is not published by local recover"))
+		}
+	}
+	return warnings
 }
 
 func markSessionNeedsRepair(layout transaction.Layout, record transaction.SessionRecord, now time.Time, cause error) error {
@@ -1002,7 +1026,7 @@ func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileM
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return "", fmt.Errorf("create staged parent %q: %w", filepath.Dir(targetPath), err)
 	}
-	before, err := os.Stat(sourcePath)
+	before, err := os.Lstat(sourcePath)
 	if err != nil {
 		return "", fmt.Errorf("stat source file %q before copy: %w", sourcePath, err)
 	}
@@ -1014,6 +1038,13 @@ func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileM
 		return "", fmt.Errorf("open source file %q: %w", sourcePath, err)
 	}
 	defer in.Close()
+	openedInfo, err := in.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat opened source file %q: %w", sourcePath, err)
+	}
+	if !sameSourceFile(before, openedInfo) {
+		return "", fmt.Errorf("source file %q changed before copy opened; rerun after the source is stable", sourcePath)
+	}
 
 	temp, err := os.CreateTemp(filepath.Dir(targetPath), ".supermover-*.tmp")
 	if err != nil {
@@ -1044,7 +1075,7 @@ func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileM
 			return "", err
 		}
 	}
-	after, err := os.Stat(sourcePath)
+	after, err := os.Lstat(sourcePath)
 	if err != nil {
 		return "", fmt.Errorf("stat source file %q after copy: %w", sourcePath, err)
 	}
@@ -1127,6 +1158,32 @@ func manifestEntry(entry scan.Entry, kind string, digest string) control.Manifes
 	}
 }
 
+func writeWarningArtifacts(targetDir string, sessionID string, now time.Time, warnings []audit.Record) error {
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	for i, warning := range warnings {
+		doc := control.Warning{
+			Version:               control.CurrentVersion,
+			ID:                    fmt.Sprintf("%s-%03d-%s", sessionID, i+1, warning.ID),
+			SessionID:             sessionID,
+			Code:                  warning.Kind,
+			Message:               warning.Reason,
+			Severity:              string(warning.Severity),
+			Paths:                 []string{warning.Path},
+			TargetPath:            warning.TargetPath,
+			Detected:              warning.Detected,
+			SuggestedProfilePatch: warning.SuggestedProfilePatch,
+			SuggestedConfig:       warning.SuggestedConfig,
+			CreatedAt:             stamp,
+		}
+		if path, err := control.Path(targetDir, control.ArtifactWarning, doc.ID); err != nil {
+			return err
+		} else if err := control.WriteFile(path, doc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string, now time.Time, entries []control.ManifestEntry, warnings []audit.Record, influences []agentkb.Influence, softDeletes []control.SoftDelete) error {
 	profilePayload, err := json.Marshal(p)
 	if err != nil {
@@ -1159,26 +1216,8 @@ func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string
 	} else if err := control.WriteFile(path, manifest); err != nil {
 		return err
 	}
-	for i, warning := range warnings {
-		doc := control.Warning{
-			Version:               control.CurrentVersion,
-			ID:                    fmt.Sprintf("%s-%03d-%s", sessionID, i+1, warning.ID),
-			SessionID:             sessionID,
-			Code:                  warning.Kind,
-			Message:               warning.Reason,
-			Severity:              string(warning.Severity),
-			Paths:                 []string{warning.Path},
-			TargetPath:            warning.TargetPath,
-			Detected:              warning.Detected,
-			SuggestedProfilePatch: warning.SuggestedProfilePatch,
-			SuggestedConfig:       warning.SuggestedConfig,
-			CreatedAt:             stamp,
-		}
-		if path, err := control.Path(targetDir, control.ArtifactWarning, doc.ID); err != nil {
-			return err
-		} else if err := control.WriteFile(path, doc); err != nil {
-			return err
-		}
+	if err := writeWarningArtifacts(targetDir, sessionID, now, warnings); err != nil {
+		return err
 	}
 	for _, softDelete := range softDeletes {
 		if path, err := control.Path(targetDir, control.ArtifactSoftDelete, softDelete.ID); err != nil {
