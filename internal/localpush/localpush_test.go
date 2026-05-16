@@ -117,6 +117,99 @@ func TestRunRecordsSymlinkWarningWithoutCopyingTarget(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnsupportedSelectionRules(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "payload", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Exclude = []profile.Rule{{Pattern: "*.tmp"}}
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil {
+		t.Fatalf("Run(profile with exclude) error = nil, want unsupported rule error")
+	}
+	if !strings.Contains(err.Error(), "exclude rules are not implemented") {
+		t.Fatalf("Run(profile with exclude) error = %q, want unsupported rule error", err.Error())
+	}
+}
+
+func TestRunRejectsNestedSourceAndTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(source, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "payload", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil {
+		t.Fatalf("Run(nested target) error = nil, want nested target error")
+	}
+	if !strings.Contains(err.Error(), "target directory must not be inside the source root") {
+		t.Fatalf("Run(nested target) error = %q, want nested target error", err.Error())
+	}
+}
+
+func TestRunRejectsExistingSession(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "payload", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil {
+		t.Fatalf("second Run(existing session) error = nil, want existing session error")
+	}
+	if !strings.Contains(err.Error(), "already published") {
+		t.Fatalf("second Run(existing session) error = %q, want already published error", err.Error())
+	}
+}
+
+func TestRunRecordsSoftDeleteWithoutRemovingTargetFile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "keep.txt"), "keep", 0o644)
+	mustWriteFile(t, filepath.Join(source, "gone.txt"), "gone", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("second Run() error = %v, want nil", err)
+	}
+	if got.Deleted != 1 {
+		t.Fatalf("second Run() deleted = %d, want 1", got.Deleted)
+	}
+	if _, err := os.Stat(filepath.Join(target, "gone.txt")); err != nil {
+		t.Fatalf("os.Stat(target gone) error = %v, want file retained for review", err)
+	}
+	deletedDir := filepath.Join(target, control.DirName, "deleted")
+	entries, err := os.ReadDir(deletedDir)
+	if err != nil {
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", deletedDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("soft-delete artifacts = %d, want 1", len(entries))
+	}
+	record, err := control.ReadFile[control.SoftDelete](filepath.Join(deletedDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("control.ReadFile(soft delete) error = %v, want nil", err)
+	}
+	if record.SourcePath != "gone.txt" || record.SessionID != "session-two" {
+		t.Fatalf("soft-delete record = %#v, want gone.txt in session-two", record)
+	}
+}
+
 func readControlDoc[T control.Document](t *testing.T, target string, artifact control.ArtifactType, id string) T {
 	t.Helper()
 	path, err := control.Path(target, artifact, id)

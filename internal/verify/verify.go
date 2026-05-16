@@ -1,0 +1,460 @@
+package verify
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/khicago/supermover/internal/control"
+)
+
+type Severity string
+
+const (
+	SeverityInfo    Severity = "info"
+	SeverityWarning Severity = "warning"
+	SeverityError   Severity = "error"
+)
+
+type FindingKind string
+
+const (
+	FindingMissingFile       FindingKind = "missing_file"
+	FindingNotRegular        FindingKind = "not_regular"
+	FindingUnsafeTargetPath  FindingKind = "unsafe_target_path"
+	FindingSizeMismatch      FindingKind = "size_mismatch"
+	FindingDigestMismatch    FindingKind = "digest_mismatch"
+	FindingUnsupportedDigest FindingKind = "unsupported_digest"
+	FindingDigestMissing     FindingKind = "digest_missing"
+	FindingReadError         FindingKind = "read_error"
+)
+
+type Options struct {
+	TargetRoot string
+	SessionID  string
+}
+
+type Report struct {
+	TargetRoot       string               `json:"target_root"`
+	SessionID        string               `json:"session_id,omitempty"`
+	Manifest         ManifestSummary      `json:"manifest"`
+	Summary          Summary              `json:"summary"`
+	Findings         []Finding            `json:"findings,omitempty"`
+	Warnings         []control.Warning    `json:"warnings,omitempty"`
+	SoftDeletes      []control.SoftDelete `json:"soft_deletes,omitempty"`
+	ArtifactProblems []ArtifactProblem    `json:"artifact_problems,omitempty"`
+	Manifests        []ManifestSummary    `json:"manifests,omitempty"`
+}
+
+type Summary struct {
+	ManifestCount    int `json:"manifest_count"`
+	ManifestEntries  int `json:"manifest_entries"`
+	FilesExpected    int `json:"files_expected"`
+	FilesVerified    int `json:"files_verified"`
+	Warnings         int `json:"warnings"`
+	SoftDeletes      int `json:"soft_deletes"`
+	ArtifactProblems int `json:"artifact_problems"`
+	ErrorFindings    int `json:"error_findings"`
+	WarningFindings  int `json:"warning_findings"`
+	SkippedDigest    int `json:"skipped_digest"`
+}
+
+type ManifestSummary struct {
+	ID        string `json:"id"`
+	SessionID string `json:"session_id"`
+	CreatedAt string `json:"created_at"`
+	Entries   int    `json:"entries"`
+	Files     int    `json:"files"`
+}
+
+type Finding struct {
+	Kind           FindingKind `json:"kind"`
+	Severity       Severity    `json:"severity"`
+	SessionID      string      `json:"session_id"`
+	Path           string      `json:"path"`
+	TargetPath     string      `json:"target_path"`
+	Message        string      `json:"message"`
+	ExpectedSize   int64       `json:"expected_size,omitempty"`
+	ActualSize     int64       `json:"actual_size,omitempty"`
+	ExpectedDigest string      `json:"expected_digest,omitempty"`
+	ActualDigest   string      `json:"actual_digest,omitempty"`
+	Err            string      `json:"error,omitempty"`
+}
+
+type ArtifactProblem struct {
+	Path string `json:"path"`
+	Err  string `json:"error"`
+}
+
+type Artifacts struct {
+	Manifests        []control.Manifest
+	Warnings         []control.Warning
+	SoftDeletes      []control.SoftDelete
+	ArtifactProblems []ArtifactProblem
+}
+
+func BuildReport(opts Options) (Report, error) {
+	if strings.TrimSpace(opts.TargetRoot) == "" {
+		return Report{}, errors.New("target root is required")
+	}
+	targetRoot, err := filepath.Abs(opts.TargetRoot)
+	if err != nil {
+		return Report{}, err
+	}
+	artifacts, err := LoadArtifacts(targetRoot)
+	if err != nil {
+		return Report{}, err
+	}
+
+	manifests := filterManifests(artifacts.Manifests, opts.SessionID)
+	report := Report{
+		TargetRoot:       filepath.ToSlash(targetRoot),
+		SessionID:        opts.SessionID,
+		Warnings:         filterWarnings(artifacts.Warnings, opts.SessionID),
+		SoftDeletes:      filterSoftDeletes(artifacts.SoftDeletes, opts.SessionID),
+		ArtifactProblems: artifacts.ArtifactProblems,
+	}
+	for _, manifest := range manifests {
+		report.Manifests = append(report.Manifests, summarizeManifest(manifest))
+	}
+	report.Summary.ManifestCount = len(manifests)
+	report.Summary.Warnings = len(report.Warnings)
+	report.Summary.SoftDeletes = len(report.SoftDeletes)
+	report.Summary.ArtifactProblems = len(report.ArtifactProblems)
+
+	if len(manifests) == 0 {
+		if opts.SessionID != "" {
+			return report, fmt.Errorf("manifest for session %q not found", opts.SessionID)
+		}
+		return report, nil
+	}
+
+	manifest := manifests[len(manifests)-1]
+	report.Manifest = summarizeManifest(manifest)
+	report.Summary.ManifestEntries = len(manifest.Entries)
+	for _, entry := range manifest.Entries {
+		if entry.Kind != "file" {
+			continue
+		}
+		report.Summary.FilesExpected++
+		findings := verifyFile(targetRoot, manifest.SessionID, entry)
+		if len(findings) == 0 {
+			report.Summary.FilesVerified++
+			continue
+		}
+		for _, finding := range findings {
+			switch finding.Severity {
+			case SeverityError:
+				report.Summary.ErrorFindings++
+			case SeverityWarning:
+				report.Summary.WarningFindings++
+			}
+			if finding.Kind == FindingDigestMissing || finding.Kind == FindingUnsupportedDigest {
+				report.Summary.SkippedDigest++
+			}
+			report.Findings = append(report.Findings, finding)
+		}
+	}
+	sortFindings(report.Findings)
+	return report, nil
+}
+
+func LoadArtifacts(targetRoot string) (Artifacts, error) {
+	var artifacts Artifacts
+	controlDir := control.ControlDir(targetRoot)
+	if _, err := os.Stat(controlDir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return artifacts, nil
+		}
+		return artifacts, fmt.Errorf("stat control directory: %w", err)
+	}
+
+	artifacts.Manifests, artifacts.ArtifactProblems = readManifests(controlDir, artifacts.ArtifactProblems)
+	artifacts.Warnings, artifacts.ArtifactProblems = readDocuments[control.Warning](filepath.Join(controlDir, "warnings"), artifacts.ArtifactProblems)
+	artifacts.SoftDeletes, artifacts.ArtifactProblems = readDocuments[control.SoftDelete](filepath.Join(controlDir, "deleted"), artifacts.ArtifactProblems)
+
+	sort.Slice(artifacts.Manifests, func(i, j int) bool {
+		if artifacts.Manifests[i].CreatedAt == artifacts.Manifests[j].CreatedAt {
+			return artifacts.Manifests[i].SessionID < artifacts.Manifests[j].SessionID
+		}
+		return artifacts.Manifests[i].CreatedAt < artifacts.Manifests[j].CreatedAt
+	})
+	sort.Slice(artifacts.Warnings, func(i, j int) bool { return artifacts.Warnings[i].ID < artifacts.Warnings[j].ID })
+	sort.Slice(artifacts.SoftDeletes, func(i, j int) bool { return artifacts.SoftDeletes[i].ID < artifacts.SoftDeletes[j].ID })
+	sort.Slice(artifacts.ArtifactProblems, func(i, j int) bool { return artifacts.ArtifactProblems[i].Path < artifacts.ArtifactProblems[j].Path })
+	return artifacts, nil
+}
+
+func readManifests(controlDir string, problems []ArtifactProblem) ([]control.Manifest, []ArtifactProblem) {
+	sessionsDir := filepath.Join(controlDir, "sessions")
+	sessions, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, problems
+		}
+		return nil, appendProblem(problems, sessionsDir, err)
+	}
+
+	var manifests []control.Manifest
+	for _, session := range sessions {
+		if !session.IsDir() {
+			continue
+		}
+		path := filepath.Join(sessionsDir, session.Name(), "manifest.json")
+		manifest, err := control.ReadFile[control.Manifest](path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			problems = appendProblem(problems, path, err)
+			continue
+		}
+		manifests = append(manifests, manifest)
+	}
+	return manifests, problems
+}
+
+func readDocuments[T control.Document](dir string, problems []ArtifactProblem) ([]T, []ArtifactProblem) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, problems
+		}
+		return nil, appendProblem(problems, dir, err)
+	}
+	var docs []T
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		doc, err := control.ReadFile[T](path)
+		if err != nil {
+			problems = appendProblem(problems, path, err)
+			continue
+		}
+		docs = append(docs, doc)
+	}
+	return docs, problems
+}
+
+func verifyFile(targetRoot, sessionID string, entry control.ManifestEntry) []Finding {
+	targetRel := targetPath(entry)
+	fullPath, err := safeTargetPath(targetRoot, targetRel)
+	if err != nil {
+		return []Finding{{
+			Kind:       FindingUnsafeTargetPath,
+			Severity:   SeverityError,
+			SessionID:  sessionID,
+			Path:       entry.Path,
+			TargetPath: targetRel,
+			Message:    "manifest target path escapes the target root",
+			Err:        err.Error(),
+		}}
+	}
+
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return []Finding{{
+				Kind:         FindingMissingFile,
+				Severity:     SeverityError,
+				SessionID:    sessionID,
+				Path:         entry.Path,
+				TargetPath:   targetRel,
+				Message:      "manifest file is missing from the target",
+				ExpectedSize: entry.Size,
+			}}
+		}
+		return []Finding{readErrorFinding(sessionID, entry, targetRel, err)}
+	}
+	if !info.Mode().IsRegular() {
+		return []Finding{{
+			Kind:       FindingNotRegular,
+			Severity:   SeverityError,
+			SessionID:  sessionID,
+			Path:       entry.Path,
+			TargetPath: targetRel,
+			Message:    "manifest file target is not a regular file",
+			Err:        info.Mode().String(),
+		}}
+	}
+
+	var findings []Finding
+	if info.Size() != entry.Size {
+		findings = append(findings, Finding{
+			Kind:         FindingSizeMismatch,
+			Severity:     SeverityError,
+			SessionID:    sessionID,
+			Path:         entry.Path,
+			TargetPath:   targetRel,
+			Message:      "target file size does not match the manifest",
+			ExpectedSize: entry.Size,
+			ActualSize:   info.Size(),
+		})
+	}
+	if strings.TrimSpace(entry.Digest) == "" {
+		findings = append(findings, Finding{
+			Kind:         FindingDigestMissing,
+			Severity:     SeverityWarning,
+			SessionID:    sessionID,
+			Path:         entry.Path,
+			TargetPath:   targetRel,
+			Message:      "manifest entry has no digest to verify",
+			ExpectedSize: entry.Size,
+			ActualSize:   info.Size(),
+		})
+		return findings
+	}
+	if !strings.HasPrefix(entry.Digest, "sha256:") {
+		findings = append(findings, Finding{
+			Kind:           FindingUnsupportedDigest,
+			Severity:       SeverityWarning,
+			SessionID:      sessionID,
+			Path:           entry.Path,
+			TargetPath:     targetRel,
+			Message:        "manifest entry uses an unsupported digest algorithm",
+			ExpectedDigest: entry.Digest,
+		})
+		return findings
+	}
+
+	actualDigest, err := sha256File(fullPath)
+	if err != nil {
+		findings = append(findings, readErrorFinding(sessionID, entry, targetRel, err))
+		return findings
+	}
+	if actualDigest != entry.Digest {
+		findings = append(findings, Finding{
+			Kind:           FindingDigestMismatch,
+			Severity:       SeverityError,
+			SessionID:      sessionID,
+			Path:           entry.Path,
+			TargetPath:     targetRel,
+			Message:        "target file digest does not match the manifest",
+			ExpectedDigest: entry.Digest,
+			ActualDigest:   actualDigest,
+		})
+	}
+	return findings
+}
+
+func readErrorFinding(sessionID string, entry control.ManifestEntry, targetRel string, err error) Finding {
+	return Finding{
+		Kind:       FindingReadError,
+		Severity:   SeverityError,
+		SessionID:  sessionID,
+		Path:       entry.Path,
+		TargetPath: targetRel,
+		Message:    "could not read target file for verification",
+		Err:        err.Error(),
+	}
+}
+
+func sha256File(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", err
+	}
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func filterManifests(manifests []control.Manifest, sessionID string) []control.Manifest {
+	if sessionID == "" {
+		return append([]control.Manifest(nil), manifests...)
+	}
+	var out []control.Manifest
+	for _, manifest := range manifests {
+		if manifest.SessionID == sessionID {
+			out = append(out, manifest)
+		}
+	}
+	return out
+}
+
+func filterWarnings(warnings []control.Warning, sessionID string) []control.Warning {
+	if sessionID == "" {
+		return append([]control.Warning(nil), warnings...)
+	}
+	var out []control.Warning
+	for _, warning := range warnings {
+		if warning.SessionID == "" || warning.SessionID == sessionID {
+			out = append(out, warning)
+		}
+	}
+	return out
+}
+
+func filterSoftDeletes(records []control.SoftDelete, sessionID string) []control.SoftDelete {
+	if sessionID == "" {
+		return append([]control.SoftDelete(nil), records...)
+	}
+	var out []control.SoftDelete
+	for _, record := range records {
+		if record.SessionID == "" || record.SessionID == sessionID {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func summarizeManifest(manifest control.Manifest) ManifestSummary {
+	summary := ManifestSummary{
+		ID:        manifest.ID,
+		SessionID: manifest.SessionID,
+		CreatedAt: manifest.CreatedAt,
+		Entries:   len(manifest.Entries),
+	}
+	for _, entry := range manifest.Entries {
+		if entry.Kind == "file" {
+			summary.Files++
+		}
+	}
+	return summary
+}
+
+func sortFindings(findings []Finding) {
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].Path == findings[j].Path {
+			return findings[i].Kind < findings[j].Kind
+		}
+		return findings[i].Path < findings[j].Path
+	})
+}
+
+func targetPath(entry control.ManifestEntry) string {
+	if strings.TrimSpace(entry.TargetPath) != "" {
+		return filepath.ToSlash(entry.TargetPath)
+	}
+	return filepath.ToSlash(entry.Path)
+}
+
+func safeTargetPath(root, rel string) (string, error) {
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("absolute target path %q", rel)
+	}
+	clean := filepath.Clean(filepath.FromSlash(rel))
+	if clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
+		return "", fmt.Errorf("unsafe target path %q", rel)
+	}
+	return filepath.Join(root, clean), nil
+}
+
+func appendProblem(problems []ArtifactProblem, path string, err error) []ArtifactProblem {
+	return append(problems, ArtifactProblem{
+		Path: filepath.ToSlash(path),
+		Err:  err.Error(),
+	})
+}

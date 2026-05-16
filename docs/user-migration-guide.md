@@ -56,7 +56,9 @@ writes session control artifacts.
 4. Confirm these fields are intentional:
 
    - `roots`: every source root that may be read.
-   - `include` and `exclude`: file selection policy.
+   - `include` and `exclude`: local push currently supports the default
+     include-all policy only; custom rules fail fast until rule evaluation is
+     implemented.
    - `delete_policy.mode`: v1 defaults to recording deletes with review.
    - `delete_policy.require_review`: must be true before prune behavior.
    - `privacy_policy.allow_plaintext_restore`: confirms the target may receive
@@ -154,18 +156,18 @@ record before physical deletion from the target. The profile field
 `delete_policy.require_review` is the safety gate. `delete_policy.mode: prune`
 without review is invalid.
 
-When delete review commands land, the expected operator flow is:
+After a second or later push, source files that disappeared since the latest
+published manifest are written as `.supermover/deleted/*.json` records. List
+them before any manual cleanup:
 
 ```bash
-go run ./cmd/supermover deleted list --target /path/to/target --profile ./supermover.profile.json
-go run ./cmd/supermover deleted approve --target /path/to/target --profile ./supermover.profile.json --id <delete-id>
-go run ./cmd/supermover prune --target /path/to/target --profile ./supermover.profile.json --dry-run
-go run ./cmd/supermover prune --target /path/to/target --profile ./supermover.profile.json --apply
+go run ./cmd/supermover deleted list --profile ./supermover.profile.json
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 ```
 
-Those commands are not implemented in the current local push slice. Until then,
-do not manually remove target files as a substitute for reviewed pruning unless
-the manual action is tracked outside Supermover.
+Physical prune and approval commands are intentionally not implemented in the
+current local push slice. Do not manually remove target files as a substitute
+for reviewed pruning unless the manual action is tracked outside Supermover.
 
 ## LAN Discovery And Trust
 

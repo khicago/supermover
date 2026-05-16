@@ -14,6 +14,7 @@ import (
 	"github.com/khicago/supermover/internal/agentkb"
 	"github.com/khicago/supermover/internal/audit"
 	"github.com/khicago/supermover/internal/control"
+	"github.com/khicago/supermover/internal/deleted"
 	"github.com/khicago/supermover/internal/durable"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
@@ -33,10 +34,14 @@ type Result struct {
 	Copied     int
 	Warnings   int
 	Influences int
+	Deleted    int
 }
 
 func Run(opts Options) (Result, error) {
 	if err := opts.Profile.Validate(); err != nil {
+		return Result{}, err
+	}
+	if err := ValidateSupportedRules(opts.Profile); err != nil {
 		return Result{}, err
 	}
 	if len(opts.Profile.Roots) != 1 {
@@ -44,6 +49,9 @@ func Run(opts Options) (Result, error) {
 	}
 	if strings.TrimSpace(opts.TargetDir) == "" {
 		return Result{}, fmt.Errorf("target directory is required")
+	}
+	if err := validateSourceTargetSeparation(opts.Profile.Roots[0].Path, opts.TargetDir); err != nil {
+		return Result{}, err
 	}
 	now := opts.Now
 	if now.IsZero() {
@@ -53,6 +61,9 @@ func Run(opts Options) (Result, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		sessionID = "session-" + now.UTC().Format("20060102T150405Z")
 	}
+	if err := ensureSessionUnused(opts.TargetDir, sessionID); err != nil {
+		return Result{}, err
+	}
 
 	root := opts.Profile.Roots[0]
 	scanResult, err := scan.Scan(root.Path)
@@ -60,6 +71,10 @@ func Run(opts Options) (Result, error) {
 		return Result{}, err
 	}
 	influences := agentkb.Detect(scanResult.Entries)
+	softDeletes, err := softDeletesForRun(opts.TargetDir, scanResult, sessionID, now)
+	if err != nil {
+		return Result{}, err
+	}
 	controlDir := control.ControlDir(opts.TargetDir)
 	layout := transaction.NewLayout(controlDir)
 	record, err := transaction.NewSessionRecord(sessionID, now)
@@ -113,7 +128,7 @@ func Run(opts Options) (Result, error) {
 	if err := layout.WriteSessionRecord(record); err != nil {
 		return Result{}, err
 	}
-	if err := writeControlArtifacts(opts.TargetDir, opts.Profile, sessionID, now, manifestEntries, warnings, influences); err != nil {
+	if err := writeControlArtifacts(opts.TargetDir, opts.Profile, sessionID, now, manifestEntries, warnings, influences, softDeletes); err != nil {
 		return Result{}, err
 	}
 	record, err = record.WithState(transaction.StatePublished, now)
@@ -129,7 +144,142 @@ func Run(opts Options) (Result, error) {
 		Copied:     copied,
 		Warnings:   len(warnings),
 		Influences: len(influences),
+		Deleted:    len(softDeletes),
 	}, nil
+}
+
+func ValidateSupportedRules(p profile.Profile) error {
+	if len(p.Exclude) > 0 {
+		return fmt.Errorf("exclude rules are not implemented in local push yet")
+	}
+	if len(p.Include) == 0 {
+		return nil
+	}
+	if len(p.Include) == 1 && p.Include[0].Pattern == "**" {
+		return nil
+	}
+	return fmt.Errorf("custom include rules are not implemented in local push yet")
+}
+
+func validateSourceTargetSeparation(sourceRoot, targetDir string) error {
+	sourceAbs, err := filepath.Abs(sourceRoot)
+	if err != nil {
+		return err
+	}
+	targetAbs, err := filepath.Abs(targetDir)
+	if err != nil {
+		return err
+	}
+	if sourceAbs == targetAbs {
+		return fmt.Errorf("source root and target directory must be different")
+	}
+	if inside(sourceAbs, targetAbs) {
+		return fmt.Errorf("target directory must not be inside the source root")
+	}
+	if inside(targetAbs, sourceAbs) {
+		return fmt.Errorf("source root must not be inside the target directory")
+	}
+	return nil
+}
+
+func inside(parent, child string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func ensureSessionUnused(targetDir, sessionID string) error {
+	receiptPath, err := control.Path(targetDir, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(receiptPath); err == nil {
+		return fmt.Errorf("session %q is already published", sessionID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat session receipt: %w", err)
+	}
+	recordPath := transaction.NewLayout(control.ControlDir(targetDir)).RecordPath(sessionID)
+	if _, err := os.Stat(recordPath); err == nil {
+		return fmt.Errorf("session %q already has local state; recovery/resume is required before reuse", sessionID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat session record: %w", err)
+	}
+	return nil
+}
+
+func softDeletesForRun(targetDir string, scanResult scan.Result, sessionID string, now time.Time) ([]control.SoftDelete, error) {
+	previous, ok, err := latestPublishedManifest(targetDir)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
+	}
+	result, err := deleted.Generate(deleted.Options{
+		PreviousManifest: previous,
+		CurrentScan:      scanResult,
+		SessionID:        sessionID,
+		DetectedAt:       now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.Records, nil
+}
+
+func latestPublishedManifest(targetDir string) (control.Manifest, bool, error) {
+	sessionsDir := filepath.Join(control.ControlDir(targetDir), "sessions")
+	sessionDirs, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return control.Manifest{}, false, nil
+		}
+		return control.Manifest{}, false, fmt.Errorf("read previous sessions: %w", err)
+	}
+
+	var latest control.Manifest
+	var latestStamp string
+	found := false
+	for _, sessionDir := range sessionDirs {
+		if !sessionDir.IsDir() {
+			continue
+		}
+		sessionID := sessionDir.Name()
+		receiptPath, err := control.Path(targetDir, control.ArtifactSessionReceipt, sessionID)
+		if err != nil {
+			return control.Manifest{}, false, err
+		}
+		receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return control.Manifest{}, false, fmt.Errorf("read previous receipt %q: %w", sessionID, err)
+		}
+		if receipt.Status != "published" {
+			continue
+		}
+		manifestPath, err := control.Path(targetDir, control.ArtifactManifest, sessionID)
+		if err != nil {
+			return control.Manifest{}, false, err
+		}
+		manifest, err := control.ReadFile[control.Manifest](manifestPath)
+		if err != nil {
+			return control.Manifest{}, false, fmt.Errorf("read previous manifest %q: %w", sessionID, err)
+		}
+		stamp := manifest.CreatedAt
+		if stamp == "" {
+			stamp = receipt.StartedAt
+		}
+		if !found || stamp > latestStamp || (stamp == latestStamp && manifest.SessionID > latest.SessionID) {
+			latest = manifest
+			latestStamp = stamp
+			found = true
+		}
+	}
+	return latest, found, nil
 }
 
 func copyRegular(sourcePath, targetPath string, mode os.FileMode, modTime time.Time) (string, error) {
@@ -189,7 +339,7 @@ func manifestEntry(entry scan.Entry, kind string, digest string) control.Manifes
 	}
 }
 
-func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string, now time.Time, entries []control.ManifestEntry, warnings []audit.Record, influences []agentkb.Influence) error {
+func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string, now time.Time, entries []control.ManifestEntry, warnings []audit.Record, influences []agentkb.Influence, softDeletes []control.SoftDelete) error {
 	profilePayload, err := json.Marshal(p)
 	if err != nil {
 		return fmt.Errorf("marshal profile snapshot: %w", err)
@@ -247,6 +397,13 @@ func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string
 		if path, err := control.Path(targetDir, control.ArtifactWarning, doc.ID); err != nil {
 			return err
 		} else if err := control.WriteFile(path, doc); err != nil {
+			return err
+		}
+	}
+	for _, softDelete := range softDeletes {
+		if path, err := control.Path(targetDir, control.ArtifactSoftDelete, softDelete.ID); err != nil {
+			return err
+		} else if err := control.WriteFile(path, softDelete); err != nil {
 			return err
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/khicago/supermover/internal/localpush"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
+	"github.com/khicago/supermover/internal/verify"
 )
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -46,6 +47,10 @@ func (r Runner) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return r.runScan(args[1:], stdout, stderr)
 	case "push":
 		return r.runPush(args[1:], stdout, stderr)
+	case "verify":
+		return r.runVerify(args[1:], stdout, stderr)
+	case "deleted":
+		return r.runDeleted(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "%s: unknown command %q\n", buildinfo.Name, args[0])
 		printUsage(stderr)
@@ -190,6 +195,10 @@ func (r Runner) runScan(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "scan: %v\n", err)
 		return 2
 	}
+	if err := localpush.ValidateSupportedRules(p); err != nil {
+		fmt.Fprintf(stderr, "scan: %v\n", err)
+		return 2
+	}
 	report, err := scanProfile(p)
 	if err != nil {
 		fmt.Fprintf(stderr, "scan: %v\n", err)
@@ -231,6 +240,10 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "push: %v\n", err)
 		return 2
 	}
+	if err := localpush.ValidateSupportedRules(p); err != nil {
+		fmt.Fprintf(stderr, "push: %v\n", err)
+		return 2
+	}
 	targetDir, err := targetDirFromProfile(p)
 	if err != nil {
 		fmt.Fprintf(stderr, "push: %v\n", err)
@@ -254,7 +267,121 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "push: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "published session %s: entries=%d copied=%d warnings=%d influences=%d\n", result.SessionID, result.Entries, result.Copied, result.Warnings, result.Influences)
+	fmt.Fprintf(stdout, "published session %s: entries=%d copied=%d warnings=%d influences=%d deleted=%d\n", result.SessionID, result.Entries, result.Copied, result.Warnings, result.Influences, result.Deleted)
+	return 0
+}
+
+func (r Runner) runVerify(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("verify", stderr)
+	profilePath := fs.String("profile", "", "profile path")
+	sessionID := fs.String("session", "", "session id to verify")
+	format := fs.String("format", "text", "output format: text or json")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *profilePath == "" {
+		fmt.Fprintln(stderr, "verify: --profile is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "verify: unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "verify: %v\n", err)
+		return 2
+	}
+	targetDir, err := targetDirFromProfile(p)
+	if err != nil {
+		fmt.Fprintf(stderr, "verify: %v\n", err)
+		return 2
+	}
+	report, err := verify.BuildReport(verify.Options{TargetRoot: targetDir, SessionID: *sessionID})
+	if err != nil {
+		fmt.Fprintf(stderr, "verify: %v\n", err)
+		return 1
+	}
+	switch *format {
+	case "text":
+		printVerifyText(stdout, report)
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			fmt.Fprintf(stderr, "verify: encode report: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintf(stderr, "verify: unsupported format %q\n", *format)
+		return 2
+	}
+	if report.Summary.ErrorFindings > 0 || report.Summary.ArtifactProblems > 0 {
+		return 1
+	}
+	if report.Summary.ManifestCount == 0 {
+		return 1
+	}
+	return 0
+}
+
+func (r Runner) runDeleted(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "deleted: missing subcommand")
+		printDeletedUsage(stderr)
+		return 2
+	}
+	switch args[0] {
+	case "list":
+		return r.runDeletedList(args[1:], stdout, stderr)
+	default:
+		fmt.Fprintf(stderr, "deleted: unknown subcommand %q\n", args[0])
+		printDeletedUsage(stderr)
+		return 2
+	}
+}
+
+func (r Runner) runDeletedList(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("deleted list", stderr)
+	profilePath := fs.String("profile", "", "profile path")
+	sessionID := fs.String("session", "", "optional session id filter")
+	format := fs.String("format", "text", "output format: text or json")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *profilePath == "" {
+		fmt.Fprintln(stderr, "deleted list: --profile is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "deleted list: unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "deleted list: %v\n", err)
+		return 2
+	}
+	targetDir, err := targetDirFromProfile(p)
+	if err != nil {
+		fmt.Fprintf(stderr, "deleted list: %v\n", err)
+		return 2
+	}
+	report, err := verify.BuildReport(verify.Options{TargetRoot: targetDir, SessionID: *sessionID})
+	if err != nil {
+		fmt.Fprintf(stderr, "deleted list: %v\n", err)
+		return 1
+	}
+	switch *format {
+	case "text":
+		printDeletedText(stdout, report)
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(report.SoftDeletes); err != nil {
+			fmt.Fprintf(stderr, "deleted list: encode report: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintf(stderr, "deleted list: unsupported format %q\n", *format)
+		return 2
+	}
 	return 0
 }
 
@@ -297,6 +424,33 @@ func printScanText(w io.Writer, report scanReport) {
 	}
 }
 
+func printVerifyText(w io.Writer, report verify.Report) {
+	fmt.Fprintf(w, "verify: target=%s session=%s manifests=%d files=%d/%d errors=%d warnings=%d soft_deletes=%d artifact_problems=%d\n",
+		report.TargetRoot,
+		report.Manifest.SessionID,
+		report.Summary.ManifestCount,
+		report.Summary.FilesVerified,
+		report.Summary.FilesExpected,
+		report.Summary.ErrorFindings,
+		report.Summary.WarningFindings+report.Summary.Warnings,
+		report.Summary.SoftDeletes,
+		report.Summary.ArtifactProblems,
+	)
+	for _, finding := range report.Findings {
+		fmt.Fprintf(w, "%s %s path=%s target=%s message=%s\n", finding.Severity, finding.Kind, finding.Path, finding.TargetPath, finding.Message)
+	}
+	for _, problem := range report.ArtifactProblems {
+		fmt.Fprintf(w, "error artifact_problem path=%s message=%s\n", problem.Path, problem.Err)
+	}
+}
+
+func printDeletedText(w io.Writer, report verify.Report) {
+	fmt.Fprintf(w, "soft deletes: count=%d target=%s\n", len(report.SoftDeletes), report.TargetRoot)
+	for _, record := range report.SoftDeletes {
+		fmt.Fprintf(w, "%s session=%s source=%s target=%s detected_at=%s\n", record.ID, record.SessionID, record.SourcePath, record.TargetPath, record.DetectedAt)
+	}
+}
+
 func newFlagSet(name string, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -308,6 +462,11 @@ func printProfileUsage(w io.Writer) {
   supermover profile init --profile <path> --source <path> --target <path>
   supermover profile lint --profile <path>
   supermover profile set-target --profile <path> --target <path>`)
+}
+
+func printDeletedUsage(w io.Writer) {
+	fmt.Fprintln(w, `Usage:
+  supermover deleted list --profile <path>`)
 }
 
 func printUsage(w io.Writer) {

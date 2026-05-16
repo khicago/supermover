@@ -50,8 +50,8 @@ the operational surface:
 ```bash
 go run ./cmd/supermover health --target /path/to/target
 go run ./cmd/supermover recover --target /path/to/target --session <session-id>
-go run ./cmd/supermover verify --target /path/to/target --session <session-id>
-go run ./cmd/supermover deleted list --target /path/to/target --profile ./supermover.profile.json
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session <session-id>
+go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover drift list --target /path/to/target --profile ./supermover.profile.json
 go run ./cmd/supermover prune --target /path/to/target --profile ./supermover.profile.json --dry-run
 ```

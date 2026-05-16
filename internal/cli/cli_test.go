@@ -129,6 +129,29 @@ func TestScanUsesProfileRoots(t *testing.T) {
 	}
 }
 
+func TestScanRejectsUnsupportedSelectionRules(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Exclude = []profile.Rule{{Pattern: "*.tmp"}}
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"scan", "--profile", profilePath}, &stdout, &stderr)
+	if got != 2 {
+		t.Fatalf("scan exit = %d, stderr = %q, want 2", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "exclude rules are not implemented") {
+		t.Fatalf("scan stderr = %q, want unsupported exclude error", stderr.String())
+	}
+}
+
 func TestPushLocalTargetWritesFilesAndControlArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -177,6 +200,100 @@ func TestPushDryRunWritesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, control.DirName)); !os.IsNotExist(err) {
 		t.Fatalf("os.Stat(.supermover) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestVerifyReportsPublishedSession(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-test"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"verify", "--profile", profilePath, "--session", "session-test"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("verify exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "files=1/1") {
+		t.Fatalf("verify stdout = %q, want file verification summary", stdout.String())
+	}
+}
+
+func TestVerifyReturnsFailureForMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-test"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(target, "file.txt")); err != nil {
+		t.Fatalf("os.Remove(target file) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"verify", "--profile", profilePath, "--session", "session-test"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("verify exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "missing_file") {
+		t.Fatalf("verify stdout = %q, want missing_file finding", stdout.String())
+	}
+}
+
+func TestDeletedListShowsSoftDeleteRecords(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "deleted=1") {
+		t.Fatalf("second push stdout = %q, want deleted=1", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = Run([]string{"deleted", "list", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("deleted list exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "source=gone.txt") {
+		t.Fatalf("deleted list stdout = %q, want gone.txt soft delete", stdout.String())
 	}
 }
 

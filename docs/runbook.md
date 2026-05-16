@@ -118,7 +118,7 @@ Planned command shape:
 ```bash
 go run ./cmd/supermover health --target /path/to/target
 go run ./cmd/supermover recover --target /path/to/target --session <session-id>
-go run ./cmd/supermover verify --target /path/to/target --session <session-id>
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session <session-id>
 ```
 
 ## Soft-Delete Procedure
@@ -126,11 +126,15 @@ go run ./cmd/supermover verify --target /path/to/target --session <session-id>
 Physical pruning must be a separate reviewed action. Operators should not infer
 that a missing source file authorizes immediate target deletion.
 
-Planned command shape:
+Current review command:
 
 ```bash
-go run ./cmd/supermover deleted list --target /path/to/target --profile ./supermover.profile.json
-go run ./cmd/supermover deleted approve --target /path/to/target --profile ./supermover.profile.json --id <delete-id>
+go run ./cmd/supermover deleted list --profile ./supermover.profile.json
+```
+
+Planned physical-prune command shape:
+
+```bash
 go run ./cmd/supermover prune --target /path/to/target --profile ./supermover.profile.json --dry-run
 go run ./cmd/supermover prune --target /path/to/target --profile ./supermover.profile.json --apply
 ```
