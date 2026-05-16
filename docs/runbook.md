@@ -56,8 +56,9 @@ Continue only if:
   moved;
 - no operator expected runtime flags to override profile policy.
 
-For JSON-style inspection, use the control-plane artifacts after a real run.
-The current scan command prints text summaries.
+For JSON-style inspection before a real run, use
+`go run ./cmd/supermover scan --profile ./supermover.profile.json --format json`.
+After a real run, use the target control-plane artifacts.
 
 ## Publish Gate
 

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/khicago/supermover/internal/control"
@@ -233,6 +234,60 @@ func TestBuildReportRejectsUnsafeTargetPath(t *testing.T) {
 	}
 	if !hasFinding(got.Findings, FindingUnsafeTargetPath, "escape.txt") {
 		t.Fatalf("BuildReport(%q).Findings = %#v, want unsafe target path finding", target, got.Findings)
+	}
+}
+
+func TestBuildReportRejectsSymlinkParentTargetPath(t *testing.T) {
+	target := t.TempDir()
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "docs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(outside docs) error = %v, want nil", err)
+	}
+	writeTargetFile(t, outside, "docs/a.txt", []byte("x"))
+	if err := os.Symlink(filepath.Join(outside, "docs"), filepath.Join(target, "docs")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-one",
+		SessionID: "one",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "docs/a.txt", Kind: "file", Size: 1, Digest: digest([]byte("x")), TargetPath: "docs/a.txt"},
+		},
+	})
+	writePublishedReceipt(t, target, "one")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !hasFinding(got.Findings, FindingUnsafeTargetPath, "docs/a.txt") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want unsafe target path finding", target, got.Findings)
+	}
+	if got.Summary.FilesVerified != 0 {
+		t.Fatalf("BuildReport(%q).Summary.FilesVerified = %d, want 0", target, got.Summary.FilesVerified)
+	}
+}
+
+func TestBuildReportFiltersReceiptScope(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "ok.txt", []byte("ok"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-one",
+		SessionID: "one",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "ok.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok")), TargetPath: "ok.txt"}},
+	})
+	writePublishedReceipt(t, target, "one")
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "one", ProfileID: "other-profile", TargetID: "target-local"})
+	if err == nil {
+		t.Fatalf("BuildReport(wrong profile) error = nil, report=%#v, want mismatch error", got)
+	}
+	if !strings.Contains(err.Error(), "does not match requested profile/target") {
+		t.Fatalf("BuildReport(wrong profile) error = %v, want profile/target mismatch", err)
 	}
 }
 

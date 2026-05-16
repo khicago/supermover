@@ -337,7 +337,12 @@ func (r Runner) runVerify(args []string, stdout io.Writer, stderr io.Writer) int
 		fmt.Fprintf(stderr, "verify: %v\n", err)
 		return 2
 	}
-	report, err := verify.BuildReport(verify.Options{TargetRoot: targetDir, SessionID: *sessionID})
+	report, err := verify.BuildReport(verify.Options{
+		TargetRoot: targetDir,
+		SessionID:  *sessionID,
+		ProfileID:  p.ProfileID,
+		TargetID:   p.Target.TargetID,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "verify: %v\n", err)
 		return 1
@@ -411,7 +416,12 @@ func (r Runner) runDeletedList(args []string, stdout io.Writer, stderr io.Writer
 		fmt.Fprintf(stderr, "deleted list: %v\n", err)
 		return 2
 	}
-	report, err := verify.BuildReport(verify.Options{TargetRoot: targetDir, SessionID: *sessionID})
+	report, err := verify.BuildReport(verify.Options{
+		TargetRoot: targetDir,
+		SessionID:  *sessionID,
+		ProfileID:  p.ProfileID,
+		TargetID:   p.Target.TargetID,
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "deleted list: %v\n", err)
 		return 1

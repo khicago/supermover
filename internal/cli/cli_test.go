@@ -475,6 +475,38 @@ func TestVerifyReportsPublishedSession(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsSessionFromDifferentProfile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profileA := filepath.Join(dir, "a.json")
+	profileB := filepath.Join(dir, "b.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	if err := profile.WriteFile(profileA, profile.NewDefault("profile-a", "Profile A", source, target)); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profileA, err)
+	}
+	if err := profile.WriteFile(profileB, profile.NewDefault("profile-b", "Profile B", source, target)); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profileB, err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profileA, "--session", "session-test"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("push profile-a exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"verify", "--profile", profileB, "--session", "session-test"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("verify profile-b exit = %d, stdout = %q, stderr = %q, want 1", got, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not match requested profile/target") {
+		t.Fatalf("verify profile-b stderr = %q, want profile/target mismatch", stderr.String())
+	}
+}
+
 func TestVerifyReturnsFailureForMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -545,6 +577,47 @@ func TestDeletedListShowsSoftDeleteRecords(t *testing.T) {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("deleted list stdout = %q, want evidence field %q", stdout.String(), want)
 		}
+	}
+}
+
+func TestDeletedListRejectsSessionFromDifferentProfile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profileA := filepath.Join(dir, "a.json")
+	profileB := filepath.Join(dir, "b.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	if err := profile.WriteFile(profileA, profile.NewDefault("profile-a", "Profile A", source, target)); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profileA, err)
+	}
+	if err := profile.WriteFile(profileB, profile.NewDefault("profile-b", "Profile B", source, target)); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profileB, err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profileA, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push profile-a exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profileA, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push profile-a exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"deleted", "list", "--profile", profileB, "--session", "session-two"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("deleted list profile-b exit = %d, stdout = %q, stderr = %q, want 1", got, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "does not match requested profile/target") {
+		t.Fatalf("deleted list profile-b stderr = %q, want profile/target mismatch", stderr.String())
 	}
 }
 

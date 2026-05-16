@@ -751,7 +751,9 @@ func dropControlPlaneEntries(result scan.Result) scan.Result {
 }
 
 func isControlPlanePath(path string) bool {
-	return path == control.DirName || strings.HasPrefix(path, control.DirName+"/")
+	path = filepath.ToSlash(path)
+	first, _, _ := strings.Cut(path, "/")
+	return strings.EqualFold(first, control.DirName)
 }
 
 func parseArtifactTime(value string) (time.Time, error) {

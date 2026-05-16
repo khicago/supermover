@@ -206,7 +206,7 @@ func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 	}
 	if strings.TrimSpace(p.Target.LocalPath) != "" {
 		cleanLocalPath := filepath.Clean(p.Target.LocalPath)
-		if p.Target.TargetID == cleanLocalPath && !opts.allowTargetIDLocalPathEquality {
+		if filepath.Clean(p.Target.TargetID) == cleanLocalPath && !opts.allowTargetIDLocalPathEquality {
 			errs = append(errs, errors.New("target.target_id must not equal target.local_path"))
 		}
 	}

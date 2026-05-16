@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/khicago/supermover/internal/control"
+	"github.com/khicago/supermover/internal/pathguard"
 )
 
 type Severity string
@@ -40,6 +41,8 @@ const (
 type Options struct {
 	TargetRoot string
 	SessionID  string
+	ProfileID  string
+	TargetID   string
 }
 
 type Report struct {
@@ -111,7 +114,8 @@ func BuildReport(opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	artifacts, err := LoadArtifacts(targetRoot)
+	scope := identityScope{ProfileID: opts.ProfileID, TargetID: opts.TargetID}
+	artifacts, err := loadArtifacts(targetRoot, scope)
 	if err != nil {
 		return Report{}, err
 	}
@@ -134,6 +138,9 @@ func BuildReport(opts Options) (Report, error) {
 
 	if len(manifests) == 0 {
 		if opts.SessionID != "" {
+			if err := scopedSessionMismatch(targetRoot, opts.SessionID, scope); err != nil {
+				return report, err
+			}
 			return report, fmt.Errorf("manifest for session %q not found", opts.SessionID)
 		}
 		return report, nil
@@ -170,6 +177,29 @@ func BuildReport(opts Options) (Report, error) {
 }
 
 func LoadArtifacts(targetRoot string) (Artifacts, error) {
+	return loadArtifacts(targetRoot, identityScope{})
+}
+
+type identityScope struct {
+	ProfileID string
+	TargetID  string
+}
+
+func (s identityScope) empty() bool {
+	return strings.TrimSpace(s.ProfileID) == "" && strings.TrimSpace(s.TargetID) == ""
+}
+
+func (s identityScope) matches(receipt control.SessionReceipt) bool {
+	if strings.TrimSpace(s.ProfileID) != "" && receipt.ProfileID != s.ProfileID {
+		return false
+	}
+	if strings.TrimSpace(s.TargetID) != "" && receipt.TargetID != s.TargetID {
+		return false
+	}
+	return true
+}
+
+func loadArtifacts(targetRoot string, scope identityScope) (Artifacts, error) {
 	var artifacts Artifacts
 	controlDir := control.ControlDir(targetRoot)
 	if _, err := os.Stat(controlDir); err != nil {
@@ -179,7 +209,7 @@ func LoadArtifacts(targetRoot string) (Artifacts, error) {
 		return artifacts, fmt.Errorf("stat control directory: %w", err)
 	}
 
-	artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems = readSessionReceipts(controlDir, artifacts.ArtifactProblems)
+	artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems = readSessionReceipts(controlDir, artifacts.ArtifactProblems, scope)
 	artifacts.Manifests, artifacts.ArtifactProblems = readManifests(controlDir, artifacts.PublishedSessions, artifacts.ArtifactProblems)
 	artifacts.Warnings, artifacts.ArtifactProblems = readPublishedDocuments[control.Warning](filepath.Join(controlDir, "warnings"), artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems)
 	artifacts.SoftDeletes, artifacts.ArtifactProblems = readPublishedDocuments[control.SoftDelete](filepath.Join(controlDir, "deleted"), artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems)
@@ -198,7 +228,7 @@ func LoadArtifacts(targetRoot string) (Artifacts, error) {
 	return artifacts, nil
 }
 
-func readSessionReceipts(controlDir string, problems []ArtifactProblem) (map[string]struct{}, map[string]struct{}, []ArtifactProblem) {
+func readSessionReceipts(controlDir string, problems []ArtifactProblem, scope identityScope) (map[string]struct{}, map[string]struct{}, []ArtifactProblem) {
 	known := map[string]struct{}{}
 	published := map[string]struct{}{}
 	sessionsDir := filepath.Join(controlDir, "sessions")
@@ -231,9 +261,30 @@ func readSessionReceipts(controlDir string, problems []ArtifactProblem) (map[str
 			problems = appendProblem(problems, receiptPath, fmt.Errorf("receipt id %q does not match session directory %q", receipt.ID, session.Name()))
 			continue
 		}
+		if !scope.matches(receipt) {
+			continue
+		}
 		published[session.Name()] = struct{}{}
 	}
 	return known, published, problems
+}
+
+func scopedSessionMismatch(targetRoot string, sessionID string, scope identityScope) error {
+	if scope.empty() {
+		return nil
+	}
+	receiptPath, err := control.Path(targetRoot, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		return err
+	}
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
+		return nil
+	}
+	if receipt.Status != "published" || receipt.ID != sessionID || scope.matches(receipt) {
+		return nil
+	}
+	return fmt.Errorf("session %q receipt profile_id/target_id (%q/%q) does not match requested profile/target (%q/%q)", sessionID, receipt.ProfileID, receipt.TargetID, scope.ProfileID, scope.TargetID)
 }
 
 func readManifests(controlDir string, published map[string]struct{}, problems []ArtifactProblem) ([]control.Manifest, []ArtifactProblem) {
@@ -356,6 +407,17 @@ func verifyFile(targetRoot, sessionID string, entry control.ManifestEntry) []Fin
 			Path:       entry.Path,
 			TargetPath: targetRel,
 			Message:    "manifest target path escapes the target root",
+			Err:        err.Error(),
+		}}
+	}
+	if err := pathguard.EnsureDirectory(targetRoot, filepath.Dir(fullPath)); err != nil {
+		return []Finding{{
+			Kind:       FindingUnsafeTargetPath,
+			Severity:   SeverityError,
+			SessionID:  sessionID,
+			Path:       entry.Path,
+			TargetPath: targetRel,
+			Message:    "manifest file target parent is unsafe",
 			Err:        err.Error(),
 		}}
 	}

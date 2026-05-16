@@ -63,6 +63,9 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 	if err := s.validate(); err != nil {
 		return protocol.BeginSessionResponse{}, err
 	}
+	unlock := s.lockSession(req.SessionID)
+	defer unlock()
+
 	layout := s.layout()
 	if err := layout.EnsureSessionDirs(req.SessionID); err != nil {
 		return protocol.BeginSessionResponse{}, err
@@ -72,7 +75,7 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		if !sameManifest(existing, req) {
 			return protocol.BeginSessionResponse{}, fmt.Errorf("%w: session %q already exists with different metadata", ErrConflict, req.SessionID)
 		}
-		status, err := s.Status(req.SessionID)
+		status, err := s.statusLocked(req.SessionID)
 		if err != nil {
 			return protocol.BeginSessionResponse{}, err
 		}
@@ -117,6 +120,13 @@ func (s FileStore) Status(sessionID string) (protocol.SessionStatusResponse, err
 	if err := transaction.ValidateSessionID(sessionID); err != nil {
 		return protocol.SessionStatusResponse{}, err
 	}
+	unlock := s.lockSession(sessionID)
+	defer unlock()
+
+	return s.statusLocked(sessionID)
+}
+
+func (s FileStore) statusLocked(sessionID string) (protocol.SessionStatusResponse, error) {
 	meta, record, err := s.loadSession(sessionID)
 	if err != nil {
 		return protocol.SessionStatusResponse{}, err
@@ -143,6 +153,9 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 		return protocol.ChunkUploadResponse{}, fmt.Errorf("%w: chunk digest mismatch for %q", ErrIntegrity, req.Path)
 	}
 
+	unlock := s.lockSession(req.SessionID)
+	defer unlock()
+
 	meta, record, err := s.loadSession(req.SessionID)
 	if err != nil {
 		return protocol.ChunkUploadResponse{}, err
@@ -161,9 +174,6 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 	if req.Offset+int64(len(req.Data)) > entry.Size {
 		return protocol.ChunkUploadResponse{}, fmt.Errorf("%w: chunk exceeds declared size for %q", ErrConflict, req.Path)
 	}
-
-	unlock := s.lock(req.SessionID, req.Path)
-	defer unlock()
 
 	path, err := s.stageFilePath(req.SessionID, req.Path)
 	if err != nil {
@@ -213,6 +223,9 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 	if err := s.validate(); err != nil {
 		return protocol.CommitSessionResponse{}, err
 	}
+	unlock := s.lockSession(req.SessionID)
+	defer unlock()
+
 	meta, record, err := s.loadSession(req.SessionID)
 	if err != nil {
 		return protocol.CommitSessionResponse{}, err
@@ -299,8 +312,8 @@ func (s FileStore) now() time.Time {
 	return time.Now().UTC()
 }
 
-func (s FileStore) lock(sessionID, path string) func() {
-	key := filepath.Clean(s.TargetRoot) + "\x00" + sessionID + "\x00" + path
+func (s FileStore) lockSession(sessionID string) func() {
+	key := filepath.Clean(s.TargetRoot) + "\x00session\x00" + sessionID
 	value, _ := receiverLocks.LoadOrStore(key, &sync.Mutex{})
 	mu := value.(*sync.Mutex)
 	mu.Lock()
@@ -575,8 +588,15 @@ func (s FileStore) ensurePublishedArtifacts(meta sessionMeta) error {
 	if err != nil {
 		return err
 	}
-	if _, err := control.ReadFile[control.SessionReceipt](receiptPath); err != nil {
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
 		return fmt.Errorf("%w: published session %q is missing receipt: %v", ErrConflict, meta.SessionID, err)
+	}
+	if receipt.ID != meta.SessionID {
+		return fmt.Errorf("%w: published session %q receipt id = %q", ErrConflict, meta.SessionID, receipt.ID)
+	}
+	if receipt.ProfileID != meta.ProfileID || receipt.TargetID != meta.TargetDeviceID {
+		return fmt.Errorf("%w: published session %q receipt scope = %q/%q, want %q/%q", ErrConflict, meta.SessionID, receipt.ProfileID, receipt.TargetID, meta.ProfileID, meta.TargetDeviceID)
 	}
 	return nil
 }

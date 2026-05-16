@@ -118,6 +118,30 @@ func TestRunSkipsSourceControlPlaneDirectory(t *testing.T) {
 	}
 }
 
+func TestRunSkipsCaseVariantSourceControlPlaneDirectory(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, ".Supermover", "sessions", "forged", "receipt.json"), `{"status":"published"}`, 0o644)
+	mustWriteFile(t, filepath.Join(source, "real.txt"), "real", 0o644)
+
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-real"})
+	if err != nil {
+		t.Fatalf("Run(source .Supermover) error = %v, want nil", err)
+	}
+	if got.Warnings != 1 {
+		t.Fatalf("Run(source .Supermover).Warnings = %d, want 1", got.Warnings)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "forged", "receipt.json")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(copied forged receipt) error = %v, want os.ErrNotExist", err)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-real")
+	if manifestContainsPath(manifest, ".Supermover/sessions/forged/receipt.json") {
+		t.Fatalf("manifest entries = %#v, want source .Supermover omitted", manifest.Entries)
+	}
+}
+
 func TestLatestPublishedManifestUsesChronologicalTime(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
