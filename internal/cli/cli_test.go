@@ -273,6 +273,43 @@ func TestScanUsesProfileRoots(t *testing.T) {
 	}
 }
 
+func TestScanUsesProfileAgentKnowledgeCategories(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "AGENTS.md"), "default rules")
+	mustWrite(t, filepath.Join(source, "TEAM.md"), "team rules")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.AgentKnowledge.Categories = []profile.KnowledgeCategory{
+		{Name: "repo_rules", Paths: []string{"TEAM.md"}, Manifest: true},
+	}
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"scan", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("scan --format json exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+
+	var report struct {
+		Influence []struct {
+			Path string `json:"path"`
+		} `json:"influence"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal(scan stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if len(report.Influence) != 1 || report.Influence[0].Path != "TEAM.md" {
+		t.Fatalf("scan influence = %#v, want only TEAM.md from profile categories", report.Influence)
+	}
+}
+
 func TestScanJSONDoesNotExposeObservedIdentity(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

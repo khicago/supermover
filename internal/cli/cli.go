@@ -571,6 +571,7 @@ type scanReport struct {
 
 func scanProfile(p profile.Profile) (scanReport, error) {
 	report := scanReport{ProfileID: p.ProfileID}
+	categories := agentKnowledgeCategories(p.AgentKnowledge)
 	for _, root := range p.Roots {
 		result, err := scan.Scan(root.Path)
 		if err != nil {
@@ -578,11 +579,23 @@ func scanProfile(p profile.Profile) (scanReport, error) {
 		}
 		report.EntryCount += len(result.Entries)
 		report.WarningCount += len(result.Audit)
-		report.Influence = append(report.Influence, agentkb.Detect(result.Entries)...)
+		report.Influence = append(report.Influence, agentkb.Detect(result.Entries, categories)...)
 		report.Roots = append(report.Roots, result)
 	}
 	report.InfluenceCount = len(report.Influence)
 	return report, nil
+}
+
+func agentKnowledgeCategories(config profile.AgentKnowledge) []agentkb.KnowledgeCategory {
+	categories := make([]agentkb.KnowledgeCategory, 0, len(config.Categories))
+	for _, category := range config.Categories {
+		categories = append(categories, agentkb.KnowledgeCategory{
+			Name:     agentkb.Category(category.Name),
+			Paths:    append([]string(nil), category.Paths...),
+			Manifest: category.Manifest,
+		})
+	}
+	return categories
 }
 
 func printScanText(w io.Writer, report scanReport) {
