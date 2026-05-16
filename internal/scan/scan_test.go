@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/khicago/supermover/internal/audit"
 )
 
 func TestScanRecordsFilesystemMetadata(t *testing.T) {
@@ -69,6 +71,24 @@ func TestScanWarnsForSpecialFiles(t *testing.T) {
 	}
 	if result.Audit[0].Kind != "special_file" {
 		t.Fatalf("audit kind = %q", result.Audit[0].Kind)
+	}
+}
+
+func TestScanErrorRecordIDExcludesRuntimeErrorText(t *testing.T) {
+	first := audit.WithDetected(
+		audit.New("secret", "", audit.SeverityWarning, "scan_error", "walk error"),
+		map[string]string{"error": "permission denied", "path": "/tmp/source/secret"},
+	)
+	second := audit.WithDetected(
+		audit.New("secret", "", audit.SeverityWarning, "scan_error", "walk error"),
+		map[string]string{"error": "operation not permitted", "path": "/tmp/source/secret"},
+	)
+
+	if first.ID != second.ID {
+		t.Errorf("scan_error stable ID = %q and %q, want equal despite runtime error text", first.ID, second.ID)
+	}
+	if first.Detected["error"] == second.Detected["error"] {
+		t.Errorf("scan_error detected error = %q and %q, want runtime error text preserved separately", first.Detected["error"], second.Detected["error"])
 	}
 }
 

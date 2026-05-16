@@ -61,8 +61,8 @@ func Scan(root string) (Result, error) {
 		rel := relPath(absRoot, path)
 		if walkErr != nil {
 			result.Audit = append(result.Audit, audit.WithDetected(
-				audit.New(rel, "", audit.SeverityWarning, "scan_error", walkErr.Error()),
-				map[string]string{"path": filepath.ToSlash(path)},
+				audit.New(rel, "", audit.SeverityWarning, "scan_error", "walk error"),
+				map[string]string{"error": walkErr.Error(), "path": filepath.ToSlash(path)},
 			))
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
@@ -73,8 +73,8 @@ func Scan(root string) (Result, error) {
 		info, err := os.Lstat(path)
 		if err != nil {
 			result.Audit = append(result.Audit, audit.WithDetected(
-				audit.New(rel, "", audit.SeverityWarning, "scan_error", err.Error()),
-				map[string]string{"path": filepath.ToSlash(path)},
+				audit.New(rel, "", audit.SeverityWarning, "scan_error", "lstat error"),
+				map[string]string{"error": err.Error(), "path": filepath.ToSlash(path)},
 			))
 			return nil
 		}
