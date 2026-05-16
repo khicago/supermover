@@ -176,7 +176,7 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 	chunkState := protocol.ChunkStateAccepted
 	switch {
 	case req.Offset == size:
-		if err := appendAt(path, req.Data); err != nil {
+		if err := appendAt(s.layout().StagingDir(req.SessionID), path, req.Data); err != nil {
 			return protocol.ChunkUploadResponse{}, err
 		}
 		size += int64(len(req.Data))
@@ -393,11 +393,11 @@ func (s FileStore) stageNonRegularEntries(meta sessionMeta) error {
 		}
 		switch entry.Kind {
 		case protocol.FileKindDir:
-			if err := os.MkdirAll(path, 0o755); err != nil {
+			if err := makeDirectoryInside(s.layout().StagingDir(meta.SessionID), path, 0o755); err != nil {
 				return fmt.Errorf("stage directory %q: %w", entry.Path, err)
 			}
 		case protocol.FileKindSymlink:
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			if err := makeDirectoryInside(s.layout().StagingDir(meta.SessionID), filepath.Dir(path), 0o755); err != nil {
 				return fmt.Errorf("stage symlink parent %q: %w", entry.Path, err)
 			}
 			_ = os.Remove(path)
@@ -708,8 +708,8 @@ func writeJSONAtomic(path string, value any) error {
 	return nil
 }
 
-func appendAt(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+func appendAt(root, path string, data []byte) error {
+	if err := makeDirectoryInside(root, filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -721,6 +721,58 @@ func appendAt(path string, data []byte) error {
 		return err
 	}
 	return file.Sync()
+}
+
+func makeDirectoryInside(root, dir string, mode os.FileMode) error {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(rootAbs, dirAbs)
+	if err != nil {
+		return err
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return protocolPathError(fmt.Errorf("%w: path escapes root", pathguard.ErrUnsafePath))
+	}
+	info, err := os.Lstat(rootAbs)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return protocolPathError(fmt.Errorf("%w: root is not a plain directory", pathguard.ErrUnsafePath))
+	}
+	if rel == "." {
+		return nil
+	}
+	current := rootAbs
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+			if err := os.Mkdir(current, mode); err != nil && !errors.Is(err, fs.ErrExist) {
+				return err
+			}
+			info, err = os.Lstat(current)
+			if err != nil {
+				return err
+			}
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return protocolPathError(fmt.Errorf("%w: directory component %q is a symlink", pathguard.ErrUnsafePath, current))
+		}
+		if !info.IsDir() {
+			return protocolPathError(fmt.Errorf("%w: directory component %q is not a directory", pathguard.ErrUnsafePath, current))
+		}
+	}
+	return nil
 }
 
 func chunkMatches(path string, offset int64, data []byte) (bool, error) {

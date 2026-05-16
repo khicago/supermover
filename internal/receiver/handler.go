@@ -9,9 +9,10 @@ import (
 	"strings"
 
 	"github.com/khicago/supermover/internal/protocol"
+	"github.com/khicago/supermover/internal/transaction"
 )
 
-const maxRequestBodyBytes = protocol.MaxChunkBytes + 128*1024
+const maxRequestBodyBytes = ((protocol.MaxChunkBytes + 2) / 3 * 4) + 256*1024
 
 type Handler struct {
 	Store Store
@@ -111,7 +112,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
 
 func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, protocol.ErrValidation):
+	case errors.Is(err, protocol.ErrValidation), errors.Is(err, transaction.ErrValidation):
 		writeError(w, http.StatusBadRequest, protocol.ErrorCodeBadRequest, err.Error())
 	case errors.Is(err, ErrSessionNotFound):
 		writeError(w, http.StatusNotFound, protocol.ErrorCodeNotFound, err.Error())

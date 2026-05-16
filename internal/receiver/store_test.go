@@ -267,6 +267,28 @@ func TestFileStorePublishedSessionRequiresReceipt(t *testing.T) {
 	}
 }
 
+func TestFileStoreCommitRejectsStagedSymlinkParentEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest(nil)
+	req.Manifest.Entries = []protocol.ManifestEntry{
+		{Path: "linkdir", Kind: protocol.FileKindSymlink, SymlinkTarget: outside},
+		{Path: "linkdir/pwn", Kind: protocol.FileKindSymlink, SymlinkTarget: "victim"},
+	}
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, protocol.ErrValidation) {
+		t.Fatalf("FileStore.Commit(staged symlink parent) error = %v, want protocol.ErrValidation", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, "pwn")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Lstat(outside pwn) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestFileStoreManifestPreservesSymlinkTarget(t *testing.T) {
 	root := t.TempDir()
 	store := FileStore{TargetRoot: root}

@@ -3,6 +3,7 @@ package receiver
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -87,6 +88,31 @@ func TestHandlerRejectsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestHandlerAcceptsMaxChunkJSONBody(t *testing.T) {
+	store := &chunkCaptureStore{}
+	handler := NewHandler(store)
+	data := bytes.Repeat([]byte("a"), protocol.MaxChunkBytes)
+	body := protocol.ChunkUploadRequest{SessionID: "session-1", Path: "docs/large.bin", Data: data, Final: true}
+	rec := doJSON(t, handler, http.MethodPost, "/v1/chunks", body)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST /v1/chunks max chunk status = %d, want %d body %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	if store.seenBytes != protocol.MaxChunkBytes {
+		t.Fatalf("AppendChunk(max chunk) saw %d bytes, want %d", store.seenBytes, protocol.MaxChunkBytes)
+	}
+}
+
+func TestHandlerMapsTransactionValidationToBadRequest(t *testing.T) {
+	handler := NewHandler(FileStore{TargetRoot: t.TempDir()})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/sessions/bad%2Fid/status", nil))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("GET /v1/sessions/bad%%2Fid/status status = %d, want %d body %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
 func doJSON(t *testing.T, handler http.Handler, method, path string, value any) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
@@ -98,4 +124,34 @@ func doJSON(t *testing.T, handler http.Handler, method, path string, value any) 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+type chunkCaptureStore struct {
+	seenBytes int
+}
+
+func (s *chunkCaptureStore) Begin(protocol.BeginSessionRequest) (protocol.BeginSessionResponse, error) {
+	return protocol.BeginSessionResponse{}, errors.New("Begin should not be called")
+}
+
+func (s *chunkCaptureStore) Status(string) (protocol.SessionStatusResponse, error) {
+	return protocol.SessionStatusResponse{}, errors.New("Status should not be called")
+}
+
+func (s *chunkCaptureStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkUploadResponse, error) {
+	if err := req.Validate(); err != nil {
+		return protocol.ChunkUploadResponse{}, err
+	}
+	s.seenBytes = len(req.Data)
+	return protocol.ChunkUploadResponse{
+		SessionID:     req.SessionID,
+		Path:          req.Path,
+		CommittedSize: int64(len(req.Data)),
+		ChunkState:    protocol.ChunkStateAccepted,
+		Complete:      true,
+	}, nil
+}
+
+func (s *chunkCaptureStore) Commit(protocol.CommitSessionRequest) (protocol.CommitSessionResponse, error) {
+	return protocol.CommitSessionResponse{}, errors.New("Commit should not be called")
 }
