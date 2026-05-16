@@ -86,6 +86,71 @@ func TestRunCopiesFilesAndWritesControlArtifacts(t *testing.T) {
 	}
 }
 
+func TestRunSkipsSourceControlPlaneDirectory(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, ".supermover", "sessions", "forged", "receipt.json"), `{"status":"published"}`, 0o644)
+	mustWriteFile(t, filepath.Join(source, "real.txt"), "real", 0o644)
+
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-real"})
+	if err != nil {
+		t.Fatalf("Run(source .supermover) error = %v, want nil", err)
+	}
+	if got.Warnings != 1 {
+		t.Fatalf("Run(source .supermover).Warnings = %d, want 1", got.Warnings)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "forged", "receipt.json")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(copied forged receipt) error = %v, want os.ErrNotExist", err)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-real")
+	if manifestContainsPath(manifest, control.DirName+"/sessions/forged/receipt.json") {
+		t.Fatalf("manifest entries = %#v, want source .supermover omitted", manifest.Entries)
+	}
+	warning := readOnlyWarning(t, target)
+	if warning.Code != "reserved_control_plane_skipped" {
+		t.Fatalf("warning code = %q, want reserved_control_plane_skipped", warning.Code)
+	}
+	if warning.SuggestedConfig["append_migration_path"] != control.DirName {
+		t.Fatalf("warning suggested config = %#v, want append migration path", warning.SuggestedConfig)
+	}
+}
+
+func TestLatestPublishedManifestUsesChronologicalTime(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "keep.txt"), "keep", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-early",
+		SessionID: "early",
+		RootID:    p.Roots[0].ID,
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "early.txt", Kind: "file", TargetPath: "early.txt"}},
+	})
+	writeReceipt(t, target, p, "early", "2026-05-16T00:00:00Z")
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-late",
+		SessionID: "late",
+		RootID:    p.Roots[0].ID,
+		CreatedAt: "2026-05-16T00:00:00.5Z",
+		Entries:   []control.ManifestEntry{{Path: "late.txt", Kind: "file", TargetPath: "late.txt"}},
+	})
+	writeReceipt(t, target, p, "late", "2026-05-16T00:00:00.5Z")
+
+	got, ok, err := latestPublishedManifest(p, target)
+	if err != nil {
+		t.Fatalf("latestPublishedManifest(%q) error = %v, want nil", target, err)
+	}
+	if !ok || got.SessionID != "late" {
+		t.Fatalf("latestPublishedManifest(%q) = (%q, %t), want late/true", target, got.SessionID, ok)
+	}
+}
+
 func TestRunRecordsSymlinkWarningWithoutCopyingTarget(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -576,6 +641,62 @@ func manifestContainsSymlinkTarget(manifest control.Manifest, path string, targe
 		}
 	}
 	return false
+}
+
+func manifestContainsPath(manifest control.Manifest, path string) bool {
+	for _, entry := range manifest.Entries {
+		if entry.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func readOnlyWarning(t *testing.T, target string) control.Warning {
+	t.Helper()
+	warningDir := filepath.Join(target, control.DirName, "warnings")
+	entries, err := os.ReadDir(warningDir)
+	if err != nil {
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", warningDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("os.ReadDir(%q) entries = %#v, want one warning", warningDir, entries)
+	}
+	warning, err := control.ReadFile[control.Warning](filepath.Join(warningDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("control.ReadFile(warning) error = %v, want nil", err)
+	}
+	return warning
+}
+
+func writeManifest(t *testing.T, target string, manifest control.Manifest) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactManifest, manifest.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(manifest %q) error = %v, want nil", manifest.SessionID, err)
+	}
+	if err := control.WriteFile(path, manifest); err != nil {
+		t.Fatalf("control.WriteFile(%q, manifest) error = %v, want nil", path, err)
+	}
+}
+
+func writeReceipt(t *testing.T, target string, p profile.Profile, sessionID string, startedAt string) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		t.Fatalf("control.Path(receipt %q) error = %v, want nil", sessionID, err)
+	}
+	receipt := control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        sessionID,
+		ProfileID: p.ProfileID,
+		TargetID:  p.Target.TargetID,
+		StartedAt: startedAt,
+		Status:    "published",
+	}
+	if err := control.WriteFile(path, receipt); err != nil {
+		t.Fatalf("control.WriteFile(%q, receipt) error = %v, want nil", path, err)
+	}
 }
 
 func mustWriteFile(t *testing.T, path string, content string, mode os.FileMode) {

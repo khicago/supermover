@@ -97,6 +97,7 @@ func Run(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	scanResult = dropControlPlaneEntries(scanResult)
 	influences := agentkb.Detect(scanResult.Entries)
 	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
 	if err != nil {
@@ -206,6 +207,7 @@ func Preflight(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	scanResult = dropControlPlaneEntries(scanResult)
 	warnings := append([]audit.Record(nil), scanResult.Audit...)
 	influences := agentkb.Detect(scanResult.Entries)
 	entries := 0
@@ -641,7 +643,7 @@ func latestPublishedManifest(p profile.Profile, targetDir string) (control.Manif
 	}
 
 	var latest control.Manifest
-	var latestStamp string
+	var latestStamp time.Time
 	found := false
 	for _, sessionDir := range sessionDirs {
 		if !sessionDir.IsDir() {
@@ -681,13 +683,61 @@ func latestPublishedManifest(p profile.Profile, targetDir string) (control.Manif
 		if stamp == "" {
 			stamp = receipt.StartedAt
 		}
-		if !found || stamp > latestStamp || (stamp == latestStamp && manifest.SessionID > latest.SessionID) {
+		parsedStamp, err := parseArtifactTime(stamp)
+		if err != nil {
+			return control.Manifest{}, false, fmt.Errorf("parse previous manifest time %q for session %q: %w", stamp, sessionID, err)
+		}
+		if !found || parsedStamp.After(latestStamp) || (parsedStamp.Equal(latestStamp) && manifest.SessionID > latest.SessionID) {
 			latest = manifest
-			latestStamp = stamp
+			latestStamp = parsedStamp
 			found = true
 		}
 	}
 	return latest, found, nil
+}
+
+func dropControlPlaneEntries(result scan.Result) scan.Result {
+	entries := result.Entries[:0]
+	skipped := 0
+	firstPath := ""
+	for _, entry := range result.Entries {
+		if isControlPlanePath(entry.Path) {
+			skipped++
+			if firstPath == "" {
+				firstPath = entry.Path
+			}
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	result.Entries = entries
+	if skipped > 0 {
+		result.Audit = append(result.Audit, audit.WithSuggestedConfig(
+			audit.WithDetected(
+				audit.New(control.DirName, "", audit.SeverityWarning, "reserved_control_plane_skipped", "source .supermover is reserved for target control artifacts and was not copied"),
+				map[string]string{"entries": fmt.Sprintf("%d", skipped), "first_path": firstPath},
+			),
+			map[string]string{
+				"append_migration_path": control.DirName,
+				"reason":                "review whether the source .supermover directory is application data that should be migrated separately",
+			},
+		))
+	}
+	return result
+}
+
+func isControlPlanePath(path string) bool {
+	return path == control.DirName || strings.HasPrefix(path, control.DirName+"/")
+}
+
+func parseArtifactTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, fmt.Errorf("timestamp is required")
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return ts.UTC(), nil
+	}
+	return time.Parse(time.RFC3339, value)
 }
 
 func copyRegularToStage(sourcePath, stagePath string, mode os.FileMode) (string, error) {
