@@ -24,6 +24,7 @@ func TestBuildReportVerifiesLatestManifest(t *testing.T) {
 			{Path: "old.txt", Kind: "file", Size: 3, Digest: digest([]byte("old")), TargetPath: "old.txt"},
 		},
 	})
+	writePublishedReceipt(t, target, "old")
 	writeManifest(t, target, control.Manifest{
 		Version:   control.CurrentVersion,
 		ID:        "manifest-new",
@@ -37,6 +38,7 @@ func TestBuildReportVerifiesLatestManifest(t *testing.T) {
 			{Path: "dir", Kind: "dir", TargetPath: "dir"},
 		},
 	})
+	writePublishedReceipt(t, target, "new")
 	writeWarning(t, target, control.Warning{
 		Version:   control.CurrentVersion,
 		ID:        "warning-new",
@@ -129,6 +131,7 @@ func TestBuildReportFiltersSession(t *testing.T) {
 		CreatedAt: "2026-05-15T00:00:00Z",
 		Entries:   []control.ManifestEntry{{Path: "old.txt", Kind: "file", Size: 3, Digest: digest([]byte("old"))}},
 	})
+	writePublishedReceipt(t, target, "old")
 	writeManifest(t, target, control.Manifest{
 		Version:   control.CurrentVersion,
 		ID:        "manifest-new",
@@ -136,6 +139,7 @@ func TestBuildReportFiltersSession(t *testing.T) {
 		CreatedAt: "2026-05-16T00:00:00Z",
 		Entries:   []control.ManifestEntry{{Path: "new.txt", Kind: "file", Size: 3, Digest: digest([]byte("new"))}},
 	})
+	writePublishedReceipt(t, target, "new")
 	writeSoftDelete(t, target, control.SoftDelete{
 		Version:            control.CurrentVersion,
 		ID:                 "del-old",
@@ -191,6 +195,7 @@ func TestBuildReportRejectsUnsafeTargetPath(t *testing.T) {
 			{Path: "escape.txt", Kind: "file", Size: 1, Digest: digest([]byte("x")), TargetPath: "../escape.txt"},
 		},
 	})
+	writePublishedReceipt(t, target, "one")
 
 	got, err := BuildReport(Options{TargetRoot: target})
 	if err != nil {
@@ -234,6 +239,7 @@ func TestBuildReportReadsLegacySymlinkManifest(t *testing.T) {
 	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v, want nil", path, err)
 	}
+	writePublishedReceipt(t, target, "legacy")
 
 	got, err := BuildReport(Options{TargetRoot: target})
 	if err != nil {
@@ -241,6 +247,65 @@ func TestBuildReportReadsLegacySymlinkManifest(t *testing.T) {
 	}
 	if got.Summary.ManifestCount != 1 || len(got.ArtifactProblems) != 0 {
 		t.Fatalf("BuildReport(%q) summary=%+v problems=%#v, want readable legacy manifest", target, got.Summary, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportIgnoresUnpublishedArtifacts(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "published.txt", []byte("ok"))
+	writeTargetFile(t, target, "draft.txt", []byte("draft"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-published",
+		SessionID: "published",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "published.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok"))}},
+	})
+	writePublishedReceipt(t, target, "published")
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-draft",
+		SessionID: "draft",
+		CreatedAt: "2026-05-17T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "draft.txt", Kind: "file", Size: 5, Digest: digest([]byte("draft"))}},
+	})
+	writeWarning(t, target, control.Warning{
+		Version:   control.CurrentVersion,
+		ID:        "warning-draft",
+		SessionID: "draft",
+		Code:      "draft_warning",
+		Message:   "draft warning",
+		Severity:  "warning",
+		Paths:     []string{"draft.txt"},
+		CreatedAt: "2026-05-17T00:00:00Z",
+	})
+	writeSoftDelete(t, target, control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "del-draft",
+		SessionID:          "draft",
+		ProfileID:          "profile-local",
+		TargetID:           "target-local",
+		RootID:             "root",
+		PreviousSessionID:  "published",
+		PreviousManifestID: "manifest-published",
+		SourcePath:         "draft-gone.txt",
+		TargetPath:         "draft-gone.txt",
+		Kind:               "file",
+		DetectedAt:         "2026-05-17T00:00:00Z",
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ManifestCount != 1 || got.Manifest.SessionID != "published" {
+		t.Fatalf("BuildReport(%q) manifest summary = %+v, want only published session", target, got.Summary)
+	}
+	if got.Summary.Warnings != 0 {
+		t.Fatalf("BuildReport(%q).Summary.Warnings = %d, want 0 unpublished warnings", target, got.Summary.Warnings)
+	}
+	if got.Summary.SoftDeletes != 0 {
+		t.Fatalf("BuildReport(%q).Summary.SoftDeletes = %d, want 0 unpublished soft deletes", target, got.Summary.SoftDeletes)
 	}
 }
 
@@ -252,6 +317,26 @@ func writeManifest(t *testing.T, target string, manifest control.Manifest) {
 	}
 	if err := control.WriteFile(path, manifest); err != nil {
 		t.Fatalf("WriteFile(%q, manifest) error = %v", path, err)
+	}
+}
+
+func writePublishedReceipt(t *testing.T, target string, sessionID string) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		t.Fatalf("Path(%q, receipt, %q) error = %v", target, sessionID, err)
+	}
+	receipt := control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        sessionID,
+		ProfileID: "profile-local",
+		TargetID:  "target-local",
+		StartedAt: "2026-05-16T00:00:00Z",
+		EndedAt:   "2026-05-16T00:01:00Z",
+		Status:    "published",
+	}
+	if err := control.WriteFile(path, receipt); err != nil {
+		t.Fatalf("WriteFile(%q, receipt) error = %v", path, err)
 	}
 }
 

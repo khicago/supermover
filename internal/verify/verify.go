@@ -94,10 +94,11 @@ type ArtifactProblem struct {
 }
 
 type Artifacts struct {
-	Manifests        []control.Manifest
-	Warnings         []control.Warning
-	SoftDeletes      []control.SoftDelete
-	ArtifactProblems []ArtifactProblem
+	Manifests         []control.Manifest
+	Warnings          []control.Warning
+	SoftDeletes       []control.SoftDelete
+	ArtifactProblems  []ArtifactProblem
+	PublishedSessions map[string]struct{}
 }
 
 func BuildReport(opts Options) (Report, error) {
@@ -176,9 +177,14 @@ func LoadArtifacts(targetRoot string) (Artifacts, error) {
 		return artifacts, fmt.Errorf("stat control directory: %w", err)
 	}
 
-	artifacts.Manifests, artifacts.ArtifactProblems = readManifests(controlDir, artifacts.ArtifactProblems)
-	artifacts.Warnings, artifacts.ArtifactProblems = readDocuments[control.Warning](filepath.Join(controlDir, "warnings"), artifacts.ArtifactProblems)
-	artifacts.SoftDeletes, artifacts.ArtifactProblems = readDocuments[control.SoftDelete](filepath.Join(controlDir, "deleted"), artifacts.ArtifactProblems)
+	artifacts.PublishedSessions, artifacts.ArtifactProblems = readPublishedSessions(controlDir, artifacts.ArtifactProblems)
+	artifacts.Manifests, artifacts.ArtifactProblems = readManifests(controlDir, artifacts.PublishedSessions, artifacts.ArtifactProblems)
+	warnings, problems := readDocuments[control.Warning](filepath.Join(controlDir, "warnings"), artifacts.ArtifactProblems)
+	artifacts.ArtifactProblems = problems
+	artifacts.Warnings = filterWarningsByPublished(warnings, artifacts.PublishedSessions)
+	softDeletes, problems := readDocuments[control.SoftDelete](filepath.Join(controlDir, "deleted"), artifacts.ArtifactProblems)
+	artifacts.ArtifactProblems = problems
+	artifacts.SoftDeletes = filterSoftDeletesByPublished(softDeletes, artifacts.PublishedSessions)
 
 	sort.Slice(artifacts.Manifests, func(i, j int) bool {
 		if artifacts.Manifests[i].CreatedAt == artifacts.Manifests[j].CreatedAt {
@@ -192,7 +198,43 @@ func LoadArtifacts(targetRoot string) (Artifacts, error) {
 	return artifacts, nil
 }
 
-func readManifests(controlDir string, problems []ArtifactProblem) ([]control.Manifest, []ArtifactProblem) {
+func readPublishedSessions(controlDir string, problems []ArtifactProblem) (map[string]struct{}, []ArtifactProblem) {
+	published := map[string]struct{}{}
+	sessionsDir := filepath.Join(controlDir, "sessions")
+	sessions, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return published, problems
+		}
+		return published, appendProblem(problems, sessionsDir, err)
+	}
+
+	for _, session := range sessions {
+		if !session.IsDir() {
+			continue
+		}
+		receiptPath := filepath.Join(sessionsDir, session.Name(), "receipt.json")
+		receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			problems = appendProblem(problems, receiptPath, err)
+			continue
+		}
+		if receipt.Status != "published" {
+			continue
+		}
+		if receipt.ID != session.Name() {
+			problems = appendProblem(problems, receiptPath, fmt.Errorf("receipt id %q does not match session directory %q", receipt.ID, session.Name()))
+			continue
+		}
+		published[session.Name()] = struct{}{}
+	}
+	return published, problems
+}
+
+func readManifests(controlDir string, published map[string]struct{}, problems []ArtifactProblem) ([]control.Manifest, []ArtifactProblem) {
 	sessionsDir := filepath.Join(controlDir, "sessions")
 	sessions, err := os.ReadDir(sessionsDir)
 	if err != nil {
@@ -207,18 +249,42 @@ func readManifests(controlDir string, problems []ArtifactProblem) ([]control.Man
 		if !session.IsDir() {
 			continue
 		}
+		if _, ok := published[session.Name()]; !ok {
+			continue
+		}
 		path := filepath.Join(sessionsDir, session.Name(), "manifest.json")
 		manifest, err := control.ReadManifestCompatFile(path)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
 			problems = appendProblem(problems, path, err)
+			continue
+		}
+		if manifest.SessionID != session.Name() {
+			problems = appendProblem(problems, path, fmt.Errorf("manifest session_id %q does not match session directory %q", manifest.SessionID, session.Name()))
 			continue
 		}
 		manifests = append(manifests, manifest)
 	}
 	return manifests, problems
+}
+
+func filterWarningsByPublished(warnings []control.Warning, published map[string]struct{}) []control.Warning {
+	var out []control.Warning
+	for _, warning := range warnings {
+		if _, ok := published[warning.SessionID]; ok {
+			out = append(out, warning)
+		}
+	}
+	return out
+}
+
+func filterSoftDeletesByPublished(records []control.SoftDelete, published map[string]struct{}) []control.SoftDelete {
+	var out []control.SoftDelete
+	for _, record := range records {
+		if _, ok := published[record.SessionID]; ok {
+			out = append(out, record)
+		}
+	}
+	return out
 }
 
 func readDocuments[T control.Document](dir string, problems []ArtifactProblem) ([]T, []ArtifactProblem) {

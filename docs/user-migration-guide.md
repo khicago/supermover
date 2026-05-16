@@ -163,6 +163,11 @@ The profile snapshot is the audit anchor. If the operator cannot answer "which
 profile produced this target state" from `.supermover/profiles/`, the run is not
 acceptable.
 
+`verify` and `deleted list` use published receipts as the review boundary. If a
+session has a manifest or soft-delete artifact but no `published` receipt, those
+artifacts are recovery evidence; run `health` and `recover` before treating them
+as completed migration state.
+
 ## Warning Review
 
 Warnings mean "published with evidence to review", not "ignored". For each
