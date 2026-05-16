@@ -1,13 +1,16 @@
 # Supermover
 
-Supermover is a Go CLI for one-way, auditable file migration and incremental
-sync from a source machine to a trusted target machine.
+Supermover is a Go CLI for one-way, auditable file migration. The long-term
+design includes incremental sync from a source machine to a trusted target
+machine.
 
 The current implementation is a local push vertical slice. Available commands
 are `profile`, `scan`, `push`, `verify`, `deleted list`, `health`, and
-`recover`. Network receiver, pairing, physical prune, broader recovery
-reconciliation, status, discovery, and drift review commands are planned and
-may appear in design docs before CLI wiring exists.
+`recover`. It supports first migration, idempotent reruns, additions, warning
+records, soft-delete records, and conservative recovery. Changed-file
+incremental update, network receiver CLI wiring, pairing, physical prune,
+broader recovery reconciliation, status, discovery, and drift review commands
+are planned and may appear in design docs before CLI wiring exists.
 
 ## Quickstart
 
@@ -40,8 +43,8 @@ The v1 direction is intentionally conservative:
 - profile files as the configuration SSOT
 - `.supermover` control-plane artifacts for receipts, manifests, warnings,
   history, target drift, soft deletes, and recovery
-- explicit LAN pairing; discovery is not trust
-- bounded traffic metadata reduction, not anonymity
+- planned explicit LAN pairing; discovery is not trust
+- planned bounded traffic metadata reduction, not anonymity
 - ordinary file-tree fidelity with auditable supplemental migration records
 - agent knowledge files migrated as files and cataloged without semantic
   rewriting

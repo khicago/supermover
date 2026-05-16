@@ -6,7 +6,10 @@ magic.
 
 ## In Scope
 
-- One-way migration and incremental sync from source to trusted target.
+- One-way migration from source to trusted target. Current local push supports
+  first migration, idempotent reruns, additions, warning records, soft-delete
+  records, and conservative recovery; changed-file incremental update is
+  planned.
 - Profile JSON as the configuration single source of truth.
 - Target-side `.supermover` control plane for profile snapshots, pairing
   receipts, session receipts, manifests, warnings, history, target drift,
@@ -18,10 +21,10 @@ magic.
 - Ordinary file-tree fidelity with supplemental migration records for behavior
   that cannot be represented directly in the target filesystem.
 - Agent knowledge files migrated as files and cataloged for downstream tools.
-- LAN discovery that exposes low-information address hints only.
-- Pairing receipts and pinned device identity as the trust boundary.
-- Bounded traffic metadata reduction: padding, batching, and jitter at defined
-  policy levels.
+- Planned LAN discovery that exposes low-information address hints only.
+- Planned pairing receipts and pinned device identity as the trust boundary.
+- Planned bounded traffic metadata reduction: padding, batching, and jitter at
+  defined policy levels.
 - Recovery classification for interrupted or incomplete local sessions.
 
 ## Non-Goals
@@ -73,13 +76,13 @@ and `health`.
 
 ### Discovery Is Not Trust
 
-LAN discovery returns unauthenticated address hints. Discovery advertisements
-must remain sparse and must not disclose identity, local layout, profile data,
-or inventory size.
+Planned LAN discovery returns unauthenticated address hints. Discovery
+advertisements must remain sparse and must not disclose identity, local layout,
+profile data, or inventory size.
 
-Trust starts only after explicit pairing verification writes a receipt and pins
-device identity. A discovered endpoint without pairing is not a migration
-target.
+Trust starts only after planned explicit pairing verification writes a receipt
+and pins device identity. A discovered endpoint without pairing is not a
+migration target.
 
 ## Current Slice Versus Planned Surface
 
