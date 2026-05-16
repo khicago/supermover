@@ -15,8 +15,9 @@ The v1 direction is intentionally conservative:
 - agent knowledge files migrated as files and cataloged without semantic
   rewriting
 
-The implementation plan lives in
-`.bagakit/feature-tracker/features/f-222nwudju/proposal.md`.
+The tracked implementation outline lives in [docs/plan.md](docs/plan.md).
+Local Bagakit planning and research artifacts may also exist under `.bagakit/`,
+but that directory is intentionally ignored by Git.
 
 ## Development
 
@@ -24,4 +25,3 @@ The implementation plan lives in
 go test ./...
 go run ./cmd/supermover help
 ```
-
