@@ -426,6 +426,35 @@ func TestFileStoreCommitRefusesDivergentExistingTargetSymlink(t *testing.T) {
 	}
 }
 
+func TestFileStoreCommitPublishesNewSymlinkWithoutStagedPlaceholder(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	req.Manifest.Entries = []protocol.ManifestEntry{
+		{Path: "docs", Kind: protocol.FileKindDir},
+		{Path: "docs/link.txt", Kind: protocol.FileKindSymlink, SymlinkTarget: "a.txt"},
+	}
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(new symlink) error = %v, want nil", err)
+	}
+	got, err := os.Readlink(filepath.Join(root, "docs", "link.txt"))
+	if err != nil {
+		t.Fatalf("os.Readlink(new symlink) error = %v, want nil", err)
+	}
+	if got != "a.txt" {
+		t.Fatalf("target symlink after Commit = %q, want a.txt", got)
+	}
+	stagePath := filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "stage", "docs", "link.txt")
+	if _, err := os.Lstat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Lstat(%q) error = %v, want os.ErrNotExist", stagePath, err)
+	}
+}
+
 func TestFileStoreCommitAllowsIdenticalExistingTargetSymlink(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
