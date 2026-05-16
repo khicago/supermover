@@ -9,6 +9,7 @@ import (
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/profile"
+	"github.com/khicago/supermover/internal/scan"
 	"github.com/khicago/supermover/internal/transaction"
 )
 
@@ -357,6 +358,44 @@ func TestCopyRegularRejectsReplacedSourceBeforePublish(t *testing.T) {
 	}
 }
 
+func TestCopyRegularRejectsChangedSourceSinceScan(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	target := filepath.Join(dir, "target.txt")
+	stamp := time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)
+	mustWriteFile(t, source, "old", 0o644)
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", source, err)
+	}
+	result, err := scan.Scan(dir)
+	if err != nil {
+		t.Fatalf("scan.Scan(%q) error = %v, want nil", dir, err)
+	}
+	entry := scanEntryByPath(t, result, "source.txt")
+	replacement := filepath.Join(dir, "replacement.txt")
+	mustWriteFile(t, replacement, "new", 0o644)
+	if err := os.Chtimes(replacement, stamp, stamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", replacement, err)
+	}
+	if err := os.Rename(replacement, source); err != nil {
+		t.Fatalf("os.Rename(%q, %q) error = %v, want nil", replacement, source, err)
+	}
+	if err := os.WriteFile(target, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", target, err)
+	}
+
+	_, err = copyRegularToStage(source, target+".stage", entry)
+	if err == nil {
+		t.Fatalf("copyRegularToStage(replaced since scan) error = nil, want source changed error")
+	}
+	if !strings.Contains(err.Error(), "changed since scan") {
+		t.Fatalf("copyRegularToStage(replaced since scan) error = %q, want source changed error", err.Error())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
+		t.Fatalf("target after failed copy = (%q, %v), want existing", string(got), err)
+	}
+}
+
 func TestCopyRegularRejectsSymlinkSource(t *testing.T) {
 	dir := t.TempDir()
 	outside := filepath.Join(dir, "outside.txt")
@@ -370,16 +409,28 @@ func TestCopyRegularRejectsSymlinkSource(t *testing.T) {
 		t.Fatalf("os.WriteFile(%q) error = %v, want nil", target, err)
 	}
 
-	_, err := copyRegularToStage(source, target+".stage", 0o644)
+	entry := scan.Entry{Path: "source.txt", Kind: scan.KindRegular, Size: int64(len("outside")), Mode: 0o644}
+	_, err := copyRegularToStage(source, target+".stage", entry)
 	if err == nil {
 		t.Fatalf("copyRegularToStage(symlink source) error = nil, want non-regular source error")
 	}
-	if !strings.Contains(err.Error(), "no longer regular") {
+	if !strings.Contains(err.Error(), "changed since scan") {
 		t.Fatalf("copyRegularToStage(symlink source) error = %q, want non-regular source error", err.Error())
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
 		t.Fatalf("target after symlink copy rejection = (%q, %v), want existing", string(got), err)
 	}
+}
+
+func scanEntryByPath(t *testing.T, result scan.Result, path string) scan.Entry {
+	t.Helper()
+	for _, entry := range result.Entries {
+		if entry.Path == path {
+			return entry
+		}
+	}
+	t.Fatalf("scan result entries = %#v, want path %q", result.Entries, path)
+	return scan.Entry{}
 }
 
 func TestRunRecordsSoftDeleteWhenFileBecomesSymlink(t *testing.T) {

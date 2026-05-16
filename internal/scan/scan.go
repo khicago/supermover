@@ -32,6 +32,8 @@ type Entry struct {
 	ModTime       time.Time   `json:"mtime"`
 	Executable    bool        `json:"executable"`
 	SymlinkTarget string      `json:"symlink_target,omitempty"`
+
+	observed fs.FileInfo
 }
 
 // Result contains scanned entries and warnings for unsupported/special paths.
@@ -112,6 +114,7 @@ func entryFromInfo(root, path, rel string, info fs.FileInfo) Entry {
 		Mode:       mode,
 		ModTime:    info.ModTime(),
 		Executable: mode.IsRegular() && mode.Perm()&0o111 != 0,
+		observed:   info,
 	}
 	if mode&os.ModeSymlink != 0 {
 		if target, err := os.Readlink(path); err == nil {
@@ -122,6 +125,20 @@ func entryFromInfo(root, path, rel string, info fs.FileInfo) Entry {
 		entry.Hidden = false
 	}
 	return entry
+}
+
+// MatchesObservedRegular reports whether info still describes the exact
+// regular file observed during Scan, including object identity when available.
+func (e Entry) MatchesObservedRegular(info fs.FileInfo) bool {
+	if info == nil || e.Kind != KindRegular || !info.Mode().IsRegular() {
+		return false
+	}
+	if e.observed != nil && !os.SameFile(e.observed, info) {
+		return false
+	}
+	return info.Size() == e.Size &&
+		info.Mode().Perm() == e.Mode.Perm() &&
+		info.ModTime().Equal(e.ModTime)
 }
 
 func kindFromMode(mode fs.FileMode) Kind {

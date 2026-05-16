@@ -132,7 +132,7 @@ func Run(opts Options) (Result, error) {
 			if err != nil {
 				return Result{}, err
 			}
-			digest, err := copyRegularToStage(sourcePath, stagePath, entry.Mode.Perm())
+			digest, err := copyRegularToStage(sourcePath, stagePath, entry)
 			if err != nil {
 				return Result{}, err
 			}
@@ -764,8 +764,8 @@ func parseArtifactTime(value string) (time.Time, error) {
 	return time.Parse(time.RFC3339, value)
 }
 
-func copyRegularToStage(sourcePath, stagePath string, mode os.FileMode) (string, error) {
-	return copyRegularToStageWithPostCopy(sourcePath, stagePath, mode, nil)
+func copyRegularToStage(sourcePath, stagePath string, entry scan.Entry) (string, error) {
+	return copyRegularToStageWithPostCopy(sourcePath, stagePath, entry, nil)
 }
 
 func preflightRegularTarget(sourcePath, targetPath string) error {
@@ -820,7 +820,18 @@ func directoryExists(targetPath string) (bool, error) {
 
 func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, modTime time.Time, postCopy func() error) (string, error) {
 	stagePath := targetPath + ".stage"
-	digest, err := copyRegularToStageWithPostCopy(sourcePath, stagePath, mode, postCopy)
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("stat source file %q before copy: %w", sourcePath, err)
+	}
+	entry := scan.Entry{
+		Path:    filepath.Base(sourcePath),
+		Kind:    scan.KindRegular,
+		Size:    info.Size(),
+		Mode:    info.Mode(),
+		ModTime: info.ModTime(),
+	}
+	digest, err := copyRegularToStageWithPostCopy(sourcePath, stagePath, entry, postCopy)
 	if err != nil {
 		return "", err
 	}
@@ -830,7 +841,7 @@ func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, mo
 			_ = os.Remove(stagePath)
 		}
 	}()
-	info, err := os.Stat(stagePath)
+	info, err = os.Stat(stagePath)
 	if err != nil {
 		return "", fmt.Errorf("stat staged file before publish: %w", err)
 	}
@@ -1022,7 +1033,7 @@ func parseManifestModTime(value string) time.Time {
 	return t
 }
 
-func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileMode, postCopy func() error) (string, error) {
+func copyRegularToStageWithPostCopy(sourcePath, targetPath string, entry scan.Entry, postCopy func() error) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return "", fmt.Errorf("create staged parent %q: %w", filepath.Dir(targetPath), err)
 	}
@@ -1030,8 +1041,8 @@ func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileM
 	if err != nil {
 		return "", fmt.Errorf("stat source file %q before copy: %w", sourcePath, err)
 	}
-	if !before.Mode().IsRegular() {
-		return "", fmt.Errorf("source file %q is no longer regular", sourcePath)
+	if !entry.MatchesObservedRegular(before) {
+		return "", fmt.Errorf("source file %q changed since scan; rerun after the source is stable", sourcePath)
 	}
 	in, err := os.Open(sourcePath)
 	if err != nil {
@@ -1042,7 +1053,7 @@ func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileM
 	if err != nil {
 		return "", fmt.Errorf("stat opened source file %q: %w", sourcePath, err)
 	}
-	if !sameSourceFile(before, openedInfo) {
+	if !entry.MatchesObservedRegular(openedInfo) || !sameSourceFile(before, openedInfo) {
 		return "", fmt.Errorf("source file %q changed before copy opened; rerun after the source is stable", sourcePath)
 	}
 
@@ -1063,7 +1074,7 @@ func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileM
 		_ = temp.Close()
 		return "", fmt.Errorf("copy %q to temp file: %w", sourcePath, err)
 	}
-	if err := temp.Chmod(mode); err != nil {
+	if err := temp.Chmod(entry.Mode.Perm()); err != nil {
 		_ = temp.Close()
 		return "", fmt.Errorf("chmod temp file: %w", err)
 	}
@@ -1079,7 +1090,7 @@ func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileM
 	if err != nil {
 		return "", fmt.Errorf("stat source file %q after copy: %w", sourcePath, err)
 	}
-	if !sameSourceFile(before, after) {
+	if !entry.MatchesObservedRegular(after) || !sameSourceFile(before, after) {
 		return "", fmt.Errorf("source file %q changed during copy; rerun after the source is stable", sourcePath)
 	}
 	digest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
