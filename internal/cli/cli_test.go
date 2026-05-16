@@ -171,6 +171,51 @@ func TestProfileSetTargetExplicitlyUpdatesTargetID(t *testing.T) {
 	}
 }
 
+func TestProfileSetTargetRepairsLegacyPathTargetID(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	nextTarget := filepath.Join(dir, "next-target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Target.TargetID = filepath.Clean(target)
+	data := `{
+  "version": 1,
+  "profile_id": "` + p.ProfileID + `",
+  "name": "` + p.Name + `",
+  "roots": [{"id": "root", "path": "` + filepath.ToSlash(source) + `"}],
+  "include": [{"pattern": "**"}],
+  "consistency": "strict",
+  "delete_policy": {"mode": "record", "require_review": true, "retention_days": 30},
+  "metadata_policy": {"mode": "basic", "preserve_permissions": true, "preserve_mod_time": true},
+  "privacy_policy": {"mode": "plaintext", "traffic_level": 2, "allow_plaintext_restore": true, "allow_hidden_files": true, "allow_sensitive_filenames": true, "padding_bucket_bytes": 65536, "batch_max_bytes": 1048576, "batch_max_count": 64, "jitter_budget_millis": 250, "discovery_low_info": true},
+  "target": {"target_id": "` + filepath.ToSlash(target) + `", "name": "target", "local_path": "` + filepath.ToSlash(target) + `"},
+  "agent_knowledge": {}
+}
+`
+	if err := os.WriteFile(profilePath, []byte(data), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	if _, err := profile.ReadFile(profilePath); err == nil {
+		t.Fatalf("profile.ReadFile(legacy path identity) error = nil, want validation error before repair")
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--target-id", "local:repaired"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile set-target repair exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	repaired, err := profile.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("profile.ReadFile(%q) after repair error = %v, want nil", profilePath, err)
+	}
+	if repaired.Target.TargetID != "local:repaired" || repaired.Target.LocalPath != filepath.Clean(nextTarget) {
+		t.Fatalf("repaired target = %#v, want explicit id and next target path", repaired.Target)
+	}
+}
+
 func TestScanUsesProfileRoots(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

@@ -114,6 +114,14 @@ type KnowledgeCategory struct {
 }
 
 func (p Profile) Validate() error {
+	return p.validateWithOptions(profileValidationOptions{})
+}
+
+type profileValidationOptions struct {
+	allowTargetIDLocalPathEquality bool
+}
+
+func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 	var errs []error
 
 	if p.Version != CurrentVersion {
@@ -196,7 +204,7 @@ func (p Profile) Validate() error {
 	}
 	if strings.TrimSpace(p.Target.LocalPath) != "" {
 		cleanLocalPath := filepath.Clean(p.Target.LocalPath)
-		if p.Target.TargetID == cleanLocalPath {
+		if p.Target.TargetID == cleanLocalPath && !opts.allowTargetIDLocalPathEquality {
 			errs = append(errs, errors.New("target.target_id must not equal target.local_path"))
 		}
 	}
@@ -227,6 +235,29 @@ func Read(r io.Reader) (Profile, error) {
 		return Profile{}, err
 	}
 	if err := p.Validate(); err != nil {
+		return Profile{}, err
+	}
+	return p, nil
+}
+
+func ReadFileForTargetRepair(path string) (Profile, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return Profile{}, err
+	}
+	defer file.Close()
+	return ReadForTargetRepair(file)
+}
+
+func ReadForTargetRepair(r io.Reader) (Profile, error) {
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+
+	var p Profile
+	if err := decoder.Decode(&p); err != nil {
+		return Profile{}, err
+	}
+	if err := p.validateWithOptions(profileValidationOptions{allowTargetIDLocalPathEquality: true}); err != nil {
 		return Profile{}, err
 	}
 	return p, nil

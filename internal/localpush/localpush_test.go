@@ -354,6 +354,48 @@ func TestRunRecordsSoftDeleteWithoutRemovingTargetFile(t *testing.T) {
 	}
 }
 
+func TestRunReadsLegacySymlinkManifestForSoftDeletes(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "keep.txt"), "keep", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if err := os.MkdirAll(filepath.Join(target, control.DirName, "sessions", "session-one"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(legacy session) error = %v, want nil", err)
+	}
+	receipt := control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        "session-one",
+		ProfileID: p.ProfileID,
+		TargetID:  p.Target.TargetID,
+		StartedAt: "2026-05-15T00:00:00Z",
+		Status:    "published",
+	}
+	receiptPath, err := control.Path(target, control.ArtifactSessionReceipt, "session-one")
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	if err := control.WriteFile(receiptPath, receipt); err != nil {
+		t.Fatalf("control.WriteFile(receipt) error = %v, want nil", err)
+	}
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "session-one")
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	legacy := `{"version":1,"id":"manifest-session-one","session_id":"session-one","created_at":"2026-05-15T00:00:00Z","entries":[{"path":"deleted-link","kind":"symlink","target_path":"deleted-link"},{"path":"keep.txt","kind":"file","size":4,"target_path":"keep.txt"}]}`
+	if err := os.WriteFile(manifestPath, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(legacy manifest) error = %v, want nil", err)
+	}
+
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Run(legacy symlink manifest) error = %v, want nil", err)
+	}
+	if got.Deleted != 1 {
+		t.Fatalf("Run(legacy symlink manifest) deleted = %d, want 1", got.Deleted)
+	}
+}
+
 func readControlDoc[T control.Document](t *testing.T, target string, artifact control.ArtifactType, id string) T {
 	t.Helper()
 	path, err := control.Path(target, artifact, id)

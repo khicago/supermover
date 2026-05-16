@@ -123,6 +123,21 @@ func TestReadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestReadForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
+	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}`
+
+	if _, err := Read(strings.NewReader(input)); err == nil {
+		t.Fatalf("Read(legacy path identity) error = nil, want strict validation error")
+	}
+	got, err := ReadForTargetRepair(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ReadForTargetRepair(legacy path identity) error = %v, want nil", err)
+	}
+	if got.Target.TargetID != "/tmp/target" || got.Target.LocalPath != "/tmp/target" {
+		t.Fatalf("ReadForTargetRepair target = %#v, want legacy target loaded", got.Target)
+	}
+}
+
 func validProfile() Profile {
 	return Profile{
 		Version:   CurrentVersion,

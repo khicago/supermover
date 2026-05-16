@@ -195,6 +195,29 @@ func TestLoadArtifactsRecordsBadJSON(t *testing.T) {
 	}
 }
 
+func TestBuildReportReadsLegacySymlinkManifest(t *testing.T) {
+	target := t.TempDir()
+	path, err := control.Path(target, control.ArtifactManifest, "legacy")
+	if err != nil {
+		t.Fatalf("control.Path(%q, manifest, legacy) error = %v, want nil", target, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v, want nil", filepath.Dir(path), err)
+	}
+	legacy := `{"version":1,"id":"manifest-legacy","session_id":"legacy","created_at":"2026-05-15T00:00:00Z","entries":[{"path":"link","kind":"symlink","target_path":"link"}]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v, want nil", path, err)
+	}
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ManifestCount != 1 || len(got.ArtifactProblems) != 0 {
+		t.Fatalf("BuildReport(%q) summary=%+v problems=%#v, want readable legacy manifest", target, got.Summary, got.ArtifactProblems)
+	}
+}
+
 func writeManifest(t *testing.T, target string, manifest control.Manifest) {
 	t.Helper()
 	path, err := control.Path(target, control.ArtifactManifest, manifest.SessionID)

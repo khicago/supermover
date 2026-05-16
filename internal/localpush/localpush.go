@@ -326,7 +326,7 @@ func latestPublishedManifest(targetDir string) (control.Manifest, bool, error) {
 		if err != nil {
 			return control.Manifest{}, false, err
 		}
-		manifest, err := control.ReadFile[control.Manifest](manifestPath)
+		manifest, err := control.ReadManifestCompatFile(manifestPath)
 		if err != nil {
 			return control.Manifest{}, false, fmt.Errorf("read previous manifest %q: %w", sessionID, err)
 		}

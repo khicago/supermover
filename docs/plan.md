@@ -32,6 +32,7 @@ planning files.
 
 - Target-side staging and atomic promotion.
 - Session journals and recovery scanning.
+- Read-only `health` diagnostics for interrupted or invalid sessions.
 - Danger-pause rules for missing roots, root fingerprint changes, target drift,
   mass permission loss, and major policy changes.
 - Soft-delete review and prune dry-run.
@@ -48,11 +49,10 @@ planning files.
 - Incremental sync and resumable large-file transfer.
 - `live`, `strict`, and `snapshot` consistency behavior.
 - Review commands for deletes and target drift.
-- Health, recover, verify, and prune commands.
+- Recover and prune commands.
 
 ## Phase 7: Quality Bar
 
 - Failure-oriented integration tests.
 - Security and recovery documentation.
 - CI, contribution guide, security policy, and release process.
-

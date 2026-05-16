@@ -108,6 +108,21 @@ func TestReadWriteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadManifestCompatAllowsLegacySymlinkTarget(t *testing.T) {
+	input := `{"version":1,"id":"manifest1","session_id":"session1","created_at":"2026-05-16T00:00:00Z","entries":[{"path":"link","kind":"symlink","target_path":"link"}]}`
+
+	if _, err := Read[Manifest](strings.NewReader(input)); err == nil {
+		t.Fatalf("Read[Manifest](legacy symlink) error = nil, want strict symlink target error")
+	}
+	got, err := ReadManifestCompat(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("ReadManifestCompat(legacy symlink) error = %v, want nil", err)
+	}
+	if len(got.Entries) != 1 || got.Entries[0].Path != "link" {
+		t.Fatalf("ReadManifestCompat(legacy symlink).Entries = %#v, want link entry", got.Entries)
+	}
+}
+
 func TestReadRejectsUnknownFields(t *testing.T) {
 	input := `{"version":1,"id":"w1","code":"privacy","message":"warning","created_at":"2026-05-16T00:00:00Z","extra":true}`
 

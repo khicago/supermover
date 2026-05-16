@@ -208,7 +208,7 @@ func readManifests(controlDir string, problems []ArtifactProblem) ([]control.Man
 			continue
 		}
 		path := filepath.Join(sessionsDir, session.Name(), "manifest.json")
-		manifest, err := control.ReadFile[control.Manifest](path)
+		manifest, err := control.ReadManifestCompatFile(path)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue

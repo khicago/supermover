@@ -156,7 +156,7 @@ func (r Runner) runProfileSetTarget(args []string, stdout io.Writer, stderr io.W
 		return 2
 	}
 
-	p, err := profile.ReadFile(*profilePath)
+	p, err := readProfileForSetTarget(*profilePath, *targetID)
 	if err != nil {
 		fmt.Fprintf(stderr, "profile set-target: %v\n", err)
 		return 2
@@ -178,6 +178,17 @@ func (r Runner) runProfileSetTarget(args []string, stdout io.Writer, stderr io.W
 	}
 	fmt.Fprintf(stdout, "updated profile target %s\n", *profilePath)
 	return 0
+}
+
+func readProfileForSetTarget(path string, targetID string) (profile.Profile, error) {
+	p, err := profile.ReadFile(path)
+	if err == nil {
+		return p, nil
+	}
+	if strings.TrimSpace(targetID) == "" {
+		return profile.Profile{}, err
+	}
+	return profile.ReadFileForTargetRepair(path)
 }
 
 func (r Runner) runScan(args []string, stdout io.Writer, stderr io.Writer) int {

@@ -198,6 +198,28 @@ func ReadFile[T Document](path string) (T, error) {
 	return Read[T](file)
 }
 
+func ReadManifestCompatFile(path string) (Manifest, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return Manifest{}, err
+	}
+	defer file.Close()
+	return ReadManifestCompat(file)
+}
+
+func ReadManifestCompat(r io.Reader) (Manifest, error) {
+	var doc Manifest
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&doc); err != nil {
+		return doc, err
+	}
+	if err := doc.validateWithOptions(manifestValidationOptions{allowLegacySymlinkTarget: true}); err != nil {
+		return doc, err
+	}
+	return doc, nil
+}
+
 func Write(w io.Writer, doc Document) error {
 	if err := doc.Validate(); err != nil {
 		return err
@@ -277,6 +299,14 @@ func (d SessionReceipt) Validate() error {
 }
 
 func (d Manifest) Validate() error {
+	return d.validateWithOptions(manifestValidationOptions{})
+}
+
+type manifestValidationOptions struct {
+	allowLegacySymlinkTarget bool
+}
+
+func (d Manifest) validateWithOptions(opts manifestValidationOptions) error {
 	var errs []error
 	requireVersion(d.Version, &errs)
 	require("id", d.ID, &errs)
@@ -289,7 +319,7 @@ func (d Manifest) Validate() error {
 		if strings.TrimSpace(entry.Kind) == "" {
 			errs = append(errs, fmt.Errorf("entries[%d].kind is required", i))
 		}
-		if entry.Kind == "symlink" && strings.TrimSpace(entry.SymlinkTarget) == "" {
+		if entry.Kind == "symlink" && strings.TrimSpace(entry.SymlinkTarget) == "" && !opts.allowLegacySymlinkTarget {
 			errs = append(errs, fmt.Errorf("entries[%d].symlink_target is required for symlinks", i))
 		}
 		if entry.Size < 0 {
