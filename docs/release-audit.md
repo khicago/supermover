@@ -48,9 +48,14 @@ Open-source governance now includes `LICENSE`, `SECURITY.md`,
 - `8c668a4 fix(profile): separate target identity from local paths`
 - `38a3a96 feat(health): expose read-only recovery diagnostics`
 - `e5a8738 fix(compat): preserve legacy profile and manifest repair paths`
-- current checkpoint: `fix(safety): harden local migration publish evidence`
-  covers no-replace publish, staged local push, profile SSOT fail-fast gates,
-  and tracked release audit evidence.
+- `bb7dcf7 fix(safety): harden local migration publish evidence`
+- `e350295 feat(recovery): add explicit local recover command`
+- `4cfe63c fix(lint): remove stale local push helper`
+- `64aec11 fix(recovery): verify staged payloads before recover publish`
+- `9a88903 chore(governance): add open source project gates`
+- `51906f9 fix(review): ignore unpublished artifacts in review`
+- current checkpoint: network receiver and discovery hardening covers bounded
+  JSON/chunk request sizes and canonical low-information discovery TXT output.
 
 ## Current Gate Results
 

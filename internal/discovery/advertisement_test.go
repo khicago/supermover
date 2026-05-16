@@ -51,6 +51,32 @@ func TestAdvertisementTXT(t *testing.T) {
 	}
 }
 
+func TestAdvertisementTXTDoesNotAllowCanonicalOverride(t *testing.T) {
+	ad := NewLowInfoAdvertisement("_supermover._tcp", "supermover/1", "abcdef0123456789", []string{"pair"})
+	ad.UnauthenticatedTXT = map[string]string{
+		"svc":   "_other._tcp",
+		"proto": "supermover/2",
+		"nonce": "differentnonce",
+		"caps":  "other",
+	}
+
+	got, err := ad.TXT()
+	if err != nil {
+		t.Fatalf("Advertisement.TXT(%+v) error = %v, want nil", ad, err)
+	}
+	want := map[string]string{
+		"svc":   "_supermover._tcp",
+		"proto": "supermover/1",
+		"nonce": "abcdef0123456789",
+		"caps":  "pair",
+	}
+	for key, wantValue := range want {
+		if got[key] != wantValue {
+			t.Fatalf("Advertisement.TXT(%+v)[%q] = %q, want canonical %q", ad, key, got[key], wantValue)
+		}
+	}
+}
+
 func withService(ad Advertisement, service string) Advertisement {
 	ad.ServiceType = service
 	return ad

@@ -43,6 +43,11 @@ Each chunk request contains `session_id`, manifest `path`, byte `offset`, base64
 JSON `data`, optional `sha256:` digest for that chunk, and an optional `final`
 flag.
 
+The protocol library limits decoded chunk payloads to 4 MiB. The HTTP handler
+also wraps request bodies with a bounded reader slightly above that size to
+account for JSON/base64 framing overhead. Larger transfer windows belong in a
+future streaming transport, not unbounded JSON bodies.
+
 The receiver accepts append-only writes:
 
 - `offset == committed_size`: append and fsync the staged file.

@@ -79,6 +79,9 @@ restricted to low-information hints:
 - `nonce`
 - `caps`
 
+Canonical values are derived from the typed advertisement fields. Extra
+unauthenticated TXT values cannot override `svc`, `proto`, `nonce`, or `caps`.
+
 Validation rejects unauthenticated TXT fields that disclose identity, local
 layout, profile data, or inventory size. Rejected examples include usernames,
 paths, hostnames, profile labels, file counts, and friendly names.

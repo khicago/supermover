@@ -3,6 +3,7 @@ package receiver
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,6 +72,18 @@ func TestHandlerRejectsTrailingJSON(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /v1/sessions trailing JSON status = %d, want %d body %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestHandlerRejectsOversizedBody(t *testing.T) {
+	handler := NewHandler(FileStore{TargetRoot: t.TempDir()})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chunks", io.LimitReader(strings.NewReader(strings.Repeat("x", maxRequestBodyBytes+1)), maxRequestBodyBytes+1))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/chunks oversized status = %d, want %d body %s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
 

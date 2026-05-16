@@ -49,6 +49,7 @@ func TestChunkUploadRequestValidate(t *testing.T) {
 	}{
 		{name: "valid", req: ChunkUploadRequest{SessionID: "session-1", Path: "dir/file.bin", Offset: 0, Data: []byte("abc")}},
 		{name: "missing data", req: ChunkUploadRequest{SessionID: "session-1", Path: "dir/file.bin"}, wantErr: true},
+		{name: "chunk too large", req: ChunkUploadRequest{SessionID: "session-1", Path: "dir/file.bin", Data: make([]byte, MaxChunkBytes+1)}, wantErr: true},
 		{name: "negative offset", req: ChunkUploadRequest{SessionID: "session-1", Path: "dir/file.bin", Offset: -1, Data: []byte("abc")}, wantErr: true},
 		{name: "bad digest", req: ChunkUploadRequest{SessionID: "session-1", Path: "dir/file.bin", Data: []byte("abc"), Digest: "md5:abc"}, wantErr: true},
 	}

@@ -72,6 +72,9 @@ func (a Advertisement) TXT() (map[string]string, error) {
 		"svc":   a.ServiceType,
 	}
 	for key, value := range a.UnauthenticatedTXT {
+		if _, exists := txt[key]; exists {
+			continue
+		}
 		txt[key] = value
 	}
 	return txt, nil

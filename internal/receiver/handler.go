@@ -11,6 +11,8 @@ import (
 	"github.com/khicago/supermover/internal/protocol"
 )
 
+const maxRequestBodyBytes = protocol.MaxChunkBytes + 128*1024
+
 type Handler struct {
 	Store Store
 }
@@ -89,7 +91,8 @@ func (h Handler) handleCommit(w http.ResponseWriter, r *http.Request) {
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
 	defer r.Body.Close()
-	decoder := json.NewDecoder(r.Body)
+	body := http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	decoder := json.NewDecoder(body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(dest); err != nil {
 		writeError(w, http.StatusBadRequest, protocol.ErrorCodeBadRequest, err.Error())

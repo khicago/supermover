@@ -16,6 +16,7 @@ const (
 	MaxRootIDLen    = 128
 	MaxPathLen      = 4096
 	MaxDigestLen    = 128
+	MaxChunkBytes   = 4 * 1024 * 1024
 )
 
 type FileKind string
@@ -225,6 +226,9 @@ func (r ChunkUploadRequest) Validate() error {
 	}
 	if len(r.Data) == 0 {
 		errs = append(errs, errors.New("data is required"))
+	}
+	if len(r.Data) > MaxChunkBytes {
+		errs = append(errs, fmt.Errorf("data exceeds maximum chunk size %d", MaxChunkBytes))
 	}
 	validateDigest("digest", r.Digest, false, &errs)
 	return joinValidation(errs)

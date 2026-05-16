@@ -15,8 +15,8 @@ go test ./...
 Optional local tools used by maintainers:
 
 ```bash
-go install honnef.co/go/tools/cmd/staticcheck@latest
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 ```
 
 ## Required Checks
