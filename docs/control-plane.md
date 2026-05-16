@@ -59,8 +59,12 @@ Path helpers resolve artifacts under the target root:
 - `session_id`
 - `root_id`
 - `created_at`
-- `entries`: each entry has `path`, `kind`, optional `size`, `mod_time`,
-  `digest`, and `target_path`
+- `entries`: each entry has `path`, `kind`, optional `mode`, `size`,
+  `mod_time`, `digest`, `target_path`, and `symlink_target`
+
+Readers accept legacy symlink manifest entries that do not include
+`symlink_target` so older control-plane data can still be used for soft-delete
+review. Writers always emit `symlink_target` for symlink entries.
 
 `warning` records audit-relevant issues:
 
@@ -69,7 +73,12 @@ Path helpers resolve artifacts under the target root:
 - `session_id`
 - `code`
 - `message`
+- `severity`
 - `paths`
+- `target_path`
+- `detected`
+- `suggested_profile_patch`
+- `suggested_config`
 - `created_at`
 
 `target_drift` records target-local changes detected after sync:
@@ -87,8 +96,16 @@ Path helpers resolve artifacts under the target root:
 - `version`
 - `id`
 - `session_id`
+- `profile_id`
+- `target_id`
+- `root_id`
+- `previous_session_id`
+- `previous_manifest_id`
 - `source_path`
 - `target_path`
+- `kind`
+- `size`
+- `digest`
 - `detected_at`
 - `reason`
 
@@ -113,3 +130,8 @@ Validation catches missing required IDs and timestamps, invalid recovery
 statuses, invalid embedded profile JSON, empty manifest entry paths/kinds, and
 negative manifest entry sizes. Full sync semantics, digest verification,
 transport, and recovery execution are intentionally outside this foundation.
+
+Read-only health checks also treat published sessions as unhealthy when their
+manifest or receipt artifact is missing or invalid. This keeps recovery status
+from looking clean when the transaction record says published but the audit
+surface is damaged.

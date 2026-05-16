@@ -30,6 +30,8 @@ go run ./cmd/supermover profile set-target --profile ./supermover.profile.json -
 go run ./cmd/supermover scan --profile ./supermover.profile.json
 go run ./cmd/supermover push --profile ./supermover.profile.json --dry-run
 go run ./cmd/supermover push --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
 ```
 
@@ -37,8 +39,10 @@ go run ./cmd/supermover health --profile ./supermover.profile.json
 control-plane artifacts. The target path comes from the profile. A non-dry-run
 local push copies supported regular files, records manifests and warnings, and
 writes session control artifacts.
-`health` is read-only: it reports incomplete or invalid session records under
-the target `.supermover` directory and does not repair them.
+`verify` checks published file payloads against the manifest. `deleted list`
+shows reviewable source-side deletions. `health` is read-only: it reports
+incomplete or invalid session records and missing/corrupt published artifacts
+under the target `.supermover` directory and does not repair them.
 
 ## Prepare A Profile
 
@@ -60,6 +64,10 @@ the target `.supermover` directory and does not repair them.
    go run ./cmd/supermover profile lint --profile ./supermover.profile.json
    ```
 
+   `profile lint` validates schema and safety invariants. It does not prove
+   the profile is executable by the current local push implementation; use
+   `push --dry-run`, `verify`, and `health` as the operational readiness gates.
+
 4. Confirm these fields are intentional:
 
    - `roots`: every source root that may be read.
@@ -76,6 +84,11 @@ the target `.supermover` directory and does not repair them.
    - `target.local_path`: trusted local restore directory for the local push
      slice.
    - `agent_knowledge.categories`: agent rule and state files to catalog.
+
+   The current local push implementation fails fast if policy fields ask for
+   behavior it does not implement, such as excluding hidden files, suppressing
+   sensitive filenames, disabling permission/modtime preservation, preserving
+   extended attributes, custom agent knowledge categories, or multiple roots.
 
 Do not pass ad hoc runtime flags to change policy. If behavior should change,
 edit the profile, lint it, and keep the changed profile with the run records.
@@ -122,6 +135,11 @@ The target should now contain restored files and a `.supermover` control
 directory. Treat `.supermover` as part of the migration result, not disposable
 cache.
 
+Use an empty target directory for first migration. Current local push refuses to
+overwrite existing files unless the existing file content is byte-identical to
+the source. This makes reruns idempotent while preventing accidental replacement
+of unrelated target data.
+
 ## Review Control-Plane Evidence
 
 After a published run, inspect these files on the target:
@@ -136,6 +154,8 @@ Required evidence for the local push slice:
 - `.supermover/sessions/<session>/receipt.json`: session status and target ID.
 - `.supermover/sessions/<session>/manifest.json`: restored content manifest.
 - `.supermover/warnings/*.json`: warning audit records, if warnings occurred.
+- `.supermover/deleted/*.json`: soft-delete records, if source paths
+  disappeared since the latest matching profile/target/root manifest.
 - `.supermover/agent/<session>-influence.json`: agent knowledge catalog, if
   known agent files were present.
 
@@ -148,7 +168,8 @@ acceptable.
 Warnings mean "published with evidence to review", not "ignored". For each
 warning file:
 
-1. Read `code`, `message`, `paths`, and `session_id`.
+1. Read `code`, `message`, `severity`, `paths`, `target_path`, `detected`, and
+   `session_id`.
 2. Decide whether the restored tree is acceptable without that behavior.
 3. If policy should change, edit the profile and rerun from a new session.
 4. Keep the warning record with the session evidence.
@@ -165,7 +186,9 @@ record before physical deletion from the target. The profile field
 without review is invalid.
 
 After a second or later push, source files that disappeared since the latest
-published manifest are written as `.supermover/deleted/*.json` records. List
+published manifest for the same `profile_id`, `target_id`, and root are written
+as `.supermover/deleted/*.json` records. The records include previous
+session/manifest evidence, path, kind, size, and digest when available. List
 them before any manual cleanup:
 
 ```bash

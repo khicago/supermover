@@ -22,6 +22,10 @@ func TestBeginSessionRequestValidate(t *testing.T) {
 			{Path: "file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
 			{Path: "file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
 		}}), wantErr: true},
+		{name: "duplicate target path", req: withManifest(valid, TransferManifest{ID: "manifest1", Entries: []ManifestEntry{
+			{Path: "a.bin", TargetPath: "same.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
+			{Path: "b.bin", TargetPath: "same.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
+		}}), wantErr: true},
 	}
 
 	for _, tt := range tests {

@@ -169,6 +169,7 @@ func (m TransferManifest) Validate() error {
 	var errs []error
 	validateToken("manifest.id", m.ID, MaxSessionIDLen, &errs)
 	seen := map[string]struct{}{}
+	seenTargets := map[string]string{}
 	for i, entry := range m.Entries {
 		if err := entry.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: %w", i, err))
@@ -177,6 +178,14 @@ func (m TransferManifest) Validate() error {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: duplicate path %q", i, entry.Path))
 		}
 		seen[entry.Path] = struct{}{}
+		targetPath := entry.Path
+		if entry.TargetPath != "" {
+			targetPath = entry.TargetPath
+		}
+		if firstPath, ok := seenTargets[targetPath]; ok && firstPath != entry.Path {
+			errs = append(errs, fmt.Errorf("manifest.entries[%d]: duplicate target path %q also used by %q", i, targetPath, firstPath))
+		}
+		seenTargets[targetPath] = entry.Path
 	}
 	return joinValidation(errs)
 }

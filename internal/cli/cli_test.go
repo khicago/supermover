@@ -333,6 +333,52 @@ func TestPushDryRunRejectsNestedTarget(t *testing.T) {
 	}
 }
 
+func TestPushDryRunRejectsDivergentExistingTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "file.txt"), "source")
+	mustWrite(t, filepath.Join(target, "file.txt"), "target")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"push", "--profile", profilePath, "--dry-run"}, &stdout, &stderr)
+	if got != 2 {
+		t.Fatalf("push --dry-run divergent target exit = %d, stderr = %q, want 2", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "refusing to overwrite") {
+		t.Fatalf("push --dry-run divergent target stderr = %q, want refusing to overwrite", stderr.String())
+	}
+}
+
+func TestPushDryRunRejectsMultipleRoots(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	sourceTwo := filepath.Join(dir, "source-two")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, sourceTwo)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Roots = append(p.Roots, profile.Root{ID: "root-two", Path: sourceTwo})
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"push", "--profile", profilePath, "--dry-run"}, &stdout, &stderr)
+	if got != 2 {
+		t.Fatalf("push --dry-run multi-root exit = %d, stderr = %q, want 2", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "exactly one root") {
+		t.Fatalf("push --dry-run multi-root stderr = %q, want exactly one root error", stderr.String())
+	}
+}
+
 func TestVerifyReportsPublishedSession(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -424,6 +470,11 @@ func TestDeletedListShowsSoftDeleteRecords(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "source=gone.txt") {
 		t.Fatalf("deleted list stdout = %q, want gone.txt soft delete", stdout.String())
+	}
+	for _, want := range []string{"profile=profile-local", "target_id=local:profile-local", "root=root", "previous_session=session-one", "previous_manifest=manifest-session-one", "kind=file", "size=4", "digest=sha256:"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("deleted list stdout = %q, want evidence field %q", stdout.String(), want)
+		}
 	}
 }
 

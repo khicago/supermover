@@ -30,11 +30,14 @@ from the source. It records intent only:
 - no target files are physically deleted
 - directory entries are skipped
 - record IDs are deterministic from session and paths
+- records include profile, target, root, previous session, previous manifest,
+  kind, size, and digest evidence when known
 - timestamps are caller supplied for reproducible tests
 
 The local push flow now:
 
-1. Read the latest trusted manifest for the profile target.
+1. Read the latest trusted manifest for the same profile ID, target ID, and
+   root.
 2. Scan the current source root from the profile.
 3. Call `deleted.Generate`.
 4. Persist records under `.supermover/deleted/<id>.json`.

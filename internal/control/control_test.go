@@ -67,6 +67,11 @@ func TestValidateDocuments(t *testing.T) {
 		{name: "invalid recovery", doc: RecoveryState{Version: CurrentVersion, Status: "unknown", UpdatedAt: "2026-05-16T00:00:00Z"}, wantErr: "status must be one of"},
 		{name: "invalid manifest entry", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Kind: "file"}}}, wantErr: "entries[0].path is required"},
 		{name: "invalid symlink manifest entry", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "link", Kind: "symlink"}}}, wantErr: "entries[0].symlink_target is required"},
+		{name: "invalid warning missing session", doc: Warning{Version: CurrentVersion, ID: "w1", Severity: "warning", Code: "c", Message: "m", Paths: []string{"p"}, CreatedAt: "2026-05-16T00:00:00Z"}, wantErr: "session_id is required"},
+		{name: "invalid warning missing severity", doc: Warning{Version: CurrentVersion, ID: "w1", SessionID: "s1", Code: "c", Message: "m", Paths: []string{"p"}, CreatedAt: "2026-05-16T00:00:00Z"}, wantErr: "severity is required"},
+		{name: "invalid warning missing paths", doc: Warning{Version: CurrentVersion, ID: "w1", SessionID: "s1", Severity: "warning", Code: "c", Message: "m", CreatedAt: "2026-05-16T00:00:00Z"}, wantErr: "paths must contain"},
+		{name: "invalid soft delete missing profile", doc: SoftDelete{Version: CurrentVersion, ID: "d1", SessionID: "s1", TargetID: "t1", RootID: "root", PreviousSessionID: "s0", PreviousManifestID: "m0", SourcePath: "a", TargetPath: "a", Kind: "file", DetectedAt: "2026-05-16T00:00:00Z"}, wantErr: "profile_id is required"},
+		{name: "invalid soft delete missing previous evidence", doc: SoftDelete{Version: CurrentVersion, ID: "d1", SessionID: "s1", ProfileID: "p1", TargetID: "t1", RootID: "root", SourcePath: "a", TargetPath: "a", Kind: "file", DetectedAt: "2026-05-16T00:00:00Z"}, wantErr: "previous_session_id is required"},
 		{name: "invalid snapshot payload", doc: ProfileSnapshot{Version: CurrentVersion, ID: "snap1", ProfileID: "p1", CapturedAt: "2026-05-16T00:00:00Z", Profile: []byte(`{`)}, wantErr: "profile must contain valid JSON"},
 	}
 
@@ -184,8 +189,11 @@ func validWarning() Warning {
 	return Warning{
 		Version:   CurrentVersion,
 		ID:        "warning1",
+		SessionID: "session1",
 		Code:      "privacy",
 		Message:   "plaintext restore is enabled",
+		Severity:  "warning",
+		Paths:     []string{"notes/a.md"},
 		CreatedAt: "2026-05-16T00:00:00Z",
 	}
 }
@@ -202,11 +210,18 @@ func validTargetDrift() TargetDrift {
 
 func validSoftDelete() SoftDelete {
 	return SoftDelete{
-		Version:    CurrentVersion,
-		ID:         "delete1",
-		SourcePath: "notes/a.md",
-		TargetPath: "notes/a.md",
-		DetectedAt: "2026-05-16T00:00:00Z",
+		Version:            CurrentVersion,
+		ID:                 "delete1",
+		SessionID:          "session1",
+		ProfileID:          "profile1",
+		TargetID:           "target1",
+		RootID:             "root",
+		PreviousSessionID:  "session0",
+		PreviousManifestID: "manifest0",
+		SourcePath:         "notes/a.md",
+		TargetPath:         "notes/a.md",
+		Kind:               "file",
+		DetectedAt:         "2026-05-16T00:00:00Z",
 	}
 }
 

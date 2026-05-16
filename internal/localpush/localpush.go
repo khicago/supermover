@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -42,11 +43,8 @@ func Run(opts Options) (Result, error) {
 	if err := opts.Profile.Validate(); err != nil {
 		return Result{}, err
 	}
-	if err := ValidateSupportedRules(opts.Profile); err != nil {
+	if err := ValidateProfileForLocalPush(opts.Profile); err != nil {
 		return Result{}, err
-	}
-	if len(opts.Profile.Roots) != 1 {
-		return Result{}, fmt.Errorf("local push requires exactly one root for now")
 	}
 	if strings.TrimSpace(opts.TargetDir) == "" {
 		return Result{}, fmt.Errorf("target directory is required")
@@ -82,6 +80,9 @@ func Run(opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if err := layout.EnsureSessionDirs(sessionID); err != nil {
+		return Result{}, err
+	}
 	if err := layout.WriteSessionRecord(record); err != nil {
 		return Result{}, err
 	}
@@ -94,18 +95,15 @@ func Run(opts Options) (Result, error) {
 			continue
 		}
 		sourcePath := filepath.Join(root.Path, filepath.FromSlash(entry.Path))
-		targetPath, err := targetPathForEntry(opts.TargetDir, entry)
-		if err != nil {
-			return Result{}, err
-		}
 		switch entry.Kind {
 		case scan.KindDir:
-			if err := os.MkdirAll(targetPath, entry.Mode.Perm()); err != nil {
-				return Result{}, fmt.Errorf("create target directory %q: %w", targetPath, err)
-			}
 			manifestEntries = append(manifestEntries, manifestEntry(entry, "dir", ""))
 		case scan.KindRegular:
-			digest, err := copyRegular(sourcePath, targetPath, entry.Mode.Perm(), entry.ModTime)
+			stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
+			if err != nil {
+				return Result{}, err
+			}
+			digest, err := copyRegularToStage(sourcePath, stagePath, entry.Mode.Perm())
 			if err != nil {
 				return Result{}, err
 			}
@@ -132,7 +130,17 @@ func Run(opts Options) (Result, error) {
 	if err := layout.WriteSessionRecord(record); err != nil {
 		return Result{}, err
 	}
+	existingDirs, err := captureExistingPublishDirs(opts.TargetDir, manifestEntries)
+	if err != nil {
+		return Result{}, err
+	}
 	if err := writeControlArtifacts(opts.TargetDir, opts.Profile, sessionID, now, manifestEntries, warnings, influences, softDeletes); err != nil {
+		return Result{}, err
+	}
+	if err := publishStaged(layout, opts.TargetDir, sessionID, manifestEntries, existingDirs); err != nil {
+		return Result{}, err
+	}
+	if err := writeSessionReceipt(opts.TargetDir, opts.Profile, sessionID, now); err != nil {
 		return Result{}, err
 	}
 	record, err = record.WithState(transaction.StatePublished, now)
@@ -150,6 +158,65 @@ func Run(opts Options) (Result, error) {
 		Influences: len(influences),
 		Deleted:    len(softDeletes),
 	}, nil
+}
+
+func Preflight(opts Options) (Result, error) {
+	if err := opts.Profile.Validate(); err != nil {
+		return Result{}, err
+	}
+	if err := ValidateProfileForLocalPush(opts.Profile); err != nil {
+		return Result{}, err
+	}
+	if strings.TrimSpace(opts.TargetDir) == "" {
+		return Result{}, fmt.Errorf("target directory is required")
+	}
+	if err := ValidateSourceTargetSeparation(opts.Profile.Roots[0].Path, opts.TargetDir); err != nil {
+		return Result{}, err
+	}
+	root := opts.Profile.Roots[0]
+	scanResult, err := scan.Scan(root.Path)
+	if err != nil {
+		return Result{}, err
+	}
+	warnings := append([]audit.Record(nil), scanResult.Audit...)
+	influences := agentkb.Detect(scanResult.Entries)
+	entries := 0
+	copied := 0
+	for _, entry := range scanResult.Entries {
+		if entry.Path == "." {
+			continue
+		}
+		targetPath, err := targetPathForEntry(opts.TargetDir, entry)
+		if err != nil {
+			return Result{}, err
+		}
+		switch entry.Kind {
+		case scan.KindDir:
+			if err := ensureDirectoryPreflight(targetPath); err != nil {
+				return Result{}, err
+			}
+			entries++
+		case scan.KindRegular:
+			sourcePath := filepath.Join(root.Path, filepath.FromSlash(entry.Path))
+			if err := preflightRegularTarget(sourcePath, targetPath); err != nil {
+				return Result{}, err
+			}
+			entries++
+			copied++
+		case scan.KindSymlink:
+			warnings = append(warnings, audit.WithDetected(
+				audit.New(entry.Path, entry.Path, audit.SeverityWarning, "symlink_not_copied", "symlink copy is not implemented in local push"),
+				map[string]string{"target": entry.SymlinkTarget},
+			))
+			entries++
+		default:
+			warnings = append(warnings, audit.WithDetected(
+				audit.New(entry.Path, entry.Path, audit.SeverityWarning, "special_not_copied", "special file copy is not supported"),
+				map[string]string{"mode": entry.Mode.String()},
+			))
+		}
+	}
+	return Result{Entries: entries, Copied: copied, Warnings: len(warnings), Influences: len(influences)}, nil
 }
 
 func targetPathForEntry(targetDir string, entry scan.Entry) (string, error) {
@@ -172,6 +239,46 @@ func ValidateSupportedRules(p profile.Profile) error {
 		return nil
 	}
 	return fmt.Errorf("custom include rules are not implemented in local push yet")
+}
+
+func ValidateProfileForLocalPush(p profile.Profile) error {
+	if len(p.Roots) != 1 {
+		return fmt.Errorf("local push requires exactly one root for now")
+	}
+	if err := ValidateSupportedRules(p); err != nil {
+		return err
+	}
+	if p.Consistency != profile.ConsistencyStrict {
+		return fmt.Errorf("consistency=%q is not implemented in local push; only strict is supported", p.Consistency)
+	}
+	if p.DeletePolicy.Mode == profile.DeleteModePrune || p.DeletePolicy.AllowPhysicalPrune {
+		return fmt.Errorf("physical prune is not implemented in local push; use delete_policy.mode=record or ignore")
+	}
+	if p.PrivacyPolicy.Mode != profile.PrivacyModePlaintext {
+		return fmt.Errorf("privacy_policy.mode=%q is not implemented in local push; target files are restored as plaintext", p.PrivacyPolicy.Mode)
+	}
+	if !p.PrivacyPolicy.AllowHiddenFiles {
+		return fmt.Errorf("privacy_policy.allow_hidden_files=false is not implemented in local push; hidden files are always included")
+	}
+	if !p.PrivacyPolicy.AllowSensitiveFilenames {
+		return fmt.Errorf("privacy_policy.allow_sensitive_filenames=false is not implemented in local push; sensitive filenames are always included")
+	}
+	if !reflect.DeepEqual(p.PrivacyPolicy, profile.DefaultPrivacyPolicy()) {
+		return fmt.Errorf("custom privacy_policy transport settings are not implemented in local push yet")
+	}
+	if p.MetadataPolicy.PreserveExtendedAttr {
+		return fmt.Errorf("metadata_policy.preserve_extended_attr=true is not implemented in local push")
+	}
+	if !p.MetadataPolicy.PreservePermissions {
+		return fmt.Errorf("metadata_policy.preserve_permissions=false is not implemented in local push; permissions are always preserved")
+	}
+	if !p.MetadataPolicy.PreserveModTime {
+		return fmt.Errorf("metadata_policy.preserve_mod_time=false is not implemented in local push; modification times are always preserved")
+	}
+	if !reflect.DeepEqual(p.AgentKnowledge, profile.DefaultAgentKnowledge()) {
+		return fmt.Errorf("custom agent_knowledge categories are not implemented in local push yet")
+	}
+	return nil
 }
 
 func ValidateSourceTargetSeparation(sourceRoot, targetDir string) error {
@@ -271,7 +378,7 @@ func softDeletesForRun(p profile.Profile, targetDir string, scanResult scan.Resu
 	if p.DeletePolicy.Mode == profile.DeleteModeIgnore || len(scanResult.Entries) == 0 {
 		return nil, nil
 	}
-	previous, ok, err := latestPublishedManifest(targetDir)
+	previous, ok, err := latestPublishedManifest(p, targetDir)
 	if err != nil {
 		return nil, err
 	}
@@ -282,6 +389,9 @@ func softDeletesForRun(p profile.Profile, targetDir string, scanResult scan.Resu
 		PreviousManifest: previous,
 		CurrentScan:      scanResult,
 		SessionID:        sessionID,
+		ProfileID:        p.ProfileID,
+		TargetID:         p.Target.TargetID,
+		RootID:           p.Roots[0].ID,
 		DetectedAt:       now,
 	})
 	if err != nil {
@@ -290,7 +400,7 @@ func softDeletesForRun(p profile.Profile, targetDir string, scanResult scan.Resu
 	return result.Records, nil
 }
 
-func latestPublishedManifest(targetDir string) (control.Manifest, bool, error) {
+func latestPublishedManifest(p profile.Profile, targetDir string) (control.Manifest, bool, error) {
 	sessionsDir := filepath.Join(control.ControlDir(targetDir), "sessions")
 	sessionDirs, err := os.ReadDir(sessionsDir)
 	if err != nil {
@@ -322,6 +432,9 @@ func latestPublishedManifest(targetDir string) (control.Manifest, bool, error) {
 		if receipt.Status != "published" {
 			continue
 		}
+		if receipt.ProfileID != p.ProfileID || receipt.TargetID != p.Target.TargetID {
+			continue
+		}
 		manifestPath, err := control.Path(targetDir, control.ArtifactManifest, sessionID)
 		if err != nil {
 			return control.Manifest{}, false, err
@@ -329,6 +442,10 @@ func latestPublishedManifest(targetDir string) (control.Manifest, bool, error) {
 		manifest, err := control.ReadManifestCompatFile(manifestPath)
 		if err != nil {
 			return control.Manifest{}, false, fmt.Errorf("read previous manifest %q: %w", sessionID, err)
+		}
+		rootID := p.Roots[0].ID
+		if manifest.RootID != rootID && !(manifest.RootID == "" && len(p.Roots) == 1) {
+			continue
 		}
 		stamp := manifest.CreatedAt
 		if stamp == "" {
@@ -347,9 +464,260 @@ func copyRegular(sourcePath, targetPath string, mode os.FileMode, modTime time.T
 	return copyRegularWithPostCopy(sourcePath, targetPath, mode, modTime, nil)
 }
 
+func copyRegularToStage(sourcePath, stagePath string, mode os.FileMode) (string, error) {
+	return copyRegularToStageWithPostCopy(sourcePath, stagePath, mode, nil)
+}
+
+func preflightRegularTarget(sourcePath, targetPath string) error {
+	sourceInfo, err := os.Stat(sourcePath)
+	if err != nil {
+		return fmt.Errorf("stat source file %q: %w", sourcePath, err)
+	}
+	if !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("source file %q is no longer regular", sourcePath)
+	}
+	sourceDigest, err := digestFile(sourcePath)
+	if err != nil {
+		return err
+	}
+	same, exists, err := targetFileState(targetPath, sourceInfo.Size(), sourceDigest)
+	if err != nil {
+		return err
+	}
+	if exists && !same {
+		return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+	}
+	return nil
+}
+
+func ensureDirectoryPreflight(targetPath string) error {
+	info, err := os.Lstat(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat target directory %q: %w", targetPath, err)
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		return nil
+	}
+	return fmt.Errorf("target directory %q already exists as non-directory; refusing to overwrite", targetPath)
+}
+
+func directoryExists(targetPath string) (bool, error) {
+	info, err := os.Lstat(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat target directory %q: %w", targetPath, err)
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		return true, nil
+	}
+	return false, fmt.Errorf("target directory %q already exists as non-directory; refusing to overwrite", targetPath)
+}
+
 func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, modTime time.Time, postCopy func() error) (string, error) {
+	stagePath := targetPath + ".stage"
+	digest, err := copyRegularToStageWithPostCopy(sourcePath, stagePath, mode, postCopy)
+	if err != nil {
+		return "", err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(stagePath)
+		}
+	}()
+	info, err := os.Stat(stagePath)
+	if err != nil {
+		return "", fmt.Errorf("stat staged file before publish: %w", err)
+	}
+	same, exists, err := targetFileState(targetPath, info.Size(), digest)
+	if err != nil {
+		return "", err
+	}
+	if exists {
+		if same {
+			return digest, nil
+		}
+		return "", fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+	}
+	if err := durable.PromoteFileNoReplace(stagePath, targetPath); err != nil {
+		return "", err
+	}
+	if err := applyFileMetadata(targetPath, mode, modTime); err != nil {
+		return "", err
+	}
+	cleanup = false
+	return digest, nil
+}
+
+type existingDirMeta struct {
+	Mode    os.FileMode
+	ModTime time.Time
+}
+
+func captureExistingPublishDirs(targetDir string, entries []control.ManifestEntry) (map[string]existingDirMeta, error) {
+	out := map[string]existingDirMeta{}
+	for _, entry := range entries {
+		var dirPath string
+		var err error
+		switch entry.Kind {
+		case "dir":
+			dirPath, err = targetPathForManifestEntry(targetDir, entry)
+		case "file":
+			filePath, err := targetPathForManifestEntry(targetDir, entry)
+			if err == nil {
+				dirPath = filepath.Dir(filePath)
+			}
+		default:
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, dir := range ancestorDirs(targetDir, dirPath) {
+			if _, ok := out[dir]; ok {
+				continue
+			}
+			info, err := os.Lstat(dir)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, fmt.Errorf("stat target directory %q: %w", dir, err)
+			}
+			if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+				out[dir] = existingDirMeta{Mode: info.Mode().Perm(), ModTime: info.ModTime()}
+			}
+		}
+	}
+	return out, nil
+}
+
+func ancestorDirs(root, dir string) []string {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil
+	}
+	dirAbs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	current := filepath.Clean(dirAbs)
+	for {
+		rel, err := filepath.Rel(rootAbs, current)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			break
+		}
+		dirs = append(dirs, current)
+		if current == rootAbs {
+			break
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+		current = parent
+	}
+	return dirs
+}
+
+func publishStaged(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry, existingDirs map[string]existingDirMeta) error {
+	defer restoreExistingDirs(existingDirs)
+	for _, entry := range entries {
+		targetPath, err := targetPathForManifestEntry(targetDir, entry)
+		if err != nil {
+			return err
+		}
+		switch entry.Kind {
+		case "dir":
+			mode := os.FileMode(entry.Mode)
+			if mode == 0 {
+				mode = 0o755
+			}
+			existed, err := directoryExists(targetPath)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(targetPath, mode); err != nil {
+				return fmt.Errorf("publish directory %q: %w", entry.Path, err)
+			}
+			if !existed {
+				if err := applyFileMetadata(targetPath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+					return err
+				}
+			}
+		case "file":
+			stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
+			if err != nil {
+				return err
+			}
+			same, exists, err := targetFileState(targetPath, entry.Size, entry.Digest)
+			if err != nil {
+				return err
+			}
+			if exists {
+				if same {
+					if err := os.Remove(stagePath); err != nil {
+						return fmt.Errorf("remove duplicate staged file %q: %w", entry.Path, err)
+					}
+					continue
+				}
+				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+			}
+			if err := durable.PromoteFileNoReplace(stagePath, targetPath); err != nil {
+				return err
+			}
+			mode := os.FileMode(entry.Mode)
+			if mode == 0 {
+				mode = 0o644
+			}
+			if err := applyFileMetadata(targetPath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func restoreExistingDirs(dirs map[string]existingDirMeta) {
+	for path, meta := range dirs {
+		_ = os.Chmod(path, meta.Mode)
+		_ = os.Chtimes(path, meta.ModTime, meta.ModTime)
+	}
+}
+
+func targetPathForManifestEntry(targetDir string, entry control.ManifestEntry) (string, error) {
+	switch entry.Kind {
+	case "dir":
+		return pathguard.SafeJoinDirectory(targetDir, targetPath(entry))
+	default:
+		return pathguard.SafeJoinParent(targetDir, targetPath(entry))
+	}
+}
+
+func targetPath(entry control.ManifestEntry) string {
+	if entry.TargetPath != "" {
+		return entry.TargetPath
+	}
+	return entry.Path
+}
+
+func parseManifestModTime(value string) time.Time {
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func copyRegularToStageWithPostCopy(sourcePath, targetPath string, mode os.FileMode, postCopy func() error) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return "", fmt.Errorf("create target parent %q: %w", filepath.Dir(targetPath), err)
+		return "", fmt.Errorf("create staged parent %q: %w", filepath.Dir(targetPath), err)
 	}
 	before, err := os.Stat(sourcePath)
 	if err != nil {
@@ -366,7 +734,7 @@ func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, mo
 
 	temp, err := os.CreateTemp(filepath.Dir(targetPath), ".supermover-*.tmp")
 	if err != nil {
-		return "", fmt.Errorf("create target temp file: %w", err)
+		return "", fmt.Errorf("create staged temp file: %w", err)
 	}
 	tempName := temp.Name()
 	cleanup := true
@@ -400,15 +768,57 @@ func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, mo
 	if !sameSourceFile(before, after) {
 		return "", fmt.Errorf("source file %q changed during copy; rerun after the source is stable", sourcePath)
 	}
-	if err := durable.PromoteFile(tempName, targetPath); err != nil {
+	digest := "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	if err := durable.PromoteFileNoReplace(tempName, targetPath); err != nil {
 		return "", err
 	}
+	cleanup = false
+	return digest, nil
+}
+
+func applyFileMetadata(path string, mode os.FileMode, modTime time.Time) error {
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("preserve permissions for %q: %w", path, err)
+	}
 	if !modTime.IsZero() {
-		if err := os.Chtimes(targetPath, modTime, modTime); err != nil {
-			return "", fmt.Errorf("preserve modification time for %q: %w", targetPath, err)
+		if err := os.Chtimes(path, modTime, modTime); err != nil {
+			return fmt.Errorf("preserve modification time for %q: %w", path, err)
 		}
 	}
-	cleanup = false
+	return nil
+}
+
+func targetFileState(path string, size int64, digest string) (same bool, exists bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("stat target file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, true, fmt.Errorf("target path %q already exists and is not a regular file; refusing to overwrite", path)
+	}
+	if info.Size() != size {
+		return false, true, nil
+	}
+	got, err := digestFile(path)
+	if err != nil {
+		return false, true, err
+	}
+	return got == digest, true, nil
+}
+
+func digestFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open target file %q: %w", path, err)
+	}
+	defer file.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		return "", fmt.Errorf("hash target file %q: %w", path, err)
+	}
 	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
@@ -425,6 +835,7 @@ func manifestEntry(entry scan.Entry, kind string, digest string) control.Manifes
 	return control.ManifestEntry{
 		Path:          entry.Path,
 		Kind:          kind,
+		Mode:          uint32(entry.Mode.Perm()),
 		Size:          entry.Size,
 		ModTime:       entry.ModTime.UTC().Format(time.RFC3339Nano),
 		Digest:        digest,
@@ -452,24 +863,11 @@ func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string
 	} else if err := control.WriteFile(path, snapshot); err != nil {
 		return err
 	}
-	receipt := control.SessionReceipt{
-		Version:   control.CurrentVersion,
-		ID:        sessionID,
-		ProfileID: p.ProfileID,
-		TargetID:  p.Target.TargetID,
-		StartedAt: stamp,
-		EndedAt:   stamp,
-		Status:    "published",
-	}
-	if path, err := control.Path(targetDir, control.ArtifactSessionReceipt, sessionID); err != nil {
-		return err
-	} else if err := control.WriteFile(path, receipt); err != nil {
-		return err
-	}
 	manifest := control.Manifest{
 		Version:   control.CurrentVersion,
 		ID:        "manifest-" + sessionID,
 		SessionID: sessionID,
+		RootID:    p.Roots[0].ID,
 		CreatedAt: stamp,
 		Entries:   entries,
 	}
@@ -480,13 +878,18 @@ func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string
 	}
 	for i, warning := range warnings {
 		doc := control.Warning{
-			Version:   control.CurrentVersion,
-			ID:        fmt.Sprintf("%s-%03d-%s", sessionID, i+1, warning.ID),
-			SessionID: sessionID,
-			Code:      warning.Kind,
-			Message:   warning.Reason,
-			Paths:     []string{warning.Path},
-			CreatedAt: stamp,
+			Version:               control.CurrentVersion,
+			ID:                    fmt.Sprintf("%s-%03d-%s", sessionID, i+1, warning.ID),
+			SessionID:             sessionID,
+			Code:                  warning.Kind,
+			Message:               warning.Reason,
+			Severity:              string(warning.Severity),
+			Paths:                 []string{warning.Path},
+			TargetPath:            warning.TargetPath,
+			Detected:              warning.Detected,
+			SuggestedProfilePatch: warning.SuggestedProfilePatch,
+			SuggestedConfig:       warning.SuggestedConfig,
+			CreatedAt:             stamp,
 		}
 		if path, err := control.Path(targetDir, control.ArtifactWarning, doc.ID); err != nil {
 			return err
@@ -505,6 +908,25 @@ func writeControlArtifacts(targetDir string, p profile.Profile, sessionID string
 		if err := writeAgentInfluence(targetDir, sessionID, stamp, influences); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func writeSessionReceipt(targetDir string, p profile.Profile, sessionID string, now time.Time) error {
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	receipt := control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        sessionID,
+		ProfileID: p.ProfileID,
+		TargetID:  p.Target.TargetID,
+		StartedAt: stamp,
+		EndedAt:   stamp,
+		Status:    "published",
+	}
+	if path, err := control.Path(targetDir, control.ArtifactSessionReceipt, sessionID); err != nil {
+		return err
+	} else if err := control.WriteFile(path, receipt); err != nil {
+		return err
 	}
 	return nil
 }

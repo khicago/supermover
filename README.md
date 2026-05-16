@@ -1,13 +1,30 @@
 # Supermover
 
-Supermover is a planned Go CLI for one-way, auditable file migration and
-incremental sync from a source machine to a trusted target machine.
+Supermover is a Go CLI for one-way, auditable file migration and incremental
+sync from a source machine to a trusted target machine.
 
 The current implementation is a local push vertical slice. Available commands
 are `profile`, `scan`, `push`, `verify`, `deleted list`, and `health`. Network
 receiver, pairing, physical prune, automatic recovery, status, discovery, and
 drift review commands are planned and may appear in design docs before CLI
 wiring exists.
+
+## Quickstart
+
+```bash
+go run ./cmd/supermover profile init --profile ./supermover.profile.json --source /path/to/source --target /path/to/empty-target
+go run ./cmd/supermover profile lint --profile ./supermover.profile.json
+go run ./cmd/supermover push --profile ./supermover.profile.json --dry-run
+go run ./cmd/supermover push --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover deleted list --profile ./supermover.profile.json
+go run ./cmd/supermover health --profile ./supermover.profile.json
+```
+
+Use an empty target directory for first migration. Current publish code refuses
+to overwrite an existing target file or symlink unless the existing object is
+content-identical, which keeps the migration path conservative for machine
+replacement.
 
 The v1 direction is intentionally conservative:
 
@@ -35,6 +52,8 @@ but that directory is intentionally ignored by Git.
   evidence to collect, and safe actions.
 - [v1 scope and non-goals](docs/v1-scope.md): product boundaries, including
   warning auditability, soft-delete review, profile SSOT, and discovery trust.
+- [Release audit](docs/release-audit.md): tracked checkpoint status, validation
+  gates, known planned surface, and safety notes.
 
 ## Development
 

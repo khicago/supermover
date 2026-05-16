@@ -256,7 +256,7 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "push: %v\n", err)
 		return 2
 	}
-	if err := localpush.ValidateSupportedRules(p); err != nil {
+	if err := localpush.ValidateProfileForLocalPush(p); err != nil {
 		fmt.Fprintf(stderr, "push: %v\n", err)
 		return 2
 	}
@@ -266,18 +266,12 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if *dryRun {
-		if len(p.Roots) == 1 {
-			if err := localpush.ValidateSourceTargetSeparation(p.Roots[0].Path, targetDir); err != nil {
-				fmt.Fprintf(stderr, "push: %v\n", err)
-				return 2
-			}
-		}
-		report, err := scanProfile(p)
+		result, err := localpush.Preflight(localpush.Options{Profile: p, TargetDir: targetDir})
 		if err != nil {
 			fmt.Fprintf(stderr, "push: %v\n", err)
-			return 1
+			return 2
 		}
-		fmt.Fprintf(stdout, "dry run: profile=%s roots=%d entries=%d warnings=%d influences=%d target=%s\n", p.ProfileID, len(report.Roots), report.EntryCount, report.WarningCount, report.InfluenceCount, targetDir)
+		fmt.Fprintf(stdout, "dry run: profile=%s roots=%d entries=%d warnings=%d influences=%d target=%s\n", p.ProfileID, len(p.Roots), result.Entries, result.Warnings, result.Influences, targetDir)
 		return 0
 	}
 	effectiveSessionID := *sessionID
@@ -517,22 +511,40 @@ func printVerifyText(w io.Writer, report verify.Report) {
 func printDeletedText(w io.Writer, report verify.Report) {
 	fmt.Fprintf(w, "soft deletes: count=%d target=%s\n", len(report.SoftDeletes), report.TargetRoot)
 	for _, record := range report.SoftDeletes {
-		fmt.Fprintf(w, "%s session=%s source=%s target=%s detected_at=%s\n", record.ID, record.SessionID, record.SourcePath, record.TargetPath, record.DetectedAt)
+		fmt.Fprintf(w, "%s session=%s profile=%s target_id=%s root=%s previous_session=%s previous_manifest=%s source=%s target=%s kind=%s size=%d digest=%s detected_at=%s\n",
+			record.ID,
+			record.SessionID,
+			record.ProfileID,
+			record.TargetID,
+			record.RootID,
+			record.PreviousSessionID,
+			record.PreviousManifestID,
+			record.SourcePath,
+			record.TargetPath,
+			record.Kind,
+			record.Size,
+			record.Digest,
+			record.DetectedAt,
+		)
 	}
 }
 
 func printHealthText(w io.Writer, report health.Report) {
-	fmt.Fprintf(w, "health: target=%s healthy=%t incomplete_sessions=%d invalid_records=%d\n",
+	fmt.Fprintf(w, "health: target=%s healthy=%t incomplete_sessions=%d invalid_records=%d artifact_problems=%d\n",
 		report.TargetRoot,
 		report.Healthy,
 		report.Summary.IncompleteSessions,
 		report.Summary.InvalidRecords,
+		report.Summary.ArtifactProblems,
 	)
 	for _, item := range report.Items {
 		fmt.Fprintf(w, "%s state=%s action=%s reason=%s path=%s\n", item.SessionID, item.State, item.Action, item.Reason, item.Path)
 	}
 	for _, invalid := range report.Invalid {
 		fmt.Fprintf(w, "invalid path=%s error=%s\n", invalid.Path, invalid.Error)
+	}
+	for _, artifact := range report.Artifacts {
+		fmt.Fprintf(w, "artifact session=%s path=%s error=%s\n", artifact.SessionID, artifact.Path, artifact.Error)
 	}
 }
 

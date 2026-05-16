@@ -3,10 +3,12 @@ package health
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/transaction"
+	"github.com/khicago/supermover/internal/verify"
 )
 
 type Options struct {
@@ -19,11 +21,13 @@ type Report struct {
 	Summary    Summary         `json:"summary"`
 	Items      []RecoveryItem  `json:"items,omitempty"`
 	Invalid    []InvalidRecord `json:"invalid,omitempty"`
+	Artifacts  []ArtifactIssue `json:"artifacts,omitempty"`
 }
 
 type Summary struct {
 	IncompleteSessions int `json:"incomplete_sessions"`
 	InvalidRecords     int `json:"invalid_records"`
+	ArtifactProblems   int `json:"artifact_problems"`
 }
 
 type RecoveryItem struct {
@@ -38,6 +42,12 @@ type RecoveryItem struct {
 type InvalidRecord struct {
 	Path  string `json:"path"`
 	Error string `json:"error"`
+}
+
+type ArtifactIssue struct {
+	SessionID string `json:"session_id,omitempty"`
+	Path      string `json:"path"`
+	Error     string `json:"error"`
 }
 
 func BuildReport(opts Options) (Report, error) {
@@ -74,8 +84,68 @@ func BuildReport(opts Options) (Report, error) {
 			Error: invalid.Err.Error(),
 		})
 	}
+	artifactIssues, err := scanPublishedArtifacts(targetRoot)
+	if err != nil {
+		return Report{}, err
+	}
+	reviewArtifacts, err := verify.LoadArtifacts(targetRoot)
+	if err != nil {
+		return Report{}, err
+	}
+	for _, problem := range reviewArtifacts.ArtifactProblems {
+		artifactIssues = append(artifactIssues, ArtifactIssue{Path: problem.Path, Error: problem.Err})
+	}
+	report.Artifacts = artifactIssues
 	report.Summary.IncompleteSessions = len(report.Items)
 	report.Summary.InvalidRecords = len(report.Invalid)
-	report.Healthy = report.Summary.IncompleteSessions == 0 && report.Summary.InvalidRecords == 0
+	report.Summary.ArtifactProblems = len(report.Artifacts)
+	report.Healthy = report.Summary.IncompleteSessions == 0 && report.Summary.InvalidRecords == 0 && report.Summary.ArtifactProblems == 0
 	return report, nil
+}
+
+func scanPublishedArtifacts(targetRoot string) ([]ArtifactIssue, error) {
+	sessionsDir := filepath.Join(control.ControlDir(targetRoot), "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read session artifacts: %w", err)
+	}
+
+	var issues []ArtifactIssue
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		sessionID := entry.Name()
+		recordPath := transaction.NewLayout(control.ControlDir(targetRoot)).RecordPath(sessionID)
+		record, err := transaction.ReadSessionRecord(recordPath)
+		if err != nil {
+			continue
+		}
+		if record.State != transaction.StatePublished {
+			continue
+		}
+		manifestPath, err := control.Path(targetRoot, control.ArtifactManifest, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := control.ReadManifestCompatFile(manifestPath); err != nil {
+			issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: manifestPath, Error: err.Error()})
+		}
+		receiptPath, err := control.Path(targetRoot, control.ArtifactSessionReceipt, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+		if err != nil {
+			issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: err.Error()})
+			continue
+		}
+		if receipt.Status != "published" {
+			issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: fmt.Sprintf("receipt status %q is not published", receipt.Status)})
+		}
+	}
+	return issues, nil
 }

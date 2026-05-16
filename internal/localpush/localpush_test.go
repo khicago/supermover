@@ -54,6 +54,9 @@ func TestRunCopiesFilesAndWritesControlArtifacts(t *testing.T) {
 	}
 
 	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-test")
+	if manifest.RootID != p.Roots[0].ID {
+		t.Errorf("manifest root_id = %q, want %q", manifest.RootID, p.Roots[0].ID)
+	}
 	if len(manifest.Entries) != got.Entries {
 		t.Fatalf("manifest entries = %d, want %d", len(manifest.Entries), got.Entries)
 	}
@@ -114,6 +117,9 @@ func TestRunRecordsSymlinkWarningWithoutCopyingTarget(t *testing.T) {
 	}
 	if warning.Code != "symlink_not_copied" {
 		t.Fatalf("warning code = %q, want symlink_not_copied", warning.Code)
+	}
+	if warning.Severity != "warning" || warning.TargetPath != "link.txt" || warning.Detected["target"] != "real.txt" {
+		t.Fatalf("warning evidence = %#v, want severity warning, target path link.txt, detected target real.txt", warning)
 	}
 	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-test")
 	if !manifestContainsSymlinkTarget(manifest, "link.txt", "real.txt") {
@@ -352,6 +358,12 @@ func TestRunRecordsSoftDeleteWithoutRemovingTargetFile(t *testing.T) {
 	if record.SourcePath != "gone.txt" || record.SessionID != "session-two" {
 		t.Fatalf("soft-delete record = %#v, want gone.txt in session-two", record)
 	}
+	if record.ProfileID != p.ProfileID || record.TargetID != p.Target.TargetID || record.RootID != p.Roots[0].ID {
+		t.Fatalf("soft-delete record scope = %#v, want profile/target/root evidence", record)
+	}
+	if record.PreviousSessionID != "session-one" || record.PreviousManifestID != "manifest-session-one" || record.Kind != "file" {
+		t.Fatalf("soft-delete previous evidence = %#v, want previous manifest/session and file kind", record)
+	}
 }
 
 func TestRunReadsLegacySymlinkManifestForSoftDeletes(t *testing.T) {
@@ -393,6 +405,145 @@ func TestRunReadsLegacySymlinkManifestForSoftDeletes(t *testing.T) {
 	}
 	if got.Deleted != 1 {
 		t.Fatalf("Run(legacy symlink manifest) deleted = %d, want 1", got.Deleted)
+	}
+}
+
+func TestRunSkipsSoftDeletesFromDifferentProfile(t *testing.T) {
+	dir := t.TempDir()
+	sourceA := filepath.Join(dir, "source-a")
+	sourceB := filepath.Join(dir, "source-b")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(sourceA, "old-a.txt"), "old", 0o644)
+	mustWriteFile(t, filepath.Join(sourceB, "keep-b.txt"), "keep", 0o644)
+
+	profileA := profile.NewDefault("profile-a", "Profile A", sourceA, target)
+	if _, err := Run(Options{Profile: profileA, TargetDir: target, SessionID: "session-a", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("Run(profile-a) error = %v, want nil", err)
+	}
+
+	profileB := profile.NewDefault("profile-b", "Profile B", sourceB, target)
+	got, err := Run(Options{Profile: profileB, TargetDir: target, SessionID: "session-b", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Run(profile-b) error = %v, want nil", err)
+	}
+	if got.Deleted != 0 {
+		t.Fatalf("Run(profile-b) deleted = %d, want 0 because previous manifest belongs to a different profile", got.Deleted)
+	}
+}
+
+func TestRunRefusesToOverwriteDifferentTargetFile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "source", 0o644)
+	mustWriteFile(t, filepath.Join(target, "file.txt"), "target", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil {
+		t.Fatalf("Run(existing divergent target) error = nil, want overwrite refusal")
+	}
+	if !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("Run(existing divergent target) error = %q, want refusing to overwrite", err.Error())
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "target" {
+		t.Fatalf("target file after failed Run = (%q, %v), want unchanged target", string(got), err)
+	}
+}
+
+func TestRunAllowsExistingIdenticalTargetFile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "same", 0o644)
+	mustWriteFile(t, filepath.Join(target, "file.txt"), "same", 0o600)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"}); err != nil {
+		t.Fatalf("Run(existing identical target) error = %v, want nil", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "same" {
+		t.Fatalf("target file after Run = (%q, %v), want same", string(got), err)
+	}
+	info, err := os.Stat(filepath.Join(target, "file.txt"))
+	if err != nil {
+		t.Fatalf("os.Stat(target file) error = %v, want nil", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("target mode after idempotent Run = %v, want existing 0600 unchanged", info.Mode().Perm())
+	}
+}
+
+func TestRunDoesNotMutateExistingTargetDirectoryMetadata(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "nested", "file.txt"), "payload", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	targetDir := filepath.Join(target, "nested")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", targetDir, err)
+	}
+	oldTime := time.Date(2026, 5, 15, 1, 2, 3, 0, time.UTC)
+	if err := os.Chtimes(targetDir, oldTime, oldTime); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", targetDir, err)
+	}
+
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"}); err != nil {
+		t.Fatalf("Run(existing target directory) error = %v, want nil", err)
+	}
+	info, err := os.Stat(targetDir)
+	if err != nil {
+		t.Fatalf("os.Stat(%q) error = %v, want nil", targetDir, err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("target directory mode after Run = %v, want existing 0700 unchanged", info.Mode().Perm())
+	}
+	if !info.ModTime().Equal(oldTime) {
+		t.Fatalf("target directory mtime after Run = %v, want existing %v unchanged", info.ModTime(), oldTime)
+	}
+}
+
+func TestValidateProfileForLocalPushRejectsUnsupportedPolicyToggles(t *testing.T) {
+	dir := t.TempDir()
+	p := profile.NewDefault("profile-local", "Local profile", filepath.Join(dir, "source"), filepath.Join(dir, "target"))
+
+	tests := []struct {
+		name string
+		edit func(*profile.Profile)
+		want string
+	}{
+		{name: "hidden files disabled", edit: func(p *profile.Profile) { p.PrivacyPolicy.AllowHiddenFiles = false }, want: "allow_hidden_files"},
+		{name: "sensitive names disabled", edit: func(p *profile.Profile) { p.PrivacyPolicy.AllowSensitiveFilenames = false }, want: "allow_sensitive_filenames"},
+		{name: "redacted privacy", edit: func(p *profile.Profile) { p.PrivacyPolicy.Mode = profile.PrivacyModeRedacted }, want: "privacy_policy.mode"},
+		{name: "custom traffic level", edit: func(p *profile.Profile) { p.PrivacyPolicy.TrafficLevel = 1 }, want: "custom privacy_policy"},
+		{name: "prune mode", edit: func(p *profile.Profile) { p.DeletePolicy.Mode = profile.DeleteModePrune }, want: "physical prune"},
+		{name: "physical prune enabled", edit: func(p *profile.Profile) { p.DeletePolicy.AllowPhysicalPrune = true }, want: "physical prune"},
+		{name: "live consistency", edit: func(p *profile.Profile) { p.Consistency = profile.ConsistencyLive }, want: "consistency"},
+		{name: "snapshot consistency", edit: func(p *profile.Profile) { p.Consistency = profile.ConsistencySnapshot }, want: "consistency"},
+		{name: "xattrs enabled", edit: func(p *profile.Profile) { p.MetadataPolicy.PreserveExtendedAttr = true }, want: "preserve_extended_attr"},
+		{name: "permissions disabled", edit: func(p *profile.Profile) { p.MetadataPolicy.PreservePermissions = false }, want: "preserve_permissions"},
+		{name: "modtime disabled", edit: func(p *profile.Profile) { p.MetadataPolicy.PreserveModTime = false }, want: "preserve_mod_time"},
+		{name: "custom agent knowledge", edit: func(p *profile.Profile) {
+			p.AgentKnowledge.Categories = append(p.AgentKnowledge.Categories, profile.KnowledgeCategory{Name: "custom", Manifest: true})
+		}, want: "agent_knowledge"},
+		{name: "multiple roots", edit: func(p *profile.Profile) {
+			p.Roots = append(p.Roots, profile.Root{ID: "root2", Path: filepath.Join(dir, "source2")})
+		}, want: "exactly one root"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next := p
+			tt.edit(&next)
+			err := ValidateProfileForLocalPush(next)
+			if err == nil {
+				t.Fatalf("ValidateProfileForLocalPush(%s) error = nil, want unsupported policy error", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("ValidateProfileForLocalPush(%s) error = %q, want substring %q", tt.name, err.Error(), tt.want)
+			}
+		})
 	}
 }
 

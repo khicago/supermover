@@ -54,8 +54,9 @@ but the target control plane is the evidence surface.
 
 Source-side deletion is not permission to delete the target copy immediately.
 The target must first receive a soft-delete record with source path, target
-path, session, detected time, and reason. Physical pruning is a later action
-gated by profile policy and operator review.
+path, profile/target/root scope, previous manifest evidence, detected time, and
+reason. Physical pruning is a later action gated by profile policy and operator
+review.
 
 For v1, `delete_policy.mode: prune` without `require_review: true` is invalid.
 
@@ -65,6 +66,10 @@ Profiles are the source of truth for migration behavior. Commands may select a
 profile and may create or lint a profile, but policy changes belong in the
 profile itself. Each successful run must preserve the profile snapshot used for
 that run so target state can be audited later.
+
+`profile lint` is a schema/safety gate. Implementation readiness still requires
+the operational gates for the selected slice, such as `push --dry-run`, `verify`,
+and `health`.
 
 ### Discovery Is Not Trust
 

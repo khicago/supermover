@@ -292,6 +292,137 @@ func TestFileStoreManifestPreservesSymlinkTarget(t *testing.T) {
 	t.Fatalf("manifest entries = %#v, want docs/link.txt", manifest.Entries)
 }
 
+func TestFileStoreCommitRefusesDivergentExistingTargetFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(existing target) error = %v, want nil", err)
+	}
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(existing divergent target) error = %v, want ErrConflict", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "docs", "a.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(existing target) error = %v, want nil", err)
+	}
+	if string(got) != "existing" {
+		t.Fatalf("target file after failed Commit = %q, want existing", got)
+	}
+}
+
+func TestFileStoreCommitAllowsIdenticalExistingTargetFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(existing target) error = %v, want nil", err)
+	}
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(existing identical target) error = %v, want nil", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "docs", "a.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(existing target) error = %v, want nil", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("target file after Commit = %q, want hello", got)
+	}
+	info, err := os.Stat(filepath.Join(root, "docs", "a.txt"))
+	if err != nil {
+		t.Fatalf("os.Stat(existing target) error = %v, want nil", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("target mode after idempotent Commit = %v, want existing 0600", info.Mode().Perm())
+	}
+}
+
+func TestFileStoreCommitRefusesDivergentExistingTargetSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
+	}
+	if err := os.Symlink("other.txt", filepath.Join(root, "docs", "link.txt")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	req.Manifest.Entries = []protocol.ManifestEntry{
+		{Path: "docs", Kind: protocol.FileKindDir},
+		{Path: "docs/link.txt", Kind: protocol.FileKindSymlink, SymlinkTarget: "a.txt"},
+	}
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(existing divergent symlink) error = %v, want ErrConflict", err)
+	}
+	got, err := os.Readlink(filepath.Join(root, "docs", "link.txt"))
+	if err != nil {
+		t.Fatalf("os.Readlink(existing symlink) error = %v, want nil", err)
+	}
+	if got != "other.txt" {
+		t.Fatalf("target symlink after failed Commit = %q, want other.txt", got)
+	}
+}
+
+func TestFileStoreCommitAllowsIdenticalExistingTargetSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
+	}
+	if err := os.Symlink("a.txt", filepath.Join(root, "docs", "link.txt")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	req.Manifest.Entries = []protocol.ManifestEntry{
+		{Path: "docs", Kind: protocol.FileKindDir},
+		{Path: "docs/link.txt", Kind: protocol.FileKindSymlink, SymlinkTarget: "a.txt"},
+	}
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(existing identical symlink) error = %v, want nil", err)
+	}
+	got, err := os.Readlink(filepath.Join(root, "docs", "link.txt"))
+	if err != nil {
+		t.Fatalf("os.Readlink(existing symlink) error = %v, want nil", err)
+	}
+	if got != "a.txt" {
+		t.Fatalf("target symlink after Commit = %q, want a.txt", got)
+	}
+}
+
 func TestFileStoreConcurrentDuplicateChunkSerialized(t *testing.T) {
 	store := FileStore{TargetRoot: t.TempDir()}
 	req := validBeginRequest([]byte("hello"))

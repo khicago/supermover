@@ -448,19 +448,28 @@ func (s FileStore) publish(meta sessionMeta) error {
 		}
 		switch entry.Kind {
 		case protocol.FileKindDir:
-			if err := os.MkdirAll(final, 0o755); err != nil {
-				return fmt.Errorf("publish directory %q: %w", entry.Path, err)
+			if err := publishDirectory(final, entry.Path); err != nil {
+				return err
 			}
 		case protocol.FileKindSymlink:
-			if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
-				return fmt.Errorf("publish symlink parent %q: %w", entry.Path, err)
-			}
-			_ = os.Remove(final)
-			if err := os.Rename(stage, final); err != nil {
-				return fmt.Errorf("publish symlink %q: %w", entry.Path, err)
+			if err := publishSymlinkNoReplace(stage, final, entry); err != nil {
+				return err
 			}
 		case protocol.FileKindFile:
-			if err := durable.PromoteFile(stage, final); err != nil {
+			same, exists, err := finalFileState(final, entry.Size, entry.Digest)
+			if err != nil {
+				return err
+			}
+			if exists {
+				if same {
+					if err := os.Remove(stage); err != nil {
+						return fmt.Errorf("remove duplicate staged file %q: %w", entry.Path, err)
+					}
+					continue
+				}
+				return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
+			}
+			if err := durable.PromoteFileNoReplace(stage, final); err != nil {
 				return fmt.Errorf("publish file %q: %w", entry.Path, err)
 			}
 			if !entry.ModTime.IsZero() {
@@ -471,6 +480,101 @@ func (s FileStore) publish(meta sessionMeta) error {
 		}
 	}
 	return nil
+}
+
+func publishPath(entry protocol.ManifestEntry) string {
+	if entry.TargetPath != "" {
+		return entry.TargetPath
+	}
+	return entry.Path
+}
+
+func publishSymlinkNoReplace(stage, final string, entry protocol.ManifestEntry) error {
+	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+		return fmt.Errorf("publish symlink parent %q: %w", entry.Path, err)
+	}
+	same, exists, err := symlinkTargetState(final, entry.SymlinkTarget)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if same {
+			if err := os.Remove(stage); err != nil {
+				return fmt.Errorf("remove duplicate staged symlink %q: %w", entry.Path, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("%w: target symlink %q already exists with different target; refusing to overwrite", ErrConflict, publishPath(entry))
+	}
+	if err := os.Symlink(entry.SymlinkTarget, final); err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("%w: target symlink %q appeared before publish; refusing to overwrite", ErrConflict, publishPath(entry))
+		}
+		return fmt.Errorf("publish symlink %q: %w", entry.Path, err)
+	}
+	if err := durable.SyncDirBestEffort(filepath.Dir(final)); err != nil {
+		return err
+	}
+	if err := os.Remove(stage); err != nil {
+		return fmt.Errorf("remove staged symlink %q: %w", entry.Path, err)
+	}
+	return durable.SyncDirBestEffort(filepath.Dir(stage))
+}
+
+func publishDirectory(final, path string) error {
+	info, err := os.Lstat(final)
+	if err == nil {
+		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+		return fmt.Errorf("%w: target directory %q already exists as non-directory; refusing to overwrite", ErrConflict, path)
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("stat target directory %q: %w", path, err)
+	}
+	if err := os.MkdirAll(final, 0o755); err != nil {
+		return fmt.Errorf("publish directory %q: %w", path, err)
+	}
+	return nil
+}
+
+func finalFileState(path string, size int64, digest string) (same bool, exists bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("stat target file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, true, fmt.Errorf("%w: target file %q already exists as non-regular; refusing to overwrite", ErrConflict, path)
+	}
+	if info.Size() != size {
+		return false, true, nil
+	}
+	got, err := fileDigest(path)
+	if err != nil {
+		return false, true, err
+	}
+	return strings.EqualFold(got, digest), true, nil
+}
+
+func symlinkTargetState(path string, target string) (same bool, exists bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("stat target symlink %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, true, fmt.Errorf("%w: target symlink %q already exists as non-symlink; refusing to overwrite", ErrConflict, path)
+	}
+	got, err := os.Readlink(path)
+	if err != nil {
+		return false, true, fmt.Errorf("read target symlink %q: %w", path, err)
+	}
+	return got == target, true, nil
 }
 
 func (s FileStore) ensurePublishedArtifacts(meta sessionMeta) error {

@@ -17,6 +17,9 @@ type Options struct {
 	PreviousManifest control.Manifest
 	CurrentScan      scan.Result
 	SessionID        string
+	ProfileID        string
+	TargetID         string
+	RootID           string
 	DetectedAt       time.Time
 }
 
@@ -52,13 +55,21 @@ func Generate(opts Options) (Result, error) {
 			targetPath = sourcePath
 		}
 		record := control.SoftDelete{
-			Version:    control.CurrentVersion,
-			ID:         StableID(sessionID, sourcePath, targetPath),
-			SessionID:  sessionID,
-			SourcePath: sourcePath,
-			TargetPath: targetPath,
-			DetectedAt: detectedAt.UTC().Format(time.RFC3339Nano),
-			Reason:     "present in previous manifest and absent from current source scan",
+			Version:            control.CurrentVersion,
+			ID:                 StableID(sessionID, sourcePath, targetPath),
+			SessionID:          sessionID,
+			ProfileID:          opts.ProfileID,
+			TargetID:           opts.TargetID,
+			RootID:             rootID(opts),
+			PreviousSessionID:  opts.PreviousManifest.SessionID,
+			PreviousManifestID: opts.PreviousManifest.ID,
+			SourcePath:         sourcePath,
+			TargetPath:         targetPath,
+			Kind:               entry.Kind,
+			Size:               entry.Size,
+			Digest:             entry.Digest,
+			DetectedAt:         detectedAt.UTC().Format(time.RFC3339Nano),
+			Reason:             "present in previous manifest and absent from current source scan",
 		}
 		if err := record.Validate(); err != nil {
 			return Result{}, err
@@ -72,6 +83,13 @@ func Generate(opts Options) (Result, error) {
 		return records[i].SourcePath < records[j].SourcePath
 	})
 	return Result{Records: records}, nil
+}
+
+func rootID(opts Options) string {
+	if strings.TrimSpace(opts.RootID) != "" {
+		return opts.RootID
+	}
+	return opts.PreviousManifest.RootID
 }
 
 func StableID(sessionID, sourcePath, targetPath string) string {

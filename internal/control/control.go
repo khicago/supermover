@@ -71,6 +71,7 @@ type Manifest struct {
 type ManifestEntry struct {
 	Path          string `json:"path"`
 	Kind          string `json:"kind"`
+	Mode          uint32 `json:"mode,omitempty"`
 	Size          int64  `json:"size,omitempty"`
 	ModTime       string `json:"mod_time,omitempty"`
 	Digest        string `json:"digest,omitempty"`
@@ -79,13 +80,18 @@ type ManifestEntry struct {
 }
 
 type Warning struct {
-	Version   int      `json:"version"`
-	ID        string   `json:"id"`
-	SessionID string   `json:"session_id,omitempty"`
-	Code      string   `json:"code"`
-	Message   string   `json:"message"`
-	Paths     []string `json:"paths,omitempty"`
-	CreatedAt string   `json:"created_at"`
+	Version               int               `json:"version"`
+	ID                    string            `json:"id"`
+	SessionID             string            `json:"session_id,omitempty"`
+	Code                  string            `json:"code"`
+	Message               string            `json:"message"`
+	Severity              string            `json:"severity,omitempty"`
+	Paths                 []string          `json:"paths,omitempty"`
+	TargetPath            string            `json:"target_path,omitempty"`
+	Detected              map[string]string `json:"detected,omitempty"`
+	SuggestedProfilePatch map[string]string `json:"suggested_profile_patch,omitempty"`
+	SuggestedConfig       map[string]string `json:"suggested_config,omitempty"`
+	CreatedAt             string            `json:"created_at"`
 }
 
 type TargetDrift struct {
@@ -99,13 +105,21 @@ type TargetDrift struct {
 }
 
 type SoftDelete struct {
-	Version    int    `json:"version"`
-	ID         string `json:"id"`
-	SessionID  string `json:"session_id,omitempty"`
-	SourcePath string `json:"source_path"`
-	TargetPath string `json:"target_path"`
-	DetectedAt string `json:"detected_at"`
-	Reason     string `json:"reason,omitempty"`
+	Version            int    `json:"version"`
+	ID                 string `json:"id"`
+	SessionID          string `json:"session_id,omitempty"`
+	ProfileID          string `json:"profile_id,omitempty"`
+	TargetID           string `json:"target_id,omitempty"`
+	RootID             string `json:"root_id,omitempty"`
+	PreviousSessionID  string `json:"previous_session_id,omitempty"`
+	PreviousManifestID string `json:"previous_manifest_id,omitempty"`
+	SourcePath         string `json:"source_path"`
+	TargetPath         string `json:"target_path"`
+	Kind               string `json:"kind,omitempty"`
+	Size               int64  `json:"size,omitempty"`
+	Digest             string `json:"digest,omitempty"`
+	DetectedAt         string `json:"detected_at"`
+	Reason             string `json:"reason,omitempty"`
 }
 
 type HistoryIndex struct {
@@ -333,8 +347,13 @@ func (d Warning) Validate() error {
 	var errs []error
 	requireVersion(d.Version, &errs)
 	require("id", d.ID, &errs)
+	require("session_id", d.SessionID, &errs)
 	require("code", d.Code, &errs)
 	require("message", d.Message, &errs)
+	require("severity", d.Severity, &errs)
+	if len(d.Paths) == 0 {
+		errs = append(errs, errors.New("paths must contain at least one path"))
+	}
 	require("created_at", d.CreatedAt, &errs)
 	return errors.Join(errs...)
 }
@@ -353,8 +372,15 @@ func (d SoftDelete) Validate() error {
 	var errs []error
 	requireVersion(d.Version, &errs)
 	require("id", d.ID, &errs)
+	require("session_id", d.SessionID, &errs)
+	require("profile_id", d.ProfileID, &errs)
+	require("target_id", d.TargetID, &errs)
+	require("root_id", d.RootID, &errs)
+	require("previous_session_id", d.PreviousSessionID, &errs)
+	require("previous_manifest_id", d.PreviousManifestID, &errs)
 	require("source_path", d.SourcePath, &errs)
 	require("target_path", d.TargetPath, &errs)
+	require("kind", d.Kind, &errs)
 	require("detected_at", d.DetectedAt, &errs)
 	return errors.Join(errs...)
 }

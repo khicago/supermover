@@ -33,6 +33,58 @@ func TestPromoteFileRenamesSyncedTempToFinal(t *testing.T) {
 	}
 }
 
+func TestPromoteFileNoReplaceCreatesFinal(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "file.tmp")
+	finalPath := filepath.Join(dir, "nested", "file.txt")
+
+	if err := os.WriteFile(tempPath, []byte("durable payload"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
+	}
+
+	if err := PromoteFileNoReplace(tempPath, finalPath); err != nil {
+		t.Fatalf("PromoteFileNoReplace(%q, %q) error = %v, want nil", tempPath, finalPath, err)
+	}
+
+	got, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", finalPath, err)
+	}
+	if string(got) != "durable payload" {
+		t.Errorf("PromoteFileNoReplace(%q, %q) content = %q, want %q", tempPath, finalPath, string(got), "durable payload")
+	}
+	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("os.Stat(%q) error = %v, want os.ErrNotExist", tempPath, err)
+	}
+}
+
+func TestPromoteFileNoReplaceRefusesExistingFinal(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "file.tmp")
+	finalPath := filepath.Join(dir, "file.txt")
+
+	if err := os.WriteFile(tempPath, []byte("new"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
+	}
+	if err := os.WriteFile(finalPath, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", finalPath, err)
+	}
+
+	if err := PromoteFileNoReplace(tempPath, finalPath); err == nil {
+		t.Fatalf("PromoteFileNoReplace(%q, %q) error = nil, want existing final error", tempPath, finalPath)
+	}
+	got, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", finalPath, err)
+	}
+	if string(got) != "existing" {
+		t.Fatalf("PromoteFileNoReplace(%q, %q) final content = %q, want existing", tempPath, finalPath, got)
+	}
+	if _, err := os.Stat(tempPath); err != nil {
+		t.Fatalf("os.Stat(%q) error = %v, want temp retained", tempPath, err)
+	}
+}
+
 func TestPromoteFileValidationFailure(t *testing.T) {
 	err := PromoteFile("", "final")
 	if err == nil {

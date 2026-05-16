@@ -28,29 +28,37 @@ func NewDefault(profileID, name, sourceRoot, targetRoot string) Profile {
 			PreservePermissions: true,
 			PreserveModTime:     true,
 		},
-		PrivacyPolicy: PrivacyPolicy{
-			Mode:                    PrivacyModePlaintext,
-			TrafficLevel:            2,
-			AllowPlaintextRestore:   true,
-			AllowHiddenFiles:        true,
-			AllowSensitiveFilenames: true,
-			PaddingBucketBytes:      64 * 1024,
-			BatchMaxBytes:           1024 * 1024,
-			BatchMaxCount:           64,
-			JitterBudgetMillis:      250,
-			DiscoveryLowInfo:        true,
-		},
+		PrivacyPolicy: DefaultPrivacyPolicy(),
 		Target: TargetIdentity{
 			TargetID:  "local:" + profileID,
 			Name:      filepath.Base(filepath.Clean(targetRoot)),
 			LocalPath: filepath.Clean(targetRoot),
 		},
-		AgentKnowledge: AgentKnowledge{
-			Categories: []KnowledgeCategory{
-				{Name: "repo_rules", Paths: []string{"AGENTS.md"}, Manifest: true},
-				{Name: "tool_project_rules", Paths: []string{"CLAUDE.md", "GEMINI.md", ".github/instructions/**", ".cursor/rules/**", ".windsurf/rules/**", ".continue/**"}, Manifest: true},
-				{Name: "generated_state", Paths: []string{".codex/**"}, Manifest: true},
-			},
+		AgentKnowledge: DefaultAgentKnowledge(),
+	}
+}
+
+func DefaultPrivacyPolicy() PrivacyPolicy {
+	return PrivacyPolicy{
+		Mode:                    PrivacyModePlaintext,
+		TrafficLevel:            2,
+		AllowPlaintextRestore:   true,
+		AllowHiddenFiles:        true,
+		AllowSensitiveFilenames: true,
+		PaddingBucketBytes:      64 * 1024,
+		BatchMaxBytes:           1024 * 1024,
+		BatchMaxCount:           64,
+		JitterBudgetMillis:      250,
+		DiscoveryLowInfo:        true,
+	}
+}
+
+func DefaultAgentKnowledge() AgentKnowledge {
+	return AgentKnowledge{
+		Categories: []KnowledgeCategory{
+			{Name: "repo_rules", Paths: []string{"AGENTS.md"}, Manifest: true},
+			{Name: "tool_project_rules", Paths: []string{"CLAUDE.md", "GEMINI.md", ".github/instructions/**", ".cursor/rules/**", ".windsurf/rules/**", ".continue/**"}, Manifest: true},
+			{Name: "generated_state", Paths: []string{".codex/**"}, Manifest: true},
 		},
 	}
 }

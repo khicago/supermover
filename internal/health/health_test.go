@@ -55,6 +55,49 @@ func TestBuildReportListsRecoveryItemsAndInvalidRecords(t *testing.T) {
 	}
 }
 
+func TestBuildReportMarksPublishedSessionMissingArtifactsUnhealthy(t *testing.T) {
+	target := t.TempDir()
+	layout := transaction.NewLayout(control.ControlDir(target))
+	writeRecord(t, layout, "session-published", transaction.StatePublished)
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Healthy {
+		t.Fatalf("BuildReport(%q).Healthy = true, want false for missing published artifacts", target)
+	}
+	if got.Summary.ArtifactProblems != 2 {
+		t.Fatalf("BuildReport(%q).Summary.ArtifactProblems = %d, want 2", target, got.Summary.ArtifactProblems)
+	}
+	if len(got.Artifacts) != 2 {
+		t.Fatalf("BuildReport(%q).Artifacts = %#v, want manifest and receipt problems", target, got.Artifacts)
+	}
+}
+
+func TestBuildReportMarksDamagedReviewArtifactsUnhealthy(t *testing.T) {
+	target := t.TempDir()
+	warningsDir := filepath.Join(control.ControlDir(target), "warnings")
+	if err := os.MkdirAll(warningsDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", warningsDir, err)
+	}
+	warningPath := filepath.Join(warningsDir, "bad.json")
+	if err := os.WriteFile(warningPath, []byte("{"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", warningPath, err)
+	}
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Healthy {
+		t.Fatalf("BuildReport(%q).Healthy = true, want false for damaged warning artifact", target)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.Artifacts) != 1 || got.Artifacts[0].Path != warningPath {
+		t.Fatalf("BuildReport(%q).Artifacts = %#v summary=%+v, want one damaged warning artifact", target, got.Artifacts, got.Summary)
+	}
+}
+
 func TestBuildReportRejectsMissingTarget(t *testing.T) {
 	_, err := BuildReport(Options{TargetRoot: filepath.Join(t.TempDir(), "missing")})
 	if err == nil {

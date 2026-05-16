@@ -78,6 +78,12 @@ target tree, updates `session.json` to `published`, and writes:
 <target>/.supermover/sessions/<session_id>/receipt.json
 ```
 
+Publishing is conservative. The receiver refuses to overwrite an existing file
+or symlink unless the existing target object is content-identical to the
+manifest entry. This keeps resume/idempotent commit safe while avoiding
+destructive replacement of unrelated target data. Manifests also reject duplicate
+effective target paths before begin.
+
 ## Mainline Integration Points
 
 - CLI command to start a receiver server from a profile.

@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/khicago/supermover/internal/durable"
 )
 
 const CurrentVersion = 1
@@ -282,10 +284,17 @@ func WriteFile(path string, p Profile) error {
 		temp.Close()
 		return err
 	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempName, path)
+	if err := os.Rename(tempName, path); err != nil {
+		return err
+	}
+	return durable.SyncDirBestEffort(filepath.Dir(path))
 }
 
 func Write(w io.Writer, p Profile) error {
