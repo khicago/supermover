@@ -2,7 +2,11 @@ package profile
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/khicago/supermover/internal/agentkb"
+	"github.com/khicago/supermover/internal/scan"
 )
 
 func TestNewDefaultBuildsValidProfile(t *testing.T) {
@@ -35,4 +39,43 @@ func TestNewDefaultBuildsValidProfile(t *testing.T) {
 	if got.PrivacyPolicy.TrafficLevel != 2 || !got.PrivacyPolicy.DiscoveryLowInfo {
 		t.Errorf("NewDefault() privacy traffic = (%d, %t), want level 2 low-info discovery", got.PrivacyPolicy.TrafficLevel, got.PrivacyPolicy.DiscoveryLowInfo)
 	}
+}
+
+func TestDefaultAgentKnowledgeCategoriesAreDetected(t *testing.T) {
+	knowledge := DefaultAgentKnowledge()
+	var entries []scan.Entry
+	want := map[string]string{}
+	for _, category := range knowledge.Categories {
+		for _, pattern := range category.Paths {
+			path := samplePath(pattern)
+			entries = append(entries, scan.Entry{Path: path, Kind: scan.KindRegular})
+			want[path] = category.Name
+		}
+	}
+
+	got := agentkb.Detect(entries)
+	gotByPath := map[string]agentkb.Influence{}
+	for _, influence := range got {
+		gotByPath[influence.Path] = influence
+	}
+	for path, category := range want {
+		influence, ok := gotByPath[path]
+		if !ok {
+			t.Errorf("agentkb.Detect(default profile path %q) missing influence, want category %q", path, category)
+			continue
+		}
+		if string(influence.Category) != category {
+			t.Errorf("agentkb.Detect(default profile path %q) category = %q, want %q", path, influence.Category, category)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("agentkb.Detect(default profile paths) returned %d influences, want %d: %#v", len(got), len(want), got)
+	}
+}
+
+func samplePath(pattern string) string {
+	if strings.HasSuffix(pattern, "/**") {
+		return strings.TrimSuffix(pattern, "/**") + "/example.md"
+	}
+	return pattern
 }

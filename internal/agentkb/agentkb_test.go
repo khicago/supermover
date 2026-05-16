@@ -51,6 +51,23 @@ func TestDetectKeepsSymlinkTarget(t *testing.T) {
 	}
 }
 
+func TestDetectWithExplicitCategoriesDoesNotUseDefaultRules(t *testing.T) {
+	entries := []scan.Entry{
+		{Path: "AGENTS.md", Kind: scan.KindRegular},
+		{Path: "TEAM.md", Kind: scan.KindRegular},
+		{Path: ".codex/state.json", Kind: scan.KindRegular, Hidden: true},
+	}
+	got := Detect(entries, []KnowledgeCategory{
+		{Name: CategoryRepoRules, Paths: []string{"TEAM.md"}, Manifest: true},
+	})
+	if len(got) != 1 {
+		t.Fatalf("Detect(%#v, explicit categories) returned %d influences, want 1: %#v", entries, len(got), got)
+	}
+	if got[0].Path != "TEAM.md" || got[0].Pattern != "TEAM.md" || got[0].Category != CategoryRepoRules {
+		t.Fatalf("Detect(%#v, explicit categories)[0] = %#v, want TEAM.md repo_rules influence", entries, got[0])
+	}
+}
+
 func assertCategory(t *testing.T, byPath map[string]Influence, path string, category Category) {
 	t.Helper()
 	influence, ok := byPath[path]

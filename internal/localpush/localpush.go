@@ -109,7 +109,7 @@ func Run(opts Options) (Result, error) {
 	if err := rejectScanErrors(scanResult); err != nil {
 		return Result{}, err
 	}
-	influences := agentkb.Detect(scanResult.Entries)
+	influences := agentkb.Detect(scanResult.Entries, agentKnowledgeCategories(opts.Profile.AgentKnowledge))
 	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
 	if err != nil {
 		return Result{}, err
@@ -231,7 +231,7 @@ func Preflight(opts Options) (Result, error) {
 		return Result{}, err
 	}
 	warnings := append([]audit.Record(nil), scanResult.Audit...)
-	influences := agentkb.Detect(scanResult.Entries)
+	influences := agentkb.Detect(scanResult.Entries, agentKnowledgeCategories(opts.Profile.AgentKnowledge))
 	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
 	if err != nil {
 		return Result{}, err
@@ -584,6 +584,18 @@ func ValidateProfileForLocalPush(p profile.Profile) error {
 		return fmt.Errorf("custom agent_knowledge categories are not implemented in local push yet")
 	}
 	return nil
+}
+
+func agentKnowledgeCategories(config profile.AgentKnowledge) []agentkb.KnowledgeCategory {
+	categories := make([]agentkb.KnowledgeCategory, 0, len(config.Categories))
+	for _, category := range config.Categories {
+		categories = append(categories, agentkb.KnowledgeCategory{
+			Name:     agentkb.Category(category.Name),
+			Paths:    append([]string(nil), category.Paths...),
+			Manifest: category.Manifest,
+		})
+	}
+	return categories
 }
 
 func ValidateSourceTargetSeparation(sourceRoot, targetDir string) error {

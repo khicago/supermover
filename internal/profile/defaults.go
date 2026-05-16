@@ -3,6 +3,8 @@ package profile
 import (
 	"path/filepath"
 	"strings"
+
+	"github.com/khicago/supermover/internal/agentkb"
 )
 
 func NewDefault(profileID, name, sourceRoot, targetRoot string) Profile {
@@ -54,11 +56,16 @@ func DefaultPrivacyPolicy() PrivacyPolicy {
 }
 
 func DefaultAgentKnowledge() AgentKnowledge {
+	defaults := agentkb.DefaultCategories()
+	categories := make([]KnowledgeCategory, 0, len(defaults))
+	for _, category := range defaults {
+		categories = append(categories, KnowledgeCategory{
+			Name:     string(category.Name),
+			Paths:    append([]string(nil), category.Paths...),
+			Manifest: category.Manifest,
+		})
+	}
 	return AgentKnowledge{
-		Categories: []KnowledgeCategory{
-			{Name: "repo_rules", Paths: []string{"AGENTS.md"}, Manifest: true},
-			{Name: "tool_project_rules", Paths: []string{"CLAUDE.md", "GEMINI.md", ".github/instructions/**", ".cursor/rules/**", ".windsurf/rules/**", ".continue/**"}, Manifest: true},
-			{Name: "generated_state", Paths: []string{".codex/**"}, Manifest: true},
-		},
+		Categories: categories,
 	}
 }

@@ -28,8 +28,39 @@ type Influence struct {
 	Target   string    `json:"target,omitempty"`
 }
 
+// KnowledgeCategory describes a configured group of agent knowledge paths.
+type KnowledgeCategory struct {
+	Name     Category
+	Paths    []string
+	Manifest bool
+}
+
+// DefaultCategories returns the built-in agent knowledge categories used by
+// default profiles and default detection.
+func DefaultCategories() []KnowledgeCategory {
+	categories := []KnowledgeCategory{
+		{Name: CategoryRepoRules, Paths: []string{"AGENTS.md"}, Manifest: true},
+		{Name: CategoryToolProjectRules, Paths: []string{"CLAUDE.md", "GEMINI.md", ".github/copilot-instructions.md", ".github/instructions/**", ".cursor/rules/**", ".windsurf/rules/**", ".continue/**"}, Manifest: true},
+		{Name: CategoryHomeMemories, Paths: []string{".claude.json", ".claude/**", ".gemini/settings.json", ".gemini/**"}, Manifest: true},
+		{Name: CategoryGeneratedState, Paths: []string{".codex/**"}, Manifest: true},
+	}
+	out := make([]KnowledgeCategory, 0, len(categories))
+	for _, category := range categories {
+		out = append(out, KnowledgeCategory{
+			Name:     category.Name,
+			Paths:    append([]string(nil), category.Paths...),
+			Manifest: category.Manifest,
+		})
+	}
+	return out
+}
+
 // Detect returns known agent knowledge files and directories from scan entries.
-func Detect(entries []scan.Entry) []Influence {
+func Detect(entries []scan.Entry, categories ...[]KnowledgeCategory) []Influence {
+	activeCategories := DefaultCategories()
+	if len(categories) > 0 {
+		activeCategories = cloneCategories(categories[0])
+	}
 	var influences []Influence
 	seen := map[string]bool{}
 	for _, entry := range entries {
@@ -37,7 +68,7 @@ func Detect(entries []scan.Entry) []Influence {
 		if p == "." {
 			continue
 		}
-		pattern, category, ok := classify(p)
+		pattern, category, ok := classify(p, activeCategories)
 		if !ok {
 			continue
 		}
@@ -64,46 +95,36 @@ func Detect(entries []scan.Entry) []Influence {
 	return influences
 }
 
-func classify(path string) (string, Category, bool) {
-	switch path {
-	case "AGENTS.md":
-		return "AGENTS.md", CategoryRepoRules, true
-	case "CLAUDE.md":
-		return "CLAUDE.md", CategoryToolProjectRules, true
-	case "GEMINI.md":
-		return "GEMINI.md", CategoryToolProjectRules, true
-	case ".github/copilot-instructions.md":
-		return ".github/copilot-instructions.md", CategoryToolProjectRules, true
-	}
-
-	prefixes := []struct {
-		prefix   string
-		pattern  string
-		category Category
-	}{
-		{".github/instructions/", ".github/instructions/**", CategoryToolProjectRules},
-		{".cursor/rules/", ".cursor/rules/**", CategoryToolProjectRules},
-		{".windsurf/rules/", ".windsurf/rules/**", CategoryToolProjectRules},
-		{".continue/", ".continue/**", CategoryToolProjectRules},
-		{".codex/", ".codex/**", CategoryGeneratedState},
-	}
-	for _, rule := range prefixes {
-		if strings.HasPrefix(path, rule.prefix) {
-			return rule.pattern, rule.category, true
+func classify(path string, categories []KnowledgeCategory) (string, Category, bool) {
+	for _, category := range categories {
+		for _, pattern := range category.Paths {
+			if matches(pattern, path) {
+				return pattern, category.Name, true
+			}
 		}
-	}
-
-	if isHomeMemory(path) {
-		return path, CategoryHomeMemories, true
 	}
 	return "", "", false
 }
 
-func isHomeMemory(path string) bool {
-	return path == ".claude.json" ||
-		path == ".gemini/settings.json" ||
-		strings.HasPrefix(path, ".claude/") ||
-		strings.HasPrefix(path, ".gemini/")
+func matches(pattern, path string) bool {
+	pattern = clean(pattern)
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := strings.TrimSuffix(pattern, "/**")
+		return strings.HasPrefix(path, prefix+"/")
+	}
+	return path == pattern
+}
+
+func cloneCategories(categories []KnowledgeCategory) []KnowledgeCategory {
+	out := make([]KnowledgeCategory, 0, len(categories))
+	for _, category := range categories {
+		out = append(out, KnowledgeCategory{
+			Name:     category.Name,
+			Paths:    append([]string(nil), category.Paths...),
+			Manifest: category.Manifest,
+		})
+	}
+	return out
 }
 
 func clean(path string) string {

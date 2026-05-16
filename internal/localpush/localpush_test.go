@@ -1,6 +1,7 @@
 package localpush
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/khicago/supermover/internal/agentkb"
 	"github.com/khicago/supermover/internal/audit"
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/profile"
@@ -870,6 +872,56 @@ func TestValidateProfileForLocalPushRejectsUnsupportedPolicyToggles(t *testing.T
 			}
 		})
 	}
+}
+
+func TestRunDetectsDefaultAgentKnowledgeCategories(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, ".github", "copilot-instructions.md"), "copilot", 0o644)
+	mustWriteFile(t, filepath.Join(source, ".claude.json"), "{}", 0o600)
+
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-agentkb", Now: time.Date(2026, 5, 16, 1, 2, 3, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Run(default agent knowledge) error = %v, want nil", err)
+	}
+	if got.Influences != 2 {
+		t.Fatalf("Run(default agent knowledge) influences = %d, want 2", got.Influences)
+	}
+
+	doc := readAgentInfluence(t, target, "session-agentkb")
+	byPath := map[string]string{}
+	for _, influence := range doc.Influence {
+		byPath[influence.Path] = string(influence.Category)
+	}
+	if byPath[".github/copilot-instructions.md"] != "tool_project_rules" {
+		t.Errorf("Run(default agent knowledge) copilot influence category = %q, want tool_project_rules", byPath[".github/copilot-instructions.md"])
+	}
+	if byPath[".claude.json"] != "home_memories" {
+		t.Errorf("Run(default agent knowledge) claude influence category = %q, want home_memories", byPath[".claude.json"])
+	}
+}
+
+type agentInfluenceDocument struct {
+	Version   int                 `json:"version"`
+	SessionID string              `json:"session_id"`
+	CreatedAt string              `json:"created_at"`
+	Influence []agentkb.Influence `json:"influence"`
+}
+
+func readAgentInfluence(t *testing.T, target string, sessionID string) agentInfluenceDocument {
+	t.Helper()
+	path := filepath.Join(target, control.DirName, "agent", sessionID+"-influence.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", path, err)
+	}
+	var got agentInfluenceDocument
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal(%q) error = %v, want nil", path, err)
+	}
+	return got
 }
 
 func readControlDoc[T control.Document](t *testing.T, target string, artifact control.ArtifactType, id string) T {
