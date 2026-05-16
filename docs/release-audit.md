@@ -34,8 +34,9 @@ Known planned surface:
 - Reviewed physical prune command.
 - Broader automatic repair/reconcile command.
 - Drift review command.
-- Open-source governance files such as `LICENSE`, `SECURITY.md`,
-  `CONTRIBUTING.md`, and CI workflow.
+
+Open-source governance now includes `LICENSE`, `SECURITY.md`,
+`CONTRIBUTING.md`, and a GitHub Actions Go workflow.
 
 ## Commit Trail
 
@@ -58,9 +59,13 @@ Last full verification for this checkpoint:
 ```bash
 go test ./...
 go test -race ./...
-go test -cover ./...
+go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
 go vet ./...
+staticcheck ./...
+golangci-lint run ./...
 git diff --check
+go run ./cmd/supermover help
+go run ./cmd/supermover version
 ```
 
 Coverage is package-level and intentionally uneven: the CLI package exercises
