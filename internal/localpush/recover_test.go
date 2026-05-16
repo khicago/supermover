@@ -2,6 +2,7 @@ package localpush
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,6 +215,30 @@ func TestRecoverRejectsReservedControlPlaneTargetPath(t *testing.T) {
 	}
 }
 
+func TestRecoverRejectsNormalizedReservedControlPlaneTargetPath(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
+		{Path: "payload.json", TargetPath: "safe/../.supermover/sessions/forged/receipt.json", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	})
+	writeStageFile(t, layout, "session-recover", "payload.json", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(normalized reserved target path) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(normalized reserved target path).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "forged", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(forged receipt) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRecoverRejectsWrongProfileSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	sourceA := filepath.Join(dir, "source-a")
@@ -244,6 +269,94 @@ func TestRecoverRejectsWrongProfileSnapshot(t *testing.T) {
 	}
 	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "profile") {
 		t.Fatalf("wrong profile repair record = %#v, want needs_repair with profile note", record)
+	}
+}
+
+func TestRecoverRejectsManifestIDMismatch(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
+		{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	})
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "session-recover")
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-recover")
+	manifest.ID = "manifest-other"
+	if err := control.WriteFile(manifestPath, manifest); err != nil {
+		t.Fatalf("control.WriteFile(manifest mismatch) error = %v, want nil", err)
+	}
+	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(manifest id mismatch) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(manifest id mismatch).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+}
+
+func TestRecoverRejectsProfileSnapshotSessionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
+		{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	})
+	snapshotPath, err := control.Path(target, control.ArtifactProfileSnapshot, "profile-session-recover")
+	if err != nil {
+		t.Fatalf("control.Path(profile snapshot) error = %v, want nil", err)
+	}
+	snapshot := readControlDoc[control.ProfileSnapshot](t, target, control.ArtifactProfileSnapshot, "profile-session-recover")
+	snapshot.SessionID = "other"
+	if err := control.WriteFile(snapshotPath, snapshot); err != nil {
+		t.Fatalf("control.WriteFile(snapshot mismatch) error = %v, want nil", err)
+	}
+	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(snapshot session mismatch) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(snapshot session mismatch).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+}
+
+func TestRecoverPreflightsAllTargetsBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	entries := []control.ManifestEntry{
+		{Path: "a.txt", TargetPath: "a.txt", Kind: "file", Mode: 0o644, Size: 1, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"},
+		{Path: "z.txt", TargetPath: "z.txt", Kind: "file", Mode: 0o644, Size: 1, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:594e519ae499312b29433b7dd8a97ff068defd27b1bfe3e16b7b9a4d0f3f9c6a"},
+	}
+	writeStagedLocalSession(t, layout, target, p, "session-recover", entries)
+	writeStageFile(t, layout, "session-recover", "a.txt", "a")
+	writeStageFile(t, layout, "session-recover", "z.txt", "z")
+	writeTargetFile(t, filepath.Join(target, "z.txt"), "different", 0o644)
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(preflight target conflict) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(preflight target conflict).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+	if _, err := os.Stat(filepath.Join(target, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(a.txt after failed recover preflight) error = %v, want os.ErrNotExist", err)
 	}
 }
 

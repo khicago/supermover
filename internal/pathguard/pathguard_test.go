@@ -43,6 +43,8 @@ func TestIsReservedControlPath(t *testing.T) {
 		{path: ".supermover", want: true},
 		{path: ".supermover/sessions/session-1/receipt.json", want: true},
 		{path: ".Supermover/warnings/w1.json", want: true},
+		{path: "safe/../.supermover/sessions/session-1/receipt.json", want: true},
+		{path: "safe/../.Supermover/warnings/w1.json", want: true},
 		{path: "docs/.supermover/file.txt", want: false},
 		{path: ".supermover-backup/file.txt", want: false},
 	}

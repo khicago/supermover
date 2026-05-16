@@ -779,6 +779,9 @@ func safeTargetPath(root, rel string) (string, error) {
 	if filepath.IsAbs(rel) {
 		return "", fmt.Errorf("absolute target path %q", rel)
 	}
+	if pathguard.IsReservedControlPath(rel) {
+		return "", fmt.Errorf("reserved control-plane target path %q", rel)
+	}
 	clean := filepath.Clean(filepath.FromSlash(rel))
 	if clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
 		return "", fmt.Errorf("unsafe target path %q", rel)

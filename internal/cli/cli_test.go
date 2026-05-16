@@ -30,6 +30,9 @@ func TestRunHelp(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Available commands:") {
 		t.Errorf("Run(%v) stdout = %q, want available command section", []string{"help"}, stdout.String())
 	}
+	if strings.Contains(stdout.String(), "incremental sync") {
+		t.Errorf("Run(%v) stdout = %q, should not present incremental sync as current help description", []string{"help"}, stdout.String())
+	}
 	if !strings.Contains(stdout.String(), "Planned commands:") {
 		t.Errorf("Run(%v) stdout = %q, want planned command section", []string{"help"}, stdout.String())
 	}

@@ -64,10 +64,7 @@ func PromoteFileNoReplace(tempPath string, finalPath string) error {
 }
 
 func canFallbackNoReplace(err error) bool {
-	return errors.Is(err, syscall.EXDEV) ||
-		errors.Is(err, syscall.EPERM) ||
-		errors.Is(err, syscall.EOPNOTSUPP) ||
-		errors.Is(err, syscall.ENOTSUP)
+	return errors.Is(err, syscall.EXDEV)
 }
 
 func copyFileNoReplace(tempPath, finalPath string) error {
@@ -81,14 +78,16 @@ func copyFileNoReplace(tempPath, finalPath string) error {
 	if info, err := src.Stat(); err == nil {
 		mode = info.Mode().Perm()
 	}
-	dst, err := os.OpenFile(finalPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	finalDir := filepath.Dir(finalPath)
+	dst, err := os.CreateTemp(finalDir, ".supermover-promote-*.tmp")
 	if err != nil {
 		return err
 	}
+	tmpName := dst.Name()
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = os.Remove(finalPath)
+			_ = os.Remove(tmpName)
 		}
 	}()
 	if _, err := io.Copy(dst, src); err != nil {
@@ -102,8 +101,20 @@ func copyFileNoReplace(tempPath, finalPath string) error {
 	if err := dst.Close(); err != nil {
 		return err
 	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	if err := os.Link(tmpName, finalPath); err != nil {
+		return err
+	}
+	if err := SyncDirBestEffort(finalDir); err != nil {
+		return err
+	}
 	cleanup = false
-	return nil
+	if err := os.Remove(tmpName); err != nil {
+		return wrap("remove temp", tmpName, err)
+	}
+	return SyncDirBestEffort(finalDir)
 }
 
 func SyncFile(path string) error {

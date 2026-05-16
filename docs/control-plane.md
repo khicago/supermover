@@ -132,8 +132,10 @@ entries.
 
 Validation catches missing required IDs and timestamps, invalid recovery
 statuses, invalid embedded profile JSON, empty manifest entry paths/kinds,
-unsafe symlink targets, reserved control paths, and negative manifest entry
-sizes. Transport execution remains outside this foundation.
+unsafe symlink targets, and negative manifest entry sizes. Protocol validation,
+publish, recovery, and verify layers reject reserved control-plane target paths;
+that protection is not solely a schema-level manifest rule. Transport execution
+remains outside this foundation.
 
 Read-only health checks also treat published sessions as unhealthy when their
 manifest or receipt artifact is missing or invalid. This keeps recovery status

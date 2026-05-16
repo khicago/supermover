@@ -238,6 +238,50 @@ func TestBuildReportRejectsUnsafeTargetPath(t *testing.T) {
 	}
 }
 
+func TestBuildReportRejectsReservedControlPlaneTargetPath(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-one",
+		SessionID: "one",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "forged.txt", Kind: "file", Size: 1, Digest: digest([]byte("x")), TargetPath: ".supermover/sessions/forged/receipt.json"},
+		},
+	})
+	writePublishedReceipt(t, target, "one")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !hasFinding(got.Findings, FindingUnsafeTargetPath, "forged.txt") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want unsafe target path finding", target, got.Findings)
+	}
+}
+
+func TestBuildReportRejectsNormalizedReservedControlPlaneTargetPath(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-one",
+		SessionID: "one",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "forged.txt", Kind: "file", Size: 1, Digest: digest([]byte("x")), TargetPath: "safe/../.supermover/sessions/forged/receipt.json"},
+		},
+	})
+	writePublishedReceipt(t, target, "one")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !hasFinding(got.Findings, FindingUnsafeTargetPath, "forged.txt") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want unsafe target path finding", target, got.Findings)
+	}
+}
+
 func TestBuildReportRejectsSymlinkParentTargetPath(t *testing.T) {
 	target := t.TempDir()
 	outside := t.TempDir()

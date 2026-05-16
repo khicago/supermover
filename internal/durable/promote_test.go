@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -136,6 +137,35 @@ func TestCopyFileNoReplacePreservesTempPermissions(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("copyFileNoReplace(%q, %q) mode = %v, want 0600", tempPath, finalPath, info.Mode().Perm())
+	}
+}
+
+func TestCopyFileNoReplaceUsesTemporaryFinal(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "file.tmp")
+	finalPath := filepath.Join(dir, "file.txt")
+	if err := os.WriteFile(tempPath, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
+	}
+
+	if err := copyFileNoReplace(tempPath, finalPath); err != nil {
+		t.Fatalf("copyFileNoReplace(%q, %q) error = %v, want nil", tempPath, finalPath, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", dir, err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".supermover-promote-") {
+			t.Fatalf("copyFileNoReplace(%q, %q) left temporary file %q", tempPath, finalPath, entry.Name())
+		}
+	}
+	got, err := os.ReadFile(finalPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", finalPath, err)
+	}
+	if string(got) != "payload" {
+		t.Fatalf("copyFileNoReplace(%q, %q) content = %q, want payload", tempPath, finalPath, got)
 	}
 }
 

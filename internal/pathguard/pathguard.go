@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 )
@@ -26,7 +27,7 @@ func SafeJoin(root, rel string) (string, error) {
 }
 
 func IsReservedControlPath(path string) bool {
-	path = filepath.ToSlash(path)
+	path = pathpkg.Clean(filepath.ToSlash(path))
 	first, _, _ := strings.Cut(path, "/")
 	return strings.EqualFold(first, ReservedControlDir)
 }

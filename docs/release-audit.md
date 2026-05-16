@@ -59,10 +59,16 @@ Open-source governance now includes `LICENSE`, `SECURITY.md`,
 - `8056164 fix(agentkb): unify default knowledge rules`
 - `94649fd fix(cli): honor profile knowledge scan rules`
 - `b233f79 fix(safety): harden migration publish and recovery`
+- `a511f43 docs(audit): align operator guidance with recovery safety`
+- `9ae3c59 docs(scope): clarify current migration slice boundaries`
 
 Current checkpoint: local migration publication and receiver store recovery now
 cover process-level locks, no-replace file and symlink publish, shared symlink
 target safety, published-artifact drift detection, and non-file verify checks.
+Commit audit note for `b233f79`: lock-directory setup is intentionally performed
+before the process file lock is acquired, with symlink-guarded directory
+creation; the file lock protects subsequent session and target publication
+mutations.
 
 ## Current Gate Results
 

@@ -20,10 +20,11 @@ receipt are treated as recovery evidence rather than review/prune input. Use
 it `needs_repair`.
 
 For the selected manifest, it verifies regular target files by safe relative
-target path, size, `sha256:` digest, permission mode, and modification time. It
-also verifies directory entries as plain directories and symlink entries by
-`readlink` target. Invalid JSON or unreadable artifacts are retained as report
-problems instead of aborting the whole review.
+target path, size, `sha256:` digest when present, and permission mode or
+modification time when those fields are present. It also verifies directory
+entries as plain directories and symlink entries by `readlink` target. Invalid
+JSON or unreadable artifacts are retained as report problems instead of
+aborting the whole review.
 
 `supermover verify --profile <path>` calls this package through the profile
 target and renders either text or JSON. A non-zero exit means the selected

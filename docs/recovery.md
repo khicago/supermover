@@ -70,10 +70,11 @@ reported as I/O errors.
 
 `internal/durable.PromoteFileNoReplace` is the safer publish primitive for data
 paths that must never overwrite existing target content. It syncs the staged
-file, tries an atomic hard-link publish, falls back to exclusive-create copy for
-supported cross-device or unsupported-link filesystems, then removes the staged
-file only after the final path is durable. Callers still own parent-directory
-creation and path safety.
+file and tries an atomic hard-link publish. For cross-device link failures, it
+copies to a temporary file in the final directory, syncs that file, then
+hard-links the temporary file into the final path before cleanup. Filesystems
+without hard-link support are rejected so a crash cannot leave a partial final
+file. Callers still own parent-directory creation and path safety.
 
 Directory sync is best-effort because platform support differs. Unix-like builds
 attempt to sync the parent directory and ignore unsupported directory-sync

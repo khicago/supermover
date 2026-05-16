@@ -273,6 +273,10 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 			s.markNeedsRepair(record)
 			return protocol.CommitSessionResponse{}, err
 		}
+		if err := s.reconcileStagedFiles(meta); err != nil {
+			s.markNeedsRepair(record)
+			return protocol.CommitSessionResponse{}, err
+		}
 		var err error
 		staged, err = record.WithState(transaction.StateStaged, s.now())
 		if err != nil {

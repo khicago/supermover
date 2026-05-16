@@ -13,6 +13,7 @@ import (
 	"github.com/khicago/supermover/internal/agentkb"
 	"github.com/khicago/supermover/internal/audit"
 	"github.com/khicago/supermover/internal/control"
+	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
 	"github.com/khicago/supermover/internal/transaction"
@@ -255,6 +256,115 @@ func TestLatestPublishedManifestUsesChronologicalTime(t *testing.T) {
 	}
 }
 
+func TestLatestPublishedManifestRejectsReceiptIDMismatch(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-one",
+		SessionID: "one",
+		RootID:    p.Roots[0].ID,
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "one.txt", Kind: "file", TargetPath: "one.txt"}},
+	})
+	writeReceipt(t, target, p, "one", "2026-05-16T00:00:00Z")
+	receiptPath, err := control.Path(target, control.ArtifactSessionReceipt, "one")
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	receipt := readControlDoc[control.SessionReceipt](t, target, control.ArtifactSessionReceipt, "one")
+	receipt.ID = "other"
+	if err := control.WriteFile(receiptPath, receipt); err != nil {
+		t.Fatalf("control.WriteFile(receipt mismatch) error = %v, want nil", err)
+	}
+
+	if _, _, err := latestPublishedManifest(p, target); err == nil || !strings.Contains(err.Error(), "receipt") {
+		t.Fatalf("latestPublishedManifest(receipt mismatch) error = %v, want receipt mismatch", err)
+	}
+}
+
+func TestLatestPublishedManifestRejectsManifestSessionMismatch(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	manifest := control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-other",
+		SessionID: "other",
+		RootID:    p.Roots[0].ID,
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "one.txt", Kind: "file", TargetPath: "one.txt"}},
+	}
+	writeManifest(t, target, manifest)
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "one")
+	if err != nil {
+		t.Fatalf("control.Path(manifest one) error = %v, want nil", err)
+	}
+	otherPath, err := control.Path(target, control.ArtifactManifest, "other")
+	if err != nil {
+		t.Fatalf("control.Path(manifest other) error = %v, want nil", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(manifest one parent) error = %v, want nil", err)
+	}
+	data, err := os.ReadFile(otherPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(manifest other) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		t.Fatalf("os.WriteFile(manifest one) error = %v, want nil", err)
+	}
+	writeReceipt(t, target, p, "one", "2026-05-16T00:00:00Z")
+
+	if _, _, err := latestPublishedManifest(p, target); err == nil || !strings.Contains(err.Error(), "manifest") {
+		t.Fatalf("latestPublishedManifest(manifest mismatch) error = %v, want manifest mismatch", err)
+	}
+}
+
+func TestRunPreflightsAllTargetsBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "a.txt"), "a", 0o644)
+	mustWriteFile(t, filepath.Join(source, "z.txt"), "z", 0o644)
+	mustWriteFile(t, filepath.Join(target, "z.txt"), "different", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil || !strings.Contains(err.Error(), "different content") {
+		t.Fatalf("Run(preflight target conflict) error = %v, want different content error", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(a.txt after failed preflight) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRunRejectsNormalizedReservedControlPlaneTargetPathBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "payload.json"), "payload", 0o644)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	entries := []control.ManifestEntry{
+		{Path: "payload.json", TargetPath: "safe/../.supermover/sessions/forged/receipt.json", Kind: "file", Mode: 0o644, Size: 7, Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	}
+	stagePath, err := pathguard.SafeJoinParent(layout.StagingDir("session-test"), "payload.json")
+	if err != nil {
+		t.Fatalf("pathguard.SafeJoinParent(stage) error = %v, want nil", err)
+	}
+	mustWriteFile(t, stagePath, "payload", 0o644)
+
+	if err := preflightPublishPlan(layout, target, "session-test", entries); err == nil || !strings.Contains(err.Error(), "reserved control") {
+		t.Fatalf("preflightPublishPlan(normalized reserved path) error = %v, want reserved control error", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "forged", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(forged receipt) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRunPublishesSymlinkTarget(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -312,6 +422,36 @@ func TestRunRecordsWarningForUnsafeSymlinkTarget(t *testing.T) {
 	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-test")
 	if manifestContainsPath(manifest, "link.txt") {
 		t.Fatalf("manifest entries = %#v, want unsafe symlink omitted", manifest.Entries)
+	}
+}
+
+func TestRunRejectsChangedSymlinkBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "real.txt"), "real", 0o644)
+	link := filepath.Join(source, "link.txt")
+	if err := os.Symlink("real.txt", link); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	beforeReadStableSymlink = func(sourcePath string, entry scan.Entry) error {
+		if entry.Path != "link.txt" {
+			return nil
+		}
+		if err := os.Remove(sourcePath); err != nil {
+			return err
+		}
+		return os.Symlink("other.txt", sourcePath)
+	}
+	t.Cleanup(func() { beforeReadStableSymlink = nil })
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("Run(changed symlink) error = %v, want source changed error", err)
+	}
+	if _, err := control.ReadFile[control.SessionReceipt](filepath.Join(target, control.DirName, "sessions", "session-test", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("control.ReadFile(receipt after changed symlink) error = %v, want os.ErrNotExist", err)
 	}
 }
 

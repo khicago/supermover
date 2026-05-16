@@ -503,6 +503,38 @@ func TestFileStoreCommitRejectsSymlinkParentEscape(t *testing.T) {
 	}
 }
 
+func TestFileStoreCommitPreflightsAllTargetsBeforePublish(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("a"))
+	req.Manifest.Entries = []protocol.ManifestEntry{
+		{Path: "a.txt", Kind: protocol.FileKindFile, Size: 1, Digest: digest([]byte("a"))},
+		{Path: "z.txt", Kind: protocol.FileKindFile, Size: 1, Digest: digest([]byte("z"))},
+	}
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	first := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "a.txt", Offset: 0, Data: []byte("a"), Final: true}
+	if _, err := store.AppendChunk(first); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", first, err)
+	}
+	second := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "z.txt", Offset: 0, Data: []byte("z"), Final: true}
+	if _, err := store.AppendChunk(second); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", second, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "z.txt"), []byte("different"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(existing z) error = %v, want nil", err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(preflight target conflict) error = %v, want ErrConflict", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(a.txt after failed commit preflight) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestFileStorePublishedSessionRequiresReceipt(t *testing.T) {
 	root := t.TempDir()
 	store := FileStore{TargetRoot: root}

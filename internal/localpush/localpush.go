@@ -46,6 +46,8 @@ var localPushLocks sync.Map
 
 var errSymlinkTargetConflict = errors.New("target symlink conflict")
 
+var beforeReadStableSymlink func(sourcePath string, entry scan.Entry) error
+
 type RecoverOptions struct {
 	Profile            profile.Profile
 	TargetDir          string
@@ -157,13 +159,14 @@ func Run(opts Options) (Result, error) {
 			copied++
 			manifestEntries = append(manifestEntries, manifestEntry(entry, "file", digest))
 		case scan.KindSymlink:
+			if beforeReadStableSymlink != nil {
+				if err := beforeReadStableSymlink(sourcePath, entry); err != nil {
+					return Result{}, err
+				}
+			}
 			currentTarget, err := readStableSymlink(sourcePath, entry)
 			if err != nil {
-				warnings = append(warnings, audit.WithDetected(
-					audit.New(entry.Path, entry.Path, audit.SeverityWarning, "symlink_not_published", err.Error()),
-					map[string]string{"target": entry.SymlinkTarget},
-				))
-				continue
+				return Result{}, err
 			}
 			entry.SymlinkTarget = currentTarget
 			targetPath, err := targetPathForEntry(opts.TargetDir, entry)
@@ -189,6 +192,9 @@ func Run(opts Options) (Result, error) {
 		}
 	}
 
+	if err := preflightPublishPlan(layout, opts.TargetDir, sessionID, manifestEntries); err != nil {
+		return Result{}, err
+	}
 	existingDirs, err := captureExistingPublishDirs(opts.TargetDir, manifestEntries)
 	if err != nil {
 		return Result{}, err
@@ -459,6 +465,12 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 	if manifest.SessionID != record.ID {
 		return fmt.Errorf("recover manifest session_id %q does not match session %q", manifest.SessionID, record.ID)
 	}
+	if manifest.ID != "manifest-"+record.ID {
+		return fmt.Errorf("recover manifest id %q does not match session %q", manifest.ID, record.ID)
+	}
+	if manifest.CreatedAt != record.CreatedAt.UTC().Format(time.RFC3339Nano) && manifest.CreatedAt != record.CreatedAt.UTC().Format(time.RFC3339) {
+		return fmt.Errorf("recover manifest created_at %q does not match session %q created_at %q", manifest.CreatedAt, record.ID, record.CreatedAt.UTC().Format(time.RFC3339Nano))
+	}
 	if manifest.RootID != "" && manifest.RootID != p.Roots[0].ID {
 		return fmt.Errorf("recover manifest root_id %q does not match profile root %q", manifest.RootID, p.Roots[0].ID)
 	}
@@ -500,6 +512,12 @@ func validateRecoverProfileSnapshot(targetDir string, p profile.Profile, manifes
 	if err != nil {
 		return fmt.Errorf("read recover profile snapshot %q: %w", manifest.SessionID, err)
 	}
+	if snapshot.ID != "profile-"+manifest.SessionID {
+		return fmt.Errorf("recover profile snapshot id %q does not match session %q", snapshot.ID, manifest.SessionID)
+	}
+	if snapshot.SessionID != "" && snapshot.SessionID != manifest.SessionID {
+		return fmt.Errorf("recover profile snapshot session_id %q does not match session %q", snapshot.SessionID, manifest.SessionID)
+	}
 	if snapshot.ProfileID != p.ProfileID {
 		return fmt.Errorf("recover profile snapshot profile_id %q does not match current profile %q", snapshot.ProfileID, p.ProfileID)
 	}
@@ -529,16 +547,21 @@ func validateRecoverProfileSnapshot(targetDir string, p profile.Profile, manifes
 }
 
 func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
+	return preflightPublishPlan(layout, targetDir, sessionID, entries)
+}
+
+func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
 	for _, entry := range entries {
+		entryTarget := targetPath(entry)
+		if pathguard.IsReservedControlPath(entryTarget) {
+			return fmt.Errorf("manifest target path %q uses reserved control directory", entryTarget)
+		}
 		finalPath, err := targetPathForManifestEntry(targetDir, entry)
 		if err != nil {
 			return err
 		}
 		switch entry.Kind {
 		case "file":
-			if strings.TrimSpace(entry.Digest) == "" {
-				return fmt.Errorf("recover file %q is missing digest", entry.Path)
-			}
 			same, exists, err := targetFileState(finalPath, entry.Size, entry.Digest)
 			if err != nil {
 				return err
@@ -549,26 +572,8 @@ func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string,
 				}
 				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
 			}
-			stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
-			if err != nil {
+			if err := validateStagedManifestFile(layout, sessionID, entry); err != nil {
 				return err
-			}
-			info, err := os.Lstat(stagePath)
-			if err != nil {
-				return fmt.Errorf("stat staged file %q for recovery: %w", entry.Path, err)
-			}
-			if !info.Mode().IsRegular() {
-				return fmt.Errorf("staged file %q is not a regular file", entry.Path)
-			}
-			if info.Size() != entry.Size {
-				return fmt.Errorf("staged file %q size = %d, want %d", entry.Path, info.Size(), entry.Size)
-			}
-			got, err := digestFile(stagePath)
-			if err != nil {
-				return err
-			}
-			if got != entry.Digest {
-				return fmt.Errorf("staged file %q digest = %s, want %s", entry.Path, got, entry.Digest)
 			}
 		case "dir":
 			if _, err := directoryExists(finalPath); err != nil {
@@ -586,6 +591,34 @@ func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string,
 				return fmt.Errorf("target symlink %q already exists with different target; refusing to overwrite", finalPath)
 			}
 		}
+	}
+	return nil
+}
+
+func validateStagedManifestFile(layout transaction.Layout, sessionID string, entry control.ManifestEntry) error {
+	if strings.TrimSpace(entry.Digest) == "" {
+		return fmt.Errorf("staged file %q is missing digest", entry.Path)
+	}
+	stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(stagePath)
+	if err != nil {
+		return fmt.Errorf("stat staged file %q: %w", entry.Path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("staged file %q is not a regular file", entry.Path)
+	}
+	if info.Size() != entry.Size {
+		return fmt.Errorf("staged file %q size = %d, want %d", entry.Path, info.Size(), entry.Size)
+	}
+	got, err := digestFile(stagePath)
+	if err != nil {
+		return err
+	}
+	if got != entry.Digest {
+		return fmt.Errorf("staged file %q digest = %s, want %s", entry.Path, got, entry.Digest)
 	}
 	return nil
 }
@@ -856,6 +889,9 @@ func latestPublishedManifest(p profile.Profile, targetDir string) (control.Manif
 		if receipt.Status != "published" {
 			continue
 		}
+		if receipt.ID != sessionID {
+			return control.Manifest{}, false, fmt.Errorf("published receipt %q id = %q", sessionID, receipt.ID)
+		}
 		if receipt.ProfileID != p.ProfileID || receipt.TargetID != p.Target.TargetID {
 			continue
 		}
@@ -866,6 +902,9 @@ func latestPublishedManifest(p profile.Profile, targetDir string) (control.Manif
 		manifest, err := control.ReadManifestCompatFile(manifestPath)
 		if err != nil {
 			return control.Manifest{}, false, fmt.Errorf("read previous manifest %q: %w", sessionID, err)
+		}
+		if manifest.SessionID != sessionID {
+			return control.Manifest{}, false, fmt.Errorf("published manifest %q session_id = %q", sessionID, manifest.SessionID)
 		}
 		rootID := p.Roots[0].ID
 		if manifest.RootID != rootID && !(manifest.RootID == "" && len(p.Roots) == 1) {
