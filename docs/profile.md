@@ -61,7 +61,8 @@ Optional top-level fields:
 `privacy_policy` fields:
 
 - `mode`: one of `plaintext` or `redacted`.
-- `traffic_level`: traffic privacy level. Current v1 default is `2`.
+- `traffic_level`: required traffic privacy level. Project examples should use
+  `2` unless the profile intentionally chooses a different privacy posture.
 - `allow_plaintext_restore`: must be true when `mode` is `plaintext`.
 - `allow_hidden_files`: explicit hidden-file inclusion.
 - `allow_sensitive_filenames`: explicit sensitive-filename inclusion.
