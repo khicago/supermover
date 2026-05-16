@@ -1,9 +1,11 @@
 package scan
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/khicago/supermover/internal/audit"
@@ -44,6 +46,27 @@ func TestScanRecordsFilesystemMetadata(t *testing.T) {
 	}
 	if len(result.Audit) != 0 {
 		t.Fatalf("unexpected audit records: %#v", result.Audit)
+	}
+}
+
+func TestScanJSONDoesNotExposeObservedIdentity(t *testing.T) {
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "file.txt"), 0o644)
+
+	result, err := Scan(root)
+	if err != nil {
+		t.Fatalf("Scan(%q) error = %v, want nil", root, err)
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("json.Marshal(Scan(%q)) error = %v, want nil", root, err)
+	}
+
+	if strings.Contains(string(data), "observed") {
+		t.Fatalf("json.Marshal(Scan(%q)) = %s, want no observed field", root, data)
+	}
+	if !strings.Contains(string(data), `"file.txt"`) {
+		t.Fatalf("json.Marshal(Scan(%q)) = %s, want scanned file path", root, data)
 	}
 }
 
