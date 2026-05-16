@@ -99,7 +99,22 @@ func StableID(sessionID, sourcePath, targetPath string) string {
 		cleanRel(targetPath),
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return "del_" + hex.EncodeToString(sum[:8])
+	return artifactPrefix(sessionID) + "-del_" + hex.EncodeToString(sum[:8])
+}
+
+func artifactPrefix(sessionID string) string {
+	var b strings.Builder
+	for _, r := range sessionID {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("._-", r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	if b.Len() == 0 {
+		return "unknown"
+	}
+	return b.String()
 }
 
 func currentPaths(result scan.Result) map[string]struct{} {

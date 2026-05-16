@@ -120,6 +120,36 @@ func TestBuildReportVerifiesLatestManifest(t *testing.T) {
 	}
 }
 
+func TestBuildReportChoosesLatestManifestChronologically(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "early.txt", []byte("early"))
+	writeTargetFile(t, target, "late.txt", []byte("late"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-early",
+		SessionID: "early",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "early.txt", Kind: "file", Size: 5, Digest: digest([]byte("early"))}},
+	})
+	writePublishedReceipt(t, target, "early")
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-late",
+		SessionID: "late",
+		CreatedAt: "2026-05-16T00:00:00.5Z",
+		Entries:   []control.ManifestEntry{{Path: "late.txt", Kind: "file", Size: 4, Digest: digest([]byte("late"))}},
+	})
+	writePublishedReceipt(t, target, "late")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Manifest.SessionID != "late" {
+		t.Fatalf("BuildReport(%q).Manifest.SessionID = %q, want late", target, got.Manifest.SessionID)
+	}
+}
+
 func TestBuildReportFiltersSession(t *testing.T) {
 	target := t.TempDir()
 	writeTargetFile(t, target, "old.txt", []byte("old"))
@@ -281,7 +311,7 @@ func TestBuildReportIgnoresUnpublishedArtifacts(t *testing.T) {
 	})
 	writeSoftDelete(t, target, control.SoftDelete{
 		Version:            control.CurrentVersion,
-		ID:                 "del-draft",
+		ID:                 "draft-del-one",
 		SessionID:          "draft",
 		ProfileID:          "profile-local",
 		TargetID:           "target-local",
@@ -293,6 +323,8 @@ func TestBuildReportIgnoresUnpublishedArtifacts(t *testing.T) {
 		Kind:               "file",
 		DetectedAt:         "2026-05-17T00:00:00Z",
 	})
+	writeRawArtifact(t, target, "warnings", "draft-999-bad.json", `{"version":1`)
+	writeRawArtifact(t, target, "deleted", "draft-del_bad.json", `{"version":1`)
 
 	got, err := BuildReport(Options{TargetRoot: target})
 	if err != nil {
@@ -306,6 +338,31 @@ func TestBuildReportIgnoresUnpublishedArtifacts(t *testing.T) {
 	}
 	if got.Summary.SoftDeletes != 0 {
 		t.Fatalf("BuildReport(%q).Summary.SoftDeletes = %d, want 0 unpublished soft deletes", target, got.Summary.SoftDeletes)
+	}
+	if len(got.ArtifactProblems) != 0 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want unpublished global artifacts skipped before parsing", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportRecordsMalformedPublishedGlobalArtifact(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "published.txt", []byte("ok"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-published",
+		SessionID: "published",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "published.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok"))}},
+	})
+	writePublishedReceipt(t, target, "published")
+	writeRawArtifact(t, target, "warnings", "published-999-bad.json", `{"version":1`)
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if len(got.ArtifactProblems) != 1 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems length = %d, want 1", target, len(got.ArtifactProblems))
 	}
 }
 
@@ -369,6 +426,17 @@ func writeTargetFile(t *testing.T, root, rel string, data []byte) {
 		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(path), err)
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+}
+
+func writeRawArtifact(t *testing.T, target, dir, name string, data string) {
+	t.Helper()
+	path := filepath.Join(target, control.DirName, dir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", path, err)
 	}
 }

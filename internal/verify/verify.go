@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/khicago/supermover/internal/control"
 )
@@ -98,6 +99,7 @@ type Artifacts struct {
 	Warnings          []control.Warning
 	SoftDeletes       []control.SoftDelete
 	ArtifactProblems  []ArtifactProblem
+	KnownSessions     map[string]struct{}
 	PublishedSessions map[string]struct{}
 }
 
@@ -177,20 +179,18 @@ func LoadArtifacts(targetRoot string) (Artifacts, error) {
 		return artifacts, fmt.Errorf("stat control directory: %w", err)
 	}
 
-	artifacts.PublishedSessions, artifacts.ArtifactProblems = readPublishedSessions(controlDir, artifacts.ArtifactProblems)
+	artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems = readSessionReceipts(controlDir, artifacts.ArtifactProblems)
 	artifacts.Manifests, artifacts.ArtifactProblems = readManifests(controlDir, artifacts.PublishedSessions, artifacts.ArtifactProblems)
-	warnings, problems := readDocuments[control.Warning](filepath.Join(controlDir, "warnings"), artifacts.ArtifactProblems)
-	artifacts.ArtifactProblems = problems
-	artifacts.Warnings = filterWarningsByPublished(warnings, artifacts.PublishedSessions)
-	softDeletes, problems := readDocuments[control.SoftDelete](filepath.Join(controlDir, "deleted"), artifacts.ArtifactProblems)
-	artifacts.ArtifactProblems = problems
-	artifacts.SoftDeletes = filterSoftDeletesByPublished(softDeletes, artifacts.PublishedSessions)
+	artifacts.Warnings, artifacts.ArtifactProblems = readPublishedDocuments[control.Warning](filepath.Join(controlDir, "warnings"), artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems)
+	artifacts.SoftDeletes, artifacts.ArtifactProblems = readPublishedDocuments[control.SoftDelete](filepath.Join(controlDir, "deleted"), artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems)
 
 	sort.Slice(artifacts.Manifests, func(i, j int) bool {
-		if artifacts.Manifests[i].CreatedAt == artifacts.Manifests[j].CreatedAt {
+		left := manifestCreatedAt(artifacts.Manifests[i])
+		right := manifestCreatedAt(artifacts.Manifests[j])
+		if left.Equal(right) {
 			return artifacts.Manifests[i].SessionID < artifacts.Manifests[j].SessionID
 		}
-		return artifacts.Manifests[i].CreatedAt < artifacts.Manifests[j].CreatedAt
+		return left.Before(right)
 	})
 	sort.Slice(artifacts.Warnings, func(i, j int) bool { return artifacts.Warnings[i].ID < artifacts.Warnings[j].ID })
 	sort.Slice(artifacts.SoftDeletes, func(i, j int) bool { return artifacts.SoftDeletes[i].ID < artifacts.SoftDeletes[j].ID })
@@ -198,21 +198,23 @@ func LoadArtifacts(targetRoot string) (Artifacts, error) {
 	return artifacts, nil
 }
 
-func readPublishedSessions(controlDir string, problems []ArtifactProblem) (map[string]struct{}, []ArtifactProblem) {
+func readSessionReceipts(controlDir string, problems []ArtifactProblem) (map[string]struct{}, map[string]struct{}, []ArtifactProblem) {
+	known := map[string]struct{}{}
 	published := map[string]struct{}{}
 	sessionsDir := filepath.Join(controlDir, "sessions")
 	sessions, err := os.ReadDir(sessionsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return published, problems
+			return known, published, problems
 		}
-		return published, appendProblem(problems, sessionsDir, err)
+		return known, published, appendProblem(problems, sessionsDir, err)
 	}
 
 	for _, session := range sessions {
 		if !session.IsDir() {
 			continue
 		}
+		known[session.Name()] = struct{}{}
 		receiptPath := filepath.Join(sessionsDir, session.Name(), "receipt.json")
 		receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
 		if err != nil {
@@ -231,7 +233,7 @@ func readPublishedSessions(controlDir string, problems []ArtifactProblem) (map[s
 		}
 		published[session.Name()] = struct{}{}
 	}
-	return published, problems
+	return known, published, problems
 }
 
 func readManifests(controlDir string, published map[string]struct{}, problems []ArtifactProblem) ([]control.Manifest, []ArtifactProblem) {
@@ -267,27 +269,7 @@ func readManifests(controlDir string, published map[string]struct{}, problems []
 	return manifests, problems
 }
 
-func filterWarningsByPublished(warnings []control.Warning, published map[string]struct{}) []control.Warning {
-	var out []control.Warning
-	for _, warning := range warnings {
-		if _, ok := published[warning.SessionID]; ok {
-			out = append(out, warning)
-		}
-	}
-	return out
-}
-
-func filterSoftDeletesByPublished(records []control.SoftDelete, published map[string]struct{}) []control.SoftDelete {
-	var out []control.SoftDelete
-	for _, record := range records {
-		if _, ok := published[record.SessionID]; ok {
-			out = append(out, record)
-		}
-	}
-	return out
-}
-
-func readDocuments[T control.Document](dir string, problems []ArtifactProblem) ([]T, []ArtifactProblem) {
+func readPublishedDocuments[T control.Document](dir string, known map[string]struct{}, published map[string]struct{}, problems []ArtifactProblem) ([]T, []ArtifactProblem) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -300,15 +282,54 @@ func readDocuments[T control.Document](dir string, problems []ArtifactProblem) (
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
+		if sessionID, ok := sessionIDFromArtifactFilename(entry.Name(), known); ok {
+			if _, published := published[sessionID]; !published {
+				continue
+			}
+		}
 		path := filepath.Join(dir, entry.Name())
 		doc, err := control.ReadFile[T](path)
 		if err != nil {
 			problems = appendProblem(problems, path, err)
 			continue
 		}
-		docs = append(docs, doc)
+		if _, ok := published[documentSessionID(doc)]; ok {
+			docs = append(docs, doc)
+		}
 	}
 	return docs, problems
+}
+
+func sessionIDFromArtifactFilename(name string, known map[string]struct{}) (string, bool) {
+	base := strings.TrimSuffix(name, filepath.Ext(name))
+	best := ""
+	for sessionID := range known {
+		if base == sessionID || strings.HasPrefix(base, sessionID+"-") {
+			if len(sessionID) > len(best) {
+				best = sessionID
+			}
+		}
+	}
+	return best, best != ""
+}
+
+func documentSessionID[T control.Document](doc T) string {
+	switch value := any(doc).(type) {
+	case control.Warning:
+		return value.SessionID
+	case control.SoftDelete:
+		return value.SessionID
+	default:
+		return ""
+	}
+}
+
+func manifestCreatedAt(manifest control.Manifest) time.Time {
+	ts, err := time.Parse(time.RFC3339Nano, manifest.CreatedAt)
+	if err == nil {
+		return ts.UTC()
+	}
+	return time.Time{}
 }
 
 func verifyFile(targetRoot, sessionID string, entry control.ManifestEntry) []Finding {

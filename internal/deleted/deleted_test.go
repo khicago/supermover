@@ -3,6 +3,7 @@ package deleted
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,6 +59,9 @@ func TestGenerateSoftDeleteRecords(t *testing.T) {
 		}
 		if record.SessionID != "session-two" {
 			t.Errorf("Generate(%#v) record session = %q, want session-two", previous, record.SessionID)
+		}
+		if !strings.HasPrefix(record.ID, "session-two-del_") {
+			t.Errorf("Generate(%#v) record id = %q, want session-two-del_ prefix", previous, record.ID)
 		}
 		if record.ProfileID != "profile-local" || record.TargetID != "local:profile-local" || record.RootID != "root" {
 			t.Errorf("Generate(%#v) record scope = (%q, %q, %q), want profile-local/local:profile-local/root", previous, record.ProfileID, record.TargetID, record.RootID)
