@@ -51,14 +51,17 @@ go run ./cmd/supermover push --profile ./supermover.profile.json --dry-run
 Continue only if:
 
 - entry counts match the migration expectation closely enough to explain;
-- warning count is reviewed;
+- warning count is reviewed; full warning JSON is available only after a run is
+  published;
 - agent influence count is expected for the repository or home directory being
   moved;
 - no operator expected runtime flags to override profile policy.
 
 For JSON-style inspection before a real run, use
 `go run ./cmd/supermover scan --profile ./supermover.profile.json --format json`.
-After a real run, use the target control-plane artifacts.
+After a real run, use the target control-plane artifacts. If the source scan
+reports a `scan_error`, push is blocked before publish; fix source readability
+and rerun the dry-run gate.
 
 ## Publish Gate
 
@@ -105,6 +108,17 @@ find /path/to/target/.supermover/warnings -type f -name '*.json' -maxdepth 1 2>/
 
 Every warning must have an owner decision: accept, rerun with changed profile,
 or block release.
+
+Run verify and treat any non-zero result as a release blocker until explained:
+
+```bash
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session <session-id>
+```
+
+`verify` checks regular files for size, `sha256:` digest, permission mode, and
+modification time. It also checks directory entries as plain directories and
+symlink entries by `readlink` target. The command exits non-zero for warning
+findings as well as error findings, artifact problems, and missing manifests.
 
 ## Recovery Procedure
 

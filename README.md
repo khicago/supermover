@@ -27,6 +27,13 @@ to overwrite an existing target file or symlink unless the existing object is
 content-identical, which keeps the migration path conservative for machine
 replacement.
 
+`push --dry-run` reports counts only; full warning JSON is written after a
+published run. Source scanner `scan_error` findings block push instead of being
+published as review warnings. `verify` checks published regular files for
+size, SHA-256 digest, permissions, and modification time, and checks directory
+and symlink entries for presence/type/target fidelity. It exits non-zero for
+error findings, warning findings, artifact problems, or a missing manifest.
+
 The v1 direction is intentionally conservative:
 
 - one-way `source -> trusted target`

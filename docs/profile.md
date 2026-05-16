@@ -20,8 +20,10 @@ Planned profile sections:
 
 ## JSON Schema Foundation
 
-The Go contract lives in `internal/profile`. Profiles are JSON documents with
-`version: 1` and deterministic, indented JSON read/write helpers.
+The Go contract lives in `internal/profile`. Profiles are single JSON documents
+with `version: 1` and deterministic, indented JSON read/write helpers. Readers
+reject unknown fields and trailing JSON documents so runtime behavior cannot
+silently fork from the reviewed profile.
 
 Required top-level fields:
 

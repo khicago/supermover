@@ -54,16 +54,24 @@ Open-source governance now includes `LICENSE`, `SECURITY.md`,
 - `64aec11 fix(recovery): verify staged payloads before recover publish`
 - `9a88903 chore(governance): add open source project gates`
 - `51906f9 fix(review): ignore unpublished artifacts in review`
-- current checkpoint: network receiver and discovery hardening covers bounded
-  JSON/chunk request sizes and canonical low-information discovery TXT output.
+- `4cb935c fix(audit): harden warning and control artifact edges`
+- `c6be33d fix(control): reject trailing JSON documents`
+- `8056164 fix(agentkb): unify default knowledge rules`
+- `94649fd fix(cli): honor profile knowledge scan rules`
+- `b233f79 fix(safety): harden migration publish and recovery`
+
+Current checkpoint: local migration publication and receiver store recovery now
+cover process-level locks, no-replace file and symlink publish, shared symlink
+target safety, published-artifact drift detection, and non-file verify checks.
 
 ## Current Gate Results
 
 Last full verification for this checkpoint:
 
 ```bash
-go test ./...
-go test -race ./...
+go mod tidy -diff
+go test -count=1 ./...
+go test -race -count=1 ./...
 go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
 go vet ./...
 staticcheck ./...
@@ -71,6 +79,11 @@ golangci-lint run ./...
 git diff --check
 go run ./cmd/supermover help
 go run ./cmd/supermover version
+go run ./cmd/supermover scan --help
+go run ./cmd/supermover recover --help
+GOOS=windows GOARCH=amd64 go test -c <each package from go list ./...>
+GOOS=aix GOARCH=ppc64 go test -c ./internal/filelock
+GOOS=solaris GOARCH=amd64 go test -c ./internal/filelock
 ```
 
 Coverage is package-level and intentionally uneven: the CLI package exercises
@@ -88,7 +101,16 @@ thin entrypoint over `internal/cli`.
 - `health` is read-only. It reports incomplete transactions and damaged
   published artifacts. `recover` is the explicit mutating command for the safe
   local subset.
-- Broader publish reconciliation is still planned. If interruption happens
-  during final publish, `recover` can replay staged files or report
+- Publish reconciliation is intentionally conservative. If interruption happens
+  during final publish, `recover` can replay staged files that still match the
+  manifest, accept already-published identical targets, or report
   `needs_repair`; operators should preserve the target and review the
   manifest/staging evidence before rerunning.
+- `push --dry-run` exposes warning counts, not complete warning JSON. The full
+  warning artifacts are written only after a published run can continue. Source
+  scanner `scan_error` findings now block push before publish because they make
+  source inventory and soft-delete evidence unreliable.
+- `verify` returns non-zero for warning findings as well as error findings,
+  artifact problems, and missing manifests. It verifies regular file size,
+  `sha256:` digest, permission mode, and modification time, and verifies
+  directory/symlink presence and symlink targets.

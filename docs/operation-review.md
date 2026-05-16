@@ -19,14 +19,18 @@ receipt are treated as recovery evidence rather than review/prune input. Use
 `health` and `recover` first to bring the session to a terminal state or to mark
 it `needs_repair`.
 
-For the selected manifest, it verifies target files by safe relative target
-path, size, and `sha256:` digest. Non-file entries are included in manifest
-summaries but are not hashed. Invalid JSON or unreadable artifacts are retained
-as report problems instead of aborting the whole review.
+For the selected manifest, it verifies regular target files by safe relative
+target path, size, `sha256:` digest, permission mode, and modification time. It
+also verifies directory entries as plain directories and symlink entries by
+`readlink` target. Invalid JSON or unreadable artifacts are retained as report
+problems instead of aborting the whole review.
 
 `supermover verify --profile <path>` calls this package through the profile
 target and renders either text or JSON. A non-zero exit means the selected
-manifest has error findings, artifact problems, or no manifest at all.
+manifest has error findings, warning findings, artifact problems, or no
+manifest at all. Warning findings include cases where a regular file cannot be
+fully verified because the manifest digest is missing or uses an unsupported
+algorithm.
 
 ## Soft Delete Review
 
@@ -56,5 +60,5 @@ The local push flow now:
 Remaining integration:
 
 - `deleted` still needs an explicit reviewed physical prune command.
-- `verify` should eventually include directory, symlink, and metadata checks
-  beyond regular-file size and digest.
+- `verify` should eventually include richer directory metadata checks beyond
+  current directory presence/type and regular-file metadata validation.

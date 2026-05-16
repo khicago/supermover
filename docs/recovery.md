@@ -60,13 +60,20 @@ invalid.
 the same filesystem:
 
 1. Sync the temporary file.
-2. Create the final parent directory if needed.
-3. Rename the temporary file to the final path with `os.Rename`.
-4. Best-effort sync the final parent directory on Unix-like platforms.
+2. Rename the temporary file to the final path with `os.Rename`.
+3. Best-effort sync the final parent directory on Unix-like platforms.
 
 The rename step is the atomic boundary. Callers are responsible for creating the
-temporary file in the same filesystem as the final path; cross-device renames are
+temporary file in the same filesystem as the final path and for creating and
+validating the final parent directory before promotion. Cross-device renames are
 reported as I/O errors.
+
+`internal/durable.PromoteFileNoReplace` is the safer publish primitive for data
+paths that must never overwrite existing target content. It syncs the staged
+file, tries an atomic hard-link publish, falls back to exclusive-create copy for
+supported cross-device or unsupported-link filesystems, then removes the staged
+file only after the final path is durable. Callers still own parent-directory
+creation and path safety.
 
 Directory sync is best-effort because platform support differs. Unix-like builds
 attempt to sync the parent directory and ignore unsupported directory-sync
@@ -105,7 +112,9 @@ recovery subset:
 - `staged` sessions are replayed from the durable manifest and stage directory.
   Staged file size and SHA-256 digest must match the manifest before
   publication. File publication still uses no-replace semantics. Existing final
-  files are accepted only when size and digest match the manifest.
+  files are accepted only when size and digest match the manifest. Directory
+  and symlink entries are also checked before recovery publish so an unsafe or
+  conflicting non-file entry cannot create a partial target update.
 - `received` and `validated` sessions are not silently discarded. `recover
   --dry-run` reports the rollback action; `recover --rollback-incomplete`
   explicitly marks them `rolled_back` when the operator decides they never
@@ -117,5 +126,5 @@ recovery subset:
 Open recovery work:
 
 - invalid session records may need a quarantine directory.
-- publish reconciliation should eventually verify the full receipt, manifest,
-  and target state matrix before changing session state.
+- broader automatic repair may eventually reconcile more target drift cases
+  after preserving the existing audit evidence.

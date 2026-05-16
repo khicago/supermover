@@ -33,16 +33,27 @@ go run ./cmd/supermover push --profile ./supermover.profile.json --session sessi
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
+go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 ```
 
 `push --dry-run` scans and reports counts without writing target files or
-control-plane artifacts. The target path comes from the profile. A non-dry-run
-local push copies supported regular files, records manifests and warnings, and
-writes session control artifacts.
-`verify` checks published file payloads against the manifest. `deleted list`
-shows reviewable source-side deletions. `health` is read-only: it reports
-incomplete or invalid session records and missing/corrupt published artifacts
-under the target `.supermover` directory and does not repair them.
+control-plane artifacts. Warning output at this stage is mainly the count; full
+warning JSON is written only after a published run can continue. The target
+path comes from the profile. A non-dry-run local push copies supported regular
+files, records manifests and warnings, and writes session control artifacts.
+Source scanner `scan_error` findings block push before publish instead of being
+published as warning records.
+
+`verify` checks published regular file payloads and metadata against the
+manifest: size, `sha256:` digest, permission mode, and modification time. It
+also verifies directory entries as plain directories and symlink entries by
+`readlink` target. Unsupported manifest entry kinds and non-file mismatches are
+reported as findings instead of being ignored. `verify` exits non-zero for
+error findings, warning findings, artifact problems, or a missing manifest.
+`deleted list` shows reviewable source-side deletions. `health` is read-only:
+it reports incomplete or invalid session records and missing/corrupt published
+artifacts under the target `.supermover` directory and does not repair them.
+`recover` performs the conservative mutating recovery subset.
 
 ## Prepare A Profile
 
@@ -106,7 +117,7 @@ Review the summary:
 
 - `roots`: number of configured roots.
 - `entries`: scanned filesystem entries.
-- `warnings`: audit records expected if the run is published.
+- `warnings`: warning count expected if the run is published.
 - `influences`: agent knowledge files detected for cataloging.
 
 Stop and inspect the source tree if the counts are surprising. For a deeper
@@ -179,9 +190,12 @@ warning file:
 3. If policy should change, edit the profile and rerun from a new session.
 4. Keep the warning record with the session evidence.
 
-Examples of warning classes include scan errors and local push features that
-are not implemented yet, such as symlink copying. The exact `code` is the
-machine-readable field to use in acceptance checks.
+Examples of warning classes include symlink publish conflicts, where a source
+symlink cannot replace an existing non-symlink target and is recorded as
+`symlink_not_published`. Source scanner `scan_error` findings are different:
+they block push before publish because source inventory and soft-delete
+evidence are not reliable. The exact warning `code` is the machine-readable
+field to use in acceptance checks.
 
 ## Soft-Delete Review
 

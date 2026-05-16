@@ -6,7 +6,9 @@ prune, history, drift, and agent-facing reporting commands. The Go schema
 foundation lives in `internal/control`.
 
 All control-plane documents use JSON with `version: 1`. Writers emit stable,
-indented JSON and readers reject unknown fields so schema drift is visible.
+indented JSON. Readers reject unknown fields and trailing JSON documents, so
+each artifact path contains exactly one schema-valid JSON document and schema
+drift is visible.
 
 ## Paths
 
@@ -62,9 +64,11 @@ Path helpers resolve artifacts under the target root:
 - `entries`: each entry has `path`, `kind`, optional `mode`, `size`,
   `mod_time`, `digest`, `target_path`, and `symlink_target`
 
-Readers accept legacy symlink manifest entries that do not include
-`symlink_target` so older control-plane data can still be used for soft-delete
-review. Writers always emit `symlink_target` for symlink entries.
+Strict manifest readers require `symlink_target` for symlink entries. The
+compatibility reader used for historical review accepts legacy symlink manifest
+entries without `symlink_target` so older control-plane data can still be used
+for soft-delete review. Writers always emit `symlink_target` for symlink
+entries.
 
 `warning` records audit-relevant issues:
 
@@ -127,9 +131,9 @@ review. Writers always emit `symlink_target` for symlink entries.
 ## Validation Baseline
 
 Validation catches missing required IDs and timestamps, invalid recovery
-statuses, invalid embedded profile JSON, empty manifest entry paths/kinds, and
-negative manifest entry sizes. Full sync semantics, digest verification,
-transport, and recovery execution are intentionally outside this foundation.
+statuses, invalid embedded profile JSON, empty manifest entry paths/kinds,
+unsafe symlink targets, reserved control paths, and negative manifest entry
+sizes. Transport execution remains outside this foundation.
 
 Read-only health checks also treat published sessions as unhealthy when their
 manifest or receipt artifact is missing or invalid. This keeps recovery status
