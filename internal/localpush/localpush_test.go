@@ -365,6 +365,30 @@ func TestRunRejectsNormalizedReservedControlPlaneTargetPathBeforePublish(t *test
 	}
 }
 
+func TestPreflightPublishPlanRejectsFileTargetWithDescendant(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	layout := transaction.NewLayout(control.ControlDir(target))
+	entries := []control.ManifestEntry{
+		{Path: "first.txt", TargetPath: "a", Kind: "file", Mode: 0o644, Size: 1, Digest: "sha256:ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"},
+		{Path: "second.txt", TargetPath: "a/b", Kind: "file", Mode: 0o644, Size: 1, Digest: "sha256:3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d"},
+	}
+	first, err := pathguard.SafeJoinParent(layout.StagingDir("session-test"), "first.txt")
+	if err != nil {
+		t.Fatalf("pathguard.SafeJoinParent(first) error = %v, want nil", err)
+	}
+	second, err := pathguard.SafeJoinParent(layout.StagingDir("session-test"), "second.txt")
+	if err != nil {
+		t.Fatalf("pathguard.SafeJoinParent(second) error = %v, want nil", err)
+	}
+	mustWriteFile(t, first, "a", 0o644)
+	mustWriteFile(t, second, "b", 0o644)
+
+	if err := preflightPublishPlan(layout, target, "session-test", entries); err == nil || !strings.Contains(err.Error(), "non-directory") {
+		t.Fatalf("preflightPublishPlan(file target with descendant) error = %v, want non-directory target error", err)
+	}
+}
+
 func TestRunPublishesSymlinkTarget(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

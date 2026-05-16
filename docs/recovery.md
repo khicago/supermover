@@ -74,7 +74,10 @@ file and tries an atomic hard-link publish. For cross-device link failures, it
 copies to a temporary file in the final directory, syncs that file, then
 hard-links the temporary file into the final path before cleanup. Filesystems
 without hard-link support are rejected so a crash cannot leave a partial final
-file. Callers still own parent-directory creation and path safety.
+file. A crash during the fallback copy can leave a `.supermover-promote-*`
+temporary file in the final directory; operators may delete that orphan after
+confirming it is not referenced by a manifest or session stage. Callers still
+own parent-directory creation and path safety.
 
 Directory sync is best-effort because platform support differs. Unix-like builds
 attempt to sync the parent directory and ignore unsupported directory-sync
@@ -112,10 +115,11 @@ recovery subset:
 
 - `staged` sessions are replayed from the durable manifest and stage directory.
   Staged file size and SHA-256 digest must match the manifest before
-  publication. File publication still uses no-replace semantics. Existing final
-  files are accepted only when size and digest match the manifest. Directory
-  and symlink entries are also checked before recovery publish so an unsafe or
-  conflicting non-file entry cannot create a partial target update.
+  publication unless the final file already exists and matches the manifest.
+  File publication still uses no-replace semantics. Existing final files are
+  accepted only when size and digest match the manifest. Directory and symlink
+  entries are also checked before recovery publish so an unsafe or conflicting
+  non-file entry cannot create a partial target update.
 - `received` and `validated` sessions are not silently discarded. `recover
   --dry-run` reports the rollback action; `recover --rollback-incomplete`
   explicitly marks them `rolled_back` when the operator decides they never

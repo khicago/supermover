@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
 
 func PromoteFile(tempPath string, finalPath string) error {
@@ -75,8 +76,10 @@ func copyFileNoReplace(tempPath, finalPath string) error {
 	defer src.Close()
 
 	mode := os.FileMode(0o600)
+	modTime := time.Time{}
 	if info, err := src.Stat(); err == nil {
 		mode = info.Mode().Perm()
+		modTime = info.ModTime()
 	}
 	finalDir := filepath.Dir(finalPath)
 	dst, err := os.CreateTemp(finalDir, ".supermover-promote-*.tmp")
@@ -102,6 +105,14 @@ func copyFileNoReplace(tempPath, finalPath string) error {
 		return err
 	}
 	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	if !modTime.IsZero() {
+		if err := os.Chtimes(tmpName, modTime, modTime); err != nil {
+			return err
+		}
+	}
+	if err := SyncFile(tmpName); err != nil {
 		return err
 	}
 	if err := os.Link(tmpName, finalPath); err != nil {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestPromoteFileRenamesSyncedTempToFinal(t *testing.T) {
@@ -137,6 +138,31 @@ func TestCopyFileNoReplacePreservesTempPermissions(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("copyFileNoReplace(%q, %q) mode = %v, want 0600", tempPath, finalPath, info.Mode().Perm())
+	}
+}
+
+func TestCopyFileNoReplacePreservesTempModTime(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "file.tmp")
+	finalPath := filepath.Join(dir, "file.txt")
+	want := time.Date(2026, 5, 16, 8, 0, 0, 123, time.UTC)
+
+	if err := os.WriteFile(tempPath, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
+	}
+	if err := os.Chtimes(tempPath, want, want); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", tempPath, err)
+	}
+
+	if err := copyFileNoReplace(tempPath, finalPath); err != nil {
+		t.Fatalf("copyFileNoReplace(%q, %q) error = %v, want nil", tempPath, finalPath, err)
+	}
+	info, err := os.Stat(finalPath)
+	if err != nil {
+		t.Fatalf("os.Stat(%q) error = %v, want nil", finalPath, err)
+	}
+	if !info.ModTime().Equal(want) {
+		t.Fatalf("copyFileNoReplace(%q, %q) mtime = %s, want %s", tempPath, finalPath, info.ModTime().Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
 	}
 }
 

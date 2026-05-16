@@ -535,6 +535,35 @@ func TestFileStoreCommitPreflightsAllTargetsBeforePublish(t *testing.T) {
 	}
 }
 
+func TestFileStoreCommitRejectsManifestFileTargetWithDescendantBeforePublish(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest(nil)
+	req.Manifest.Entries = []protocol.ManifestEntry{
+		{Path: "src/first.txt", TargetPath: "a", Kind: protocol.FileKindFile, Size: 1, Digest: digest([]byte("a"))},
+		{Path: "src/second.txt", TargetPath: "a/b", Kind: protocol.FileKindFile, Size: 1, Digest: digest([]byte("b"))},
+	}
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	first := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "src/first.txt", Offset: 0, Data: []byte("a"), Final: true}
+	if _, err := store.AppendChunk(first); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", first, err)
+	}
+	second := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "src/second.txt", Offset: 0, Data: []byte("b"), Final: true}
+	if _, err := store.AppendChunk(second); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", second, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(file target with descendant) error = %v, want ErrConflict", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(a after rejected target plan) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestFileStorePublishedSessionRequiresReceipt(t *testing.T) {
 	root := t.TempDir()
 	store := FileStore{TargetRoot: root}

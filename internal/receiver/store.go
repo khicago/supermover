@@ -560,6 +560,9 @@ func (s FileStore) verifyFiles(meta sessionMeta) error {
 }
 
 func (s FileStore) reconcileStagedFiles(meta sessionMeta) error {
+	if err := validateReceiverTargetPlan(meta.Manifest.Entries); err != nil {
+		return err
+	}
 	for _, entry := range meta.Manifest.Entries {
 		switch entry.Kind {
 		case protocol.FileKindFile:
@@ -602,6 +605,42 @@ func (s FileStore) reconcileStagedFiles(meta sessionMeta) error {
 		}
 	}
 	return nil
+}
+
+func validateReceiverTargetPlan(entries []protocol.ManifestEntry) error {
+	seen := map[string]string{}
+	blockingLeaf := map[string]string{}
+	for _, entry := range entries {
+		target := cleanReceiverTarget(publishPath(entry))
+		if previous, ok := seen[target]; ok {
+			return fmt.Errorf("%w: manifest target path %q is used by both %q and %q", ErrConflict, target, previous, entry.Path)
+		}
+		for parent := filepath.Dir(target); parent != "." && parent != "/"; parent = filepath.Dir(parent) {
+			if previous, ok := blockingLeaf[parent]; ok {
+				return fmt.Errorf("%w: manifest target path %q is below non-directory target %q from %q", ErrConflict, target, parent, previous)
+			}
+		}
+		seen[target] = entry.Path
+		if entry.Kind != protocol.FileKindDir {
+			blockingLeaf[target] = entry.Path
+		}
+	}
+	for _, entry := range entries {
+		if entry.Kind == protocol.FileKindDir {
+			continue
+		}
+		target := cleanReceiverTarget(publishPath(entry))
+		for other := range seen {
+			if other != target && strings.HasPrefix(other, target+"/") {
+				return fmt.Errorf("%w: manifest target path %q has descendant target %q but is not a directory", ErrConflict, target, other)
+			}
+		}
+	}
+	return nil
+}
+
+func cleanReceiverTarget(target string) string {
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(target)))
 }
 
 func (s FileStore) reconcileStagedFile(meta sessionMeta, entry protocol.ManifestEntry) error {

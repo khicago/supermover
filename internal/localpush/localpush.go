@@ -551,6 +551,11 @@ func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string,
 }
 
 func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
+	if err := validateTargetPlan(entries, func(entry control.ManifestEntry) (string, string) {
+		return targetPath(entry), entry.Kind
+	}); err != nil {
+		return err
+	}
 	for _, entry := range entries {
 		entryTarget := targetPath(entry)
 		if pathguard.IsReservedControlPath(entryTarget) {
@@ -593,6 +598,44 @@ func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID
 		}
 	}
 	return nil
+}
+
+func validateTargetPlan(entries []control.ManifestEntry, targetAndKind func(control.ManifestEntry) (string, string)) error {
+	seen := map[string]string{}
+	blockingLeaf := map[string]string{}
+	for _, entry := range entries {
+		target, kind := targetAndKind(entry)
+		clean := cleanManifestTarget(target)
+		if previous, ok := seen[clean]; ok {
+			return fmt.Errorf("manifest target path %q is used by both %q and %q", clean, previous, entry.Path)
+		}
+		for parent := filepath.Dir(clean); parent != "." && parent != "/"; parent = filepath.Dir(parent) {
+			if previous, ok := blockingLeaf[parent]; ok {
+				return fmt.Errorf("manifest target path %q is below non-directory target %q from %q", clean, parent, previous)
+			}
+		}
+		seen[clean] = entry.Path
+		if kind != "dir" {
+			blockingLeaf[clean] = entry.Path
+		}
+	}
+	for _, entry := range entries {
+		target, kind := targetAndKind(entry)
+		if kind == "dir" {
+			continue
+		}
+		clean := cleanManifestTarget(target)
+		for other := range seen {
+			if other != clean && strings.HasPrefix(other, clean+"/") {
+				return fmt.Errorf("manifest target path %q has descendant target %q but is not a directory", clean, other)
+			}
+		}
+	}
+	return nil
+}
+
+func cleanManifestTarget(target string) string {
+	return filepath.ToSlash(filepath.Clean(filepath.FromSlash(target)))
 }
 
 func validateStagedManifestFile(layout transaction.Layout, sessionID string, entry control.ManifestEntry) error {
