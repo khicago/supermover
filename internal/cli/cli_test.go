@@ -2,8 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/khicago/supermover/internal/control"
+	"github.com/khicago/supermover/internal/profile"
 )
 
 func TestRunHelp(t *testing.T) {
@@ -34,5 +39,168 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unknown command "missing"`) {
 		t.Errorf("Run(%v) stderr = %q, want unknown command message", []string{"missing"}, stderr.String())
+	}
+}
+
+func TestProfileInitAndLint(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"profile", "init", "--profile", profilePath, "--source", source, "--target", target}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile init exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	p, err := profile.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
+	}
+	if p.Roots[0].Path != source {
+		t.Errorf("profile root path = %q, want %q", p.Roots[0].Path, source)
+	}
+	if p.Target.LocalPath != target {
+		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, target)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"profile", "lint", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile lint exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "profile ok") {
+		t.Errorf("profile lint stdout = %q, want ok summary", stdout.String())
+	}
+}
+
+func TestProfileSetTargetUpdatesProfileSSOT(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	nextTarget := filepath.Join(dir, "next-target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--name", "Next target"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile set-target exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	p, err := profile.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
+	}
+	if p.Target.LocalPath != nextTarget {
+		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, nextTarget)
+	}
+	if p.Target.Name != "Next target" {
+		t.Errorf("profile target name = %q, want %q", p.Target.Name, "Next target")
+	}
+}
+
+func TestScanUsesProfileRoots(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "AGENTS.md"), "rules")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"scan", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("scan exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "entries=2") {
+		t.Errorf("scan stdout = %q, want entry count", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "influences=1") {
+		t.Errorf("scan stdout = %q, want influence count", stdout.String())
+	}
+}
+
+func TestPushLocalTargetWritesFilesAndControlArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "notes", "a.md"), "hello")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"push", "--profile", profilePath, "--session", "session-test"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if gotBytes, err := os.ReadFile(filepath.Join(target, "notes", "a.md")); err != nil || string(gotBytes) != "hello" {
+		t.Fatalf("target file = (%q, %v), want hello", string(gotBytes), err)
+	}
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "session-test")
+	if err != nil {
+		t.Fatalf("control.Path() error = %v, want nil", err)
+	}
+	manifest, err := control.ReadFile[control.Manifest](manifestPath)
+	if err != nil {
+		t.Fatalf("control.ReadFile(%q) error = %v, want nil", manifestPath, err)
+	}
+	if len(manifest.Entries) == 0 {
+		t.Fatalf("manifest entries = 0, want copied file entry")
+	}
+}
+
+func TestPushDryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"push", "--profile", profilePath, "--dry-run"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("push --dry-run exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName)); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(.supermover) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func writeDefaultProfile(t *testing.T, path string, source string, target string) {
+	t.Helper()
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if err := profile.WriteFile(path, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", path, err)
+	}
+}
+
+func mustMkdir(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", path, err)
+	}
+}
+
+func mustWrite(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
 	}
 }

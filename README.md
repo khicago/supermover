@@ -19,6 +19,17 @@ The tracked implementation outline lives in [docs/plan.md](docs/plan.md).
 Local Bagakit planning and research artifacts may also exist under `.bagakit/`,
 but that directory is intentionally ignored by Git.
 
+## Operator Docs
+
+- [User migration guide](docs/user-migration-guide.md): current local push
+  workflow, audit artifacts, and post-run checks.
+- [Operations runbook](docs/runbook.md): repeatable dry-run, publish, review,
+  recovery, and incident procedures.
+- [Troubleshooting matrix](docs/troubleshooting.md): symptoms, likely causes,
+  evidence to collect, and safe actions.
+- [v1 scope and non-goals](docs/v1-scope.md): product boundaries, including
+  warning auditability, soft-delete review, profile SSOT, and discovery trust.
+
 ## Development
 
 ```bash

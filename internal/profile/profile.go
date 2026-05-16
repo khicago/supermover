@@ -97,6 +97,7 @@ type PrivacyPolicy struct {
 type TargetIdentity struct {
 	TargetID         string `json:"target_id"`
 	Name             string `json:"name,omitempty"`
+	LocalPath        string `json:"local_path,omitempty"`
 	DevicePublicKey  string `json:"device_public_key,omitempty"`
 	PairingReceiptID string `json:"pairing_receipt_id,omitempty"`
 	PairedAt         string `json:"paired_at,omitempty"`

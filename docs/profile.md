@@ -76,6 +76,9 @@ Optional top-level fields:
 
 - `target_id`: required stable target identifier.
 - `name`: optional human-readable target name.
+- `local_path`: trusted local target directory for the local push slice.
+  Commands update this through `profile set-target` instead of accepting an ad
+  hoc push-time override.
 - `device_public_key`: optional pinned target device public key.
 - `pairing_receipt_id`: optional `.supermover` pairing receipt reference.
 - `paired_at`: optional pairing timestamp.
