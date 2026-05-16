@@ -3,6 +3,7 @@ package protocol
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -18,6 +19,11 @@ const (
 	MaxPathLen      = 4096
 	MaxDigestLen    = 128
 	MaxChunkBytes   = 4 * 1024 * 1024
+
+	MaxManifestEntries          = 100_000
+	MaxTotalDeclaredBytes       = 1 << 50
+	MaxSymlinkTargetLen         = pathguard.MaxSymlinkTargetLen
+	MaxFileMode           int64 = 0o777
 )
 
 type FileKind string
@@ -84,6 +90,7 @@ type ManifestEntry struct {
 	Path          string    `json:"path"`
 	TargetPath    string    `json:"target_path,omitempty"`
 	Kind          FileKind  `json:"kind"`
+	Mode          uint32    `json:"mode,omitempty"`
 	Size          int64     `json:"size,omitempty"`
 	Digest        string    `json:"digest,omitempty"`
 	ModTime       time.Time `json:"mod_time,omitempty"`
@@ -170,26 +177,32 @@ func (r BeginSessionRequest) Validate() error {
 func (m TransferManifest) Validate() error {
 	var errs []error
 	validateToken("manifest.id", m.ID, MaxSessionIDLen, &errs)
+	if len(m.Entries) > MaxManifestEntries {
+		errs = append(errs, fmt.Errorf("manifest.entries exceeds maximum count %d", MaxManifestEntries))
+	}
 	seen := map[string]struct{}{}
 	seenTargets := map[string]string{}
-	type symlinkEntry struct {
-		index      int
-		path       string
-		targetPath string
-	}
-	var symlinks []symlinkEntry
+	var totalDeclared int64
+	var sourceRefs []pathRef
+	var targetRefs []pathRef
 	for i, entry := range m.Entries {
 		if err := entry.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: %w", i, err))
 		}
-		if entry.Kind == FileKindSymlink {
-			symlinks = append(symlinks, symlinkEntry{index: i, path: entry.Path, targetPath: entryTargetPath(entry)})
+		if entry.Kind == FileKindFile {
+			if entry.Size > MaxTotalDeclaredBytes-totalDeclared {
+				errs = append(errs, fmt.Errorf("manifest.entries[%d]: total declared file size exceeds maximum %d", i, MaxTotalDeclaredBytes))
+			} else {
+				totalDeclared += entry.Size
+			}
 		}
+		sourceRefs = append(sourceRefs, pathRef{index: i, path: entry.Path, symlink: entry.Kind == FileKindSymlink})
 		if _, ok := seen[entry.Path]; ok {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: duplicate path %q", i, entry.Path))
 		}
 		seen[entry.Path] = struct{}{}
 		targetPath := entryTargetPath(entry)
+		targetRefs = append(targetRefs, pathRef{index: i, path: targetPath, symlink: entry.Kind == FileKindSymlink})
 		if pathguard.IsReservedControlPath(targetPath) {
 			errs = append(errs, fmt.Errorf("manifest.entries[%d]: target path %q uses reserved control directory", i, targetPath))
 		}
@@ -198,20 +211,8 @@ func (m TransferManifest) Validate() error {
 		}
 		seenTargets[targetPath] = entry.Path
 	}
-	for _, symlink := range symlinks {
-		for i, entry := range m.Entries {
-			if i == symlink.index {
-				continue
-			}
-			if isPathBelow(entry.Path, symlink.path) {
-				errs = append(errs, fmt.Errorf("manifest.entries[%d]: path %q is below symlink path %q", i, entry.Path, symlink.path))
-			}
-			targetPath := entryTargetPath(entry)
-			if isPathBelow(targetPath, symlink.targetPath) {
-				errs = append(errs, fmt.Errorf("manifest.entries[%d]: target path %q is below symlink target path %q", i, targetPath, symlink.targetPath))
-			}
-		}
-	}
+	errs = append(errs, validateNoEntriesBelowSymlinks(sourceRefs, "path")...)
+	errs = append(errs, validateNoEntriesBelowSymlinks(targetRefs, "target path")...)
 	return joinValidation(errs)
 }
 
@@ -222,8 +223,35 @@ func entryTargetPath(entry ManifestEntry) string {
 	return entry.Path
 }
 
-func isPathBelow(path, parent string) bool {
-	return strings.HasPrefix(path, parent+"/")
+type pathRef struct {
+	index   int
+	path    string
+	symlink bool
+}
+
+func validateNoEntriesBelowSymlinks(refs []pathRef, label string) []error {
+	sorted := append([]pathRef(nil), refs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].path == sorted[j].path {
+			return sorted[i].index < sorted[j].index
+		}
+		return sorted[i].path < sorted[j].path
+	})
+	var errs []error
+	var stack []pathRef
+	for _, ref := range sorted {
+		for len(stack) > 0 && !strings.HasPrefix(ref.path, stack[len(stack)-1].path+"/") {
+			stack = stack[:len(stack)-1]
+		}
+		if len(stack) > 0 && ref.index != stack[len(stack)-1].index {
+			active := stack[len(stack)-1]
+			errs = append(errs, fmt.Errorf("manifest.entries[%d]: %s %q is below symlink %s %q", ref.index, label, ref.path, label, active.path))
+		}
+		if ref.symlink {
+			stack = append(stack, ref)
+		}
+	}
+	return errs
 }
 
 func (e ManifestEntry) Validate() error {
@@ -237,15 +265,18 @@ func (e ManifestEntry) Validate() error {
 		if e.Size < 0 {
 			errs = append(errs, errors.New("size cannot be negative"))
 		}
+		validateMode("mode", e.Mode, &errs)
 		validateDigest("digest", e.Digest, true, &errs)
 	case FileKindDir:
 		if e.Size != 0 {
 			errs = append(errs, errors.New("directory size must be zero"))
 		}
+		validateMode("mode", e.Mode, &errs)
 	case FileKindSymlink:
 		if strings.TrimSpace(e.SymlinkTarget) == "" {
 			errs = append(errs, errors.New("symlink_target is required for symlinks"))
 		}
+		validateSymlinkTarget("symlink_target", e.SymlinkTarget, &errs)
 	default:
 		errs = append(errs, fmt.Errorf("kind must be one of %s, %s, %s", FileKindFile, FileKindDir, FileKindSymlink))
 	}
@@ -346,6 +377,21 @@ func validateDigest(field, value string, required bool, errs *[]error) {
 			*errs = append(*errs, fmt.Errorf("%s must be hexadecimal", field))
 			return
 		}
+	}
+}
+
+func validateMode(field string, value uint32, errs *[]error) {
+	if value == 0 {
+		return
+	}
+	if value&^uint32(MaxFileMode) != 0 {
+		*errs = append(*errs, fmt.Errorf("%s must contain only permission bits", field))
+	}
+}
+
+func validateSymlinkTarget(field, value string, errs *[]error) {
+	if err := pathguard.ValidateRelativeSymlinkTarget(value); err != nil {
+		*errs = append(*errs, fmt.Errorf("%s is unsafe: %w", field, err))
 	}
 }
 

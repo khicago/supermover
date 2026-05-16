@@ -79,6 +79,7 @@ func TestValidateDocuments(t *testing.T) {
 		{name: "invalid recovery", doc: RecoveryState{Version: CurrentVersion, Status: "unknown", UpdatedAt: "2026-05-16T00:00:00Z"}, wantErr: "status must be one of"},
 		{name: "invalid manifest entry", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Kind: "file"}}}, wantErr: "entries[0].path is required"},
 		{name: "invalid symlink manifest entry", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "link", Kind: "symlink"}}}, wantErr: "entries[0].symlink_target is required"},
+		{name: "unsafe symlink manifest entry", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "link", Kind: "symlink", SymlinkTarget: "../outside"}}}, wantErr: "entries[0].symlink_target is unsafe"},
 		{name: "invalid warning missing session", doc: Warning{Version: CurrentVersion, ID: "w1", Severity: "warning", Code: "c", Message: "m", Paths: []string{"p"}, CreatedAt: "2026-05-16T00:00:00Z"}, wantErr: "session_id is required"},
 		{name: "invalid warning missing severity", doc: Warning{Version: CurrentVersion, ID: "w1", SessionID: "s1", Code: "c", Message: "m", Paths: []string{"p"}, CreatedAt: "2026-05-16T00:00:00Z"}, wantErr: "severity is required"},
 		{name: "invalid warning missing paths", doc: Warning{Version: CurrentVersion, ID: "w1", SessionID: "s1", Severity: "warning", Code: "c", Message: "m", CreatedAt: "2026-05-16T00:00:00Z"}, wantErr: "paths must contain"},
@@ -186,6 +187,14 @@ func TestReadManifestCompatAllowsLegacySymlinkTarget(t *testing.T) {
 	}
 	if len(got.Entries) != 1 || got.Entries[0].Path != "link" {
 		t.Fatalf("ReadManifestCompat(legacy symlink).Entries = %#v, want link entry", got.Entries)
+	}
+}
+
+func TestReadManifestCompatRejectsUnsafeSymlinkTarget(t *testing.T) {
+	input := `{"version":1,"id":"manifest1","session_id":"session1","created_at":"2026-05-16T00:00:00Z","entries":[{"path":"link","kind":"symlink","target_path":"link","symlink_target":"../outside"}]}`
+
+	if _, err := ReadManifestCompat(strings.NewReader(input)); err == nil {
+		t.Fatalf("ReadManifestCompat(unsafe symlink) error = nil, want unsafe symlink target error")
 	}
 }
 

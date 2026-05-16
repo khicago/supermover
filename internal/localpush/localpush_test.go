@@ -90,6 +90,12 @@ func TestRunCopiesFilesAndWritesControlArtifacts(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(target, control.DirName, "agent", "session-test-influence.json")); err != nil {
 		t.Fatalf("os.Stat(agent influence) error = %v, want nil", err)
 	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "locks", "target.lock")); err != nil {
+		t.Fatalf("os.Stat(target lock) error = %v, want nil", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "locks", "session-test.lock")); err != nil {
+		t.Fatalf("os.Stat(session lock) error = %v, want nil", err)
+	}
 }
 
 func TestRunSkipsSourceControlPlaneDirectory(t *testing.T) {
@@ -249,7 +255,7 @@ func TestLatestPublishedManifestUsesChronologicalTime(t *testing.T) {
 	}
 }
 
-func TestRunRecordsSymlinkWarningWithoutCopyingTarget(t *testing.T) {
+func TestRunPublishesSymlinkTarget(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
 	target := filepath.Join(dir, "target")
@@ -263,33 +269,76 @@ func TestRunRecordsSymlinkWarningWithoutCopyingTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run() error = %v, want nil", err)
 	}
-	if got.Warnings != 1 {
-		t.Fatalf("Run() warnings = %d, want %d", got.Warnings, 1)
-	}
-	warningPath := filepath.Join(target, control.DirName, "warnings")
-	entries, err := os.ReadDir(warningPath)
-	if err != nil {
-		t.Fatalf("os.ReadDir(%q) error = %v, want nil", warningPath, err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("warnings = %#v, want one warning artifact", entries)
-	}
-	warning, err := control.ReadFile[control.Warning](filepath.Join(warningPath, entries[0].Name()))
-	if err != nil {
-		t.Fatalf("control.ReadFile(warning) error = %v, want nil", err)
-	}
-	if warning.Code != "symlink_not_copied" {
-		t.Fatalf("warning code = %q, want symlink_not_copied", warning.Code)
-	}
-	if warning.Severity != "warning" || warning.TargetPath != "link.txt" || warning.Detected["target"] != "real.txt" {
-		t.Fatalf("warning evidence = %#v, want severity warning, target path link.txt, detected target real.txt", warning)
+	if got.Warnings != 0 {
+		t.Fatalf("Run() warnings = %d, want 0", got.Warnings)
 	}
 	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-test")
 	if !manifestContainsSymlinkTarget(manifest, "link.txt", "real.txt") {
 		t.Fatalf("manifest entries = %#v, want symlink target for link.txt", manifest.Entries)
 	}
+	gotTarget, err := os.Readlink(filepath.Join(target, "link.txt"))
+	if err != nil {
+		t.Fatalf("os.Readlink(target symlink) error = %v, want nil", err)
+	}
+	if gotTarget != "real.txt" {
+		t.Fatalf("os.Readlink(target symlink) = %q, want real.txt", gotTarget)
+	}
+}
+
+func TestRunRecordsWarningForUnsafeSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "real.txt"), "real", 0o644)
+	if err := os.Symlink("../outside", filepath.Join(source, "link.txt")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+	if err != nil {
+		t.Fatalf("Run(unsafe symlink) error = %v, want nil with warning", err)
+	}
+	if got.Warnings != 1 {
+		t.Fatalf("Run(unsafe symlink).Warnings = %d, want 1", got.Warnings)
+	}
 	if _, err := os.Lstat(filepath.Join(target, "link.txt")); !os.IsNotExist(err) {
-		t.Fatalf("os.Lstat(target symlink) error = %v, want os.ErrNotExist", err)
+		t.Fatalf("os.Lstat(target unsafe symlink) error = %v, want os.ErrNotExist", err)
+	}
+	warning := readOnlyWarning(t, target)
+	if warning.Code != "symlink_not_published" || warning.Detected["target"] != "../outside" {
+		t.Fatalf("warning = %#v, want symlink_not_published with target evidence", warning)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-test")
+	if manifestContainsPath(manifest, "link.txt") {
+		t.Fatalf("manifest entries = %#v, want unsafe symlink omitted", manifest.Entries)
+	}
+}
+
+func TestReadStableSymlinkRejectsTargetChange(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	if err := os.MkdirAll(source, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", source, err)
+	}
+	link := filepath.Join(source, "link.txt")
+	if err := os.Symlink("before.txt", link); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil {
+		t.Fatalf("os.Lstat(%q) error = %v, want nil", link, err)
+	}
+	entry := scan.Entry{Path: "link.txt", Kind: scan.KindSymlink, ModTime: info.ModTime(), SymlinkTarget: "before.txt"}
+	if err := os.Remove(link); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v, want nil", link, err)
+	}
+	if err := os.Symlink("after.txt", link); err != nil {
+		t.Fatalf("os.Symlink(after) error = %v, want nil", err)
+	}
+
+	if _, err := readStableSymlink(link, entry); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("readStableSymlink(changed target) error = %v, want changed target error", err)
 	}
 }
 
@@ -548,7 +597,7 @@ func TestRunRecordsSoftDeleteWhenFileBecomesSymlink(t *testing.T) {
 
 	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
 	if err != nil {
-		t.Fatalf("second Run(file to symlink) error = %v, want nil", err)
+		t.Fatalf("second Run(file to symlink) error = %v, want nil with warning", err)
 	}
 	if got.Deleted != 1 || got.Warnings != 1 {
 		t.Fatalf("second Run(file to symlink) deleted=%d warnings=%d, want 1/1", got.Deleted, got.Warnings)
@@ -567,6 +616,29 @@ func TestRunRecordsSoftDeleteWhenFileBecomesSymlink(t *testing.T) {
 	}
 	if record.SourcePath != "item" || !strings.Contains(record.Reason, "current source scan observes symlink") {
 		t.Fatalf("soft-delete record = %#v, want kind-change evidence for item", record)
+	}
+	warningDir := filepath.Join(target, control.DirName, "warnings")
+	warnings, err := os.ReadDir(warningDir)
+	if err != nil {
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", warningDir, err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warning artifacts = %d, want 1", len(warnings))
+	}
+	warning, err := control.ReadFile[control.Warning](filepath.Join(warningDir, warnings[0].Name()))
+	if err != nil {
+		t.Fatalf("control.ReadFile(warning) error = %v, want nil", err)
+	}
+	if warning.Code != "symlink_not_published" {
+		t.Fatalf("warning code = %q, want symlink_not_published", warning.Code)
+	}
+
+	preflight, err := Preflight(Options{Profile: p, TargetDir: target, SessionID: "session-three", Now: time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Preflight(file to symlink) error = %v, want nil", err)
+	}
+	if preflight.Deleted != 0 || preflight.Warnings != 1 {
+		t.Fatalf("Preflight(file to symlink) deleted=%d warnings=%d, want 0/1 after session-two recorded soft delete", preflight.Deleted, preflight.Warnings)
 	}
 	if bytes, err := os.ReadFile(filepath.Join(target, "item")); err != nil || string(bytes) != "old" {
 		t.Fatalf("target retained file = (%q, %v), want old retained for review", string(bytes), err)
@@ -794,10 +866,10 @@ func TestRunAllowsExistingIdenticalTargetFile(t *testing.T) {
 		t.Fatalf("os.Stat(target file) error = %v, want nil", err)
 	}
 	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("target mode after idempotent Run = %v, want source 0600", info.Mode().Perm())
+		t.Fatalf("target mode after idempotent Run = %v, want existing 0600", info.Mode().Perm())
 	}
-	if !info.ModTime().Equal(sourceTime) {
-		t.Fatalf("target mtime after idempotent Run = %v, want source %v", info.ModTime(), sourceTime)
+	if !info.ModTime().Equal(targetTime) {
+		t.Fatalf("target mtime after idempotent Run = %v, want existing %v", info.ModTime(), targetTime)
 	}
 }
 

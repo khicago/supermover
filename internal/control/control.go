@@ -392,6 +392,11 @@ func (d Manifest) validateWithOptions(opts manifestValidationOptions) error {
 		if entry.Kind == "symlink" && strings.TrimSpace(entry.SymlinkTarget) == "" && !opts.allowLegacySymlinkTarget {
 			errs = append(errs, fmt.Errorf("entries[%d].symlink_target is required for symlinks", i))
 		}
+		if entry.Kind == "symlink" && strings.TrimSpace(entry.SymlinkTarget) != "" {
+			if err := pathguard.ValidateRelativeSymlinkTarget(entry.SymlinkTarget); err != nil {
+				errs = append(errs, fmt.Errorf("entries[%d].symlink_target is unsafe: %w", i, err))
+			}
+		}
 		if entry.Size < 0 {
 			errs = append(errs, fmt.Errorf("entries[%d].size cannot be negative", i))
 		}

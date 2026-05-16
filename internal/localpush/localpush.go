@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/deleted"
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/filelock"
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
@@ -41,6 +43,8 @@ type Result struct {
 }
 
 var localPushLocks sync.Map
+
+var errSymlinkTargetConflict = errors.New("target symlink conflict")
 
 type RecoverOptions struct {
 	Profile            profile.Profile
@@ -90,6 +94,9 @@ func Run(opts Options) (Result, error) {
 	sessionID := opts.SessionID
 	if strings.TrimSpace(sessionID) == "" {
 		sessionID = "session-" + now.UTC().Format("20060102T150405Z")
+	}
+	if err := transaction.ValidateSessionID(sessionID); err != nil {
+		return Result{}, err
 	}
 	unlock, err := lockTargetSession(opts.TargetDir, sessionID)
 	if err != nil {
@@ -150,10 +157,29 @@ func Run(opts Options) (Result, error) {
 			copied++
 			manifestEntries = append(manifestEntries, manifestEntry(entry, "file", digest))
 		case scan.KindSymlink:
-			warnings = append(warnings, audit.WithDetected(
-				audit.New(entry.Path, entry.Path, audit.SeverityWarning, "symlink_not_copied", "symlink copy is not implemented in local push"),
-				map[string]string{"target": entry.SymlinkTarget},
-			))
+			currentTarget, err := readStableSymlink(sourcePath, entry)
+			if err != nil {
+				warnings = append(warnings, audit.WithDetected(
+					audit.New(entry.Path, entry.Path, audit.SeverityWarning, "symlink_not_published", err.Error()),
+					map[string]string{"target": entry.SymlinkTarget},
+				))
+				continue
+			}
+			entry.SymlinkTarget = currentTarget
+			targetPath, err := targetPathForEntry(opts.TargetDir, entry)
+			if err != nil {
+				return Result{}, err
+			}
+			if err := preflightSymlinkTarget(targetPath, entry.SymlinkTarget); err != nil {
+				if errors.Is(err, errSymlinkTargetConflict) || errors.Is(err, pathguard.ErrUnsafePath) {
+					warnings = append(warnings, audit.WithDetected(
+						audit.New(entry.Path, entry.Path, audit.SeverityWarning, "symlink_not_published", err.Error()),
+						map[string]string{"target": entry.SymlinkTarget},
+					))
+					continue
+				}
+				return Result{}, err
+			}
 			manifestEntries = append(manifestEntries, manifestEntry(entry, "symlink", ""))
 		default:
 			warnings = append(warnings, audit.WithDetected(
@@ -260,10 +286,16 @@ func Preflight(opts Options) (Result, error) {
 			entries++
 			copied++
 		case scan.KindSymlink:
-			warnings = append(warnings, audit.WithDetected(
-				audit.New(entry.Path, entry.Path, audit.SeverityWarning, "symlink_not_copied", "symlink copy is not implemented in local push"),
-				map[string]string{"target": entry.SymlinkTarget},
-			))
+			if err := preflightSymlinkTarget(targetPath, entry.SymlinkTarget); err != nil {
+				if errors.Is(err, errSymlinkTargetConflict) || errors.Is(err, pathguard.ErrUnsafePath) {
+					warnings = append(warnings, audit.WithDetected(
+						audit.New(entry.Path, entry.Path, audit.SeverityWarning, "symlink_not_published", err.Error()),
+						map[string]string{"target": entry.SymlinkTarget},
+					))
+					continue
+				}
+				return Result{}, err
+			}
 			entries++
 		default:
 			warnings = append(warnings, audit.WithDetected(
@@ -288,11 +320,6 @@ func Recover(opts RecoverOptions) (RecoverResult, error) {
 	if err := ValidateSourceTargetSeparation(opts.Profile.Roots[0].Path, opts.TargetDir); err != nil {
 		return RecoverResult{}, err
 	}
-	layout := transaction.NewLayout(control.ControlDir(opts.TargetDir))
-	scan, err := transaction.ScanRecovery(layout)
-	if err != nil {
-		return RecoverResult{}, err
-	}
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -302,6 +329,20 @@ func Recover(opts RecoverOptions) (RecoverResult, error) {
 		if err := transaction.ValidateSessionID(wantSession); err != nil {
 			return RecoverResult{}, err
 		}
+	}
+	lockSession := wantSession
+	if lockSession == "" {
+		lockSession = "recover"
+	}
+	unlock, err := lockTargetSession(opts.TargetDir, lockSession)
+	if err != nil {
+		return RecoverResult{}, err
+	}
+	defer unlock()
+	layout := transaction.NewLayout(control.ControlDir(opts.TargetDir))
+	scan, err := transaction.ScanRecovery(layout)
+	if err != nil {
+		return RecoverResult{}, err
 	}
 
 	result := RecoverResult{TargetDir: opts.TargetDir, SessionID: wantSession, DryRun: opts.DryRun}
@@ -421,6 +462,9 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 	if manifest.RootID != "" && manifest.RootID != p.Roots[0].ID {
 		return fmt.Errorf("recover manifest root_id %q does not match profile root %q", manifest.RootID, p.Roots[0].ID)
 	}
+	if err := validateRecoverProfileSnapshot(targetDir, p, manifest); err != nil {
+		return err
+	}
 	if err := validateRecoverableStagedFiles(layout, targetDir, record.ID, manifest.Entries); err != nil {
 		return err
 	}
@@ -447,48 +491,100 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 	return layout.WriteSessionRecord(published)
 }
 
+func validateRecoverProfileSnapshot(targetDir string, p profile.Profile, manifest control.Manifest) error {
+	snapshotPath, err := control.Path(targetDir, control.ArtifactProfileSnapshot, "profile-"+manifest.SessionID)
+	if err != nil {
+		return err
+	}
+	snapshot, err := control.ReadFile[control.ProfileSnapshot](snapshotPath)
+	if err != nil {
+		return fmt.Errorf("read recover profile snapshot %q: %w", manifest.SessionID, err)
+	}
+	if snapshot.ProfileID != p.ProfileID {
+		return fmt.Errorf("recover profile snapshot profile_id %q does not match current profile %q", snapshot.ProfileID, p.ProfileID)
+	}
+	var snapProfile profile.Profile
+	if err := json.Unmarshal(snapshot.Profile, &snapProfile); err != nil {
+		return fmt.Errorf("decode recover profile snapshot %q: %w", manifest.SessionID, err)
+	}
+	if snapProfile.ProfileID != p.ProfileID {
+		return fmt.Errorf("recover embedded profile_id %q does not match current profile %q", snapProfile.ProfileID, p.ProfileID)
+	}
+	if snapProfile.Target.TargetID != p.Target.TargetID {
+		return fmt.Errorf("recover target_id %q does not match current target %q", snapProfile.Target.TargetID, p.Target.TargetID)
+	}
+	if manifest.RootID != "" {
+		foundRoot := false
+		for _, root := range snapProfile.Roots {
+			if root.ID == manifest.RootID {
+				foundRoot = true
+				break
+			}
+		}
+		if !foundRoot {
+			return fmt.Errorf("recover manifest root_id %q is not present in profile snapshot", manifest.RootID)
+		}
+	}
+	return nil
+}
+
 func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
 	for _, entry := range entries {
-		if entry.Kind != "file" {
-			continue
-		}
-		if strings.TrimSpace(entry.Digest) == "" {
-			return fmt.Errorf("recover file %q is missing digest", entry.Path)
-		}
 		finalPath, err := targetPathForManifestEntry(targetDir, entry)
 		if err != nil {
 			return err
 		}
-		same, exists, err := targetFileState(finalPath, entry.Size, entry.Digest)
-		if err != nil {
-			return err
-		}
-		if exists {
-			if same {
-				continue
+		switch entry.Kind {
+		case "file":
+			if strings.TrimSpace(entry.Digest) == "" {
+				return fmt.Errorf("recover file %q is missing digest", entry.Path)
 			}
-			return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
-		}
-		stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
-		if err != nil {
-			return err
-		}
-		info, err := os.Stat(stagePath)
-		if err != nil {
-			return fmt.Errorf("stat staged file %q for recovery: %w", entry.Path, err)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("staged file %q is not a regular file", entry.Path)
-		}
-		if info.Size() != entry.Size {
-			return fmt.Errorf("staged file %q size = %d, want %d", entry.Path, info.Size(), entry.Size)
-		}
-		got, err := digestFile(stagePath)
-		if err != nil {
-			return err
-		}
-		if got != entry.Digest {
-			return fmt.Errorf("staged file %q digest = %s, want %s", entry.Path, got, entry.Digest)
+			same, exists, err := targetFileState(finalPath, entry.Size, entry.Digest)
+			if err != nil {
+				return err
+			}
+			if exists {
+				if same {
+					continue
+				}
+				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
+			}
+			stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
+			if err != nil {
+				return err
+			}
+			info, err := os.Lstat(stagePath)
+			if err != nil {
+				return fmt.Errorf("stat staged file %q for recovery: %w", entry.Path, err)
+			}
+			if !info.Mode().IsRegular() {
+				return fmt.Errorf("staged file %q is not a regular file", entry.Path)
+			}
+			if info.Size() != entry.Size {
+				return fmt.Errorf("staged file %q size = %d, want %d", entry.Path, info.Size(), entry.Size)
+			}
+			got, err := digestFile(stagePath)
+			if err != nil {
+				return err
+			}
+			if got != entry.Digest {
+				return fmt.Errorf("staged file %q digest = %s, want %s", entry.Path, got, entry.Digest)
+			}
+		case "dir":
+			if _, err := directoryExists(finalPath); err != nil {
+				return err
+			}
+		case "symlink":
+			if err := pathguard.ValidateRelativeSymlinkTarget(entry.SymlinkTarget); err != nil {
+				return fmt.Errorf("recover symlink %q: %w", entry.Path, err)
+			}
+			same, exists, err := symlinkTargetState(finalPath, entry.SymlinkTarget)
+			if err != nil {
+				return err
+			}
+			if exists && !same {
+				return fmt.Errorf("target symlink %q already exists with different target; refusing to overwrite", finalPath)
+			}
 		}
 	}
 	return nil
@@ -498,13 +594,8 @@ func recoverWarningsForUnsupportedEntries(entries []control.ManifestEntry) []aud
 	var warnings []audit.Record
 	for _, entry := range entries {
 		switch entry.Kind {
-		case "dir", "file":
+		case "dir", "file", "symlink":
 			continue
-		case "symlink":
-			warnings = append(warnings, audit.WithDetected(
-				audit.New(entry.Path, targetPath(entry), audit.SeverityWarning, "symlink_not_copied", "symlink copy is not implemented in local recover"),
-				map[string]string{"target": entry.SymlinkTarget},
-			))
 		default:
 			warnings = append(warnings, audit.New(entry.Path, targetPath(entry), audit.SeverityWarning, "unsupported_manifest_entry_not_published", "manifest entry kind is not published by local recover"))
 		}
@@ -648,11 +739,36 @@ func lockTargetSession(targetDir, sessionID string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	key := target + "\x00session\x00" + sessionID
-	value, _ := localPushLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock, nil
+	locksDir := filepath.Join(control.ControlDir(targetDir), "locks")
+	if err := pathguard.EnsurePlainDirectory(targetDir, locksDir, 0o700); err != nil {
+		return nil, err
+	}
+
+	targetValue, _ := localPushLocks.LoadOrStore(target+"\x00target", &sync.Mutex{})
+	targetMu := targetValue.(*sync.Mutex)
+	targetMu.Lock()
+	unlockTargetFile, err := filelock.LockInDir(locksDir, "target.lock")
+	if err != nil {
+		targetMu.Unlock()
+		return nil, err
+	}
+
+	sessionValue, _ := localPushLocks.LoadOrStore(target+"\x00session\x00"+sessionID, &sync.Mutex{})
+	sessionMu := sessionValue.(*sync.Mutex)
+	sessionMu.Lock()
+	unlockSessionFile, err := filelock.LockInDir(locksDir, sessionID+".lock")
+	if err != nil {
+		sessionMu.Unlock()
+		unlockTargetFile()
+		targetMu.Unlock()
+		return nil, err
+	}
+	return func() {
+		unlockSessionFile()
+		sessionMu.Unlock()
+		unlockTargetFile()
+		targetMu.Unlock()
+	}, nil
 }
 
 func inside(parent, child string) bool {
@@ -851,6 +967,20 @@ func preflightRegularTarget(sourcePath, targetPath string) error {
 	return nil
 }
 
+func preflightSymlinkTarget(targetPath string, symlinkTarget string) error {
+	if err := pathguard.ValidateRelativeSymlinkTarget(symlinkTarget); err != nil {
+		return fmt.Errorf("symlink target for %q is unsafe: %w", targetPath, err)
+	}
+	same, exists, err := symlinkTargetState(targetPath, symlinkTarget)
+	if err != nil {
+		return err
+	}
+	if exists && !same {
+		return fmt.Errorf("%w: target symlink %q already exists with different target; refusing to overwrite", errSymlinkTargetConflict, targetPath)
+	}
+	return nil
+}
+
 func ensureDirectoryPreflight(targetPath string) error {
 	info, err := os.Lstat(targetPath)
 	if err != nil {
@@ -877,6 +1007,24 @@ func directoryExists(targetPath string) (bool, error) {
 		return true, nil
 	}
 	return false, fmt.Errorf("target directory %q already exists as non-directory; refusing to overwrite", targetPath)
+}
+
+func symlinkTargetState(path string, target string) (same bool, exists bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("stat target symlink %q: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false, true, fmt.Errorf("%w: target symlink %q already exists as non-symlink; refusing to overwrite", errSymlinkTargetConflict, path)
+	}
+	got, err := os.Readlink(path)
+	if err != nil {
+		return false, true, fmt.Errorf("read target symlink %q: %w", path, err)
+	}
+	return got == target, true, nil
 }
 
 func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, modTime time.Time, postCopy func() error) (string, error) {
@@ -916,10 +1064,10 @@ func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, mo
 		}
 		return "", fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
 	}
-	if err := durable.PromoteFileNoReplace(stagePath, targetPath); err != nil {
+	if err := applyFileMetadata(stagePath, mode, modTime); err != nil {
 		return "", err
 	}
-	if err := applyFileMetadata(targetPath, mode, modTime); err != nil {
+	if err := durable.PromoteFileNoReplace(stagePath, targetPath); err != nil {
 		return "", err
 	}
 	cleanup = false
@@ -939,7 +1087,7 @@ func captureExistingPublishDirs(targetDir string, entries []control.ManifestEntr
 		switch entry.Kind {
 		case "dir":
 			dirPath, err = targetPathForManifestEntry(targetDir, entry)
-		case "file":
+		case "file", "symlink":
 			filePath, err := targetPathForManifestEntry(targetDir, entry)
 			if err == nil {
 				dirPath = filepath.Dir(filePath)
@@ -1019,7 +1167,7 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 			if err != nil {
 				return err
 			}
-			if err := os.MkdirAll(targetPath, mode); err != nil {
+			if err := pathguard.EnsurePlainDirectory(targetDir, targetPath, mode); err != nil {
 				return fmt.Errorf("publish directory %q: %w", entry.Path, err)
 			}
 			if !existed {
@@ -1038,13 +1186,6 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 			}
 			if exists {
 				if same {
-					mode := os.FileMode(entry.Mode)
-					if mode == 0 {
-						mode = 0o644
-					}
-					if err := applyFileMetadata(targetPath, mode, parseManifestModTime(entry.ModTime)); err != nil {
-						return err
-					}
 					if err := removeStagedIfPresent(stagePath, entry.Path); err != nil {
 						return err
 					}
@@ -1052,14 +1193,43 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 				}
 				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
 			}
-			if err := durable.PromoteFileNoReplace(stagePath, targetPath); err != nil {
-				return err
+			if err := pathguard.EnsurePlainDirectory(targetDir, filepath.Dir(targetPath), 0o755); err != nil {
+				return fmt.Errorf("publish file parent %q: %w", entry.Path, err)
 			}
 			mode := os.FileMode(entry.Mode)
 			if mode == 0 {
 				mode = 0o644
 			}
-			if err := applyFileMetadata(targetPath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+			if err := applyFileMetadata(stagePath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+				return err
+			}
+			if err := durable.PromoteFileNoReplace(stagePath, targetPath); err != nil {
+				return err
+			}
+		case "symlink":
+			if err := pathguard.ValidateRelativeSymlinkTarget(entry.SymlinkTarget); err != nil {
+				return fmt.Errorf("publish symlink %q: %w", entry.Path, err)
+			}
+			same, exists, err := symlinkTargetState(targetPath, entry.SymlinkTarget)
+			if err != nil {
+				return err
+			}
+			if exists {
+				if same {
+					continue
+				}
+				return fmt.Errorf("target symlink %q already exists with different target; refusing to overwrite", targetPath)
+			}
+			if err := pathguard.EnsurePlainDirectory(targetDir, filepath.Dir(targetPath), 0o755); err != nil {
+				return fmt.Errorf("publish symlink parent %q: %w", entry.Path, err)
+			}
+			if err := os.Symlink(entry.SymlinkTarget, targetPath); err != nil {
+				if os.IsExist(err) {
+					return fmt.Errorf("target symlink %q appeared before publish; refusing to overwrite", targetPath)
+				}
+				return fmt.Errorf("publish symlink %q: %w", entry.Path, err)
+			}
+			if err := durable.SyncDirBestEffort(filepath.Dir(targetPath)); err != nil {
 				return err
 			}
 		}
@@ -1226,6 +1396,27 @@ func sameSourceFile(before, after os.FileInfo) bool {
 		before.Size() == after.Size() &&
 		before.Mode().Perm() == after.Mode().Perm() &&
 		before.ModTime().Equal(after.ModTime())
+}
+
+func readStableSymlink(sourcePath string, entry scan.Entry) (string, error) {
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("stat source symlink %q before publish: %w", sourcePath, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return "", fmt.Errorf("source path %q changed from symlink to %s before publish", sourcePath, info.Mode().Type())
+	}
+	if !info.ModTime().Equal(entry.ModTime) {
+		return "", fmt.Errorf("source symlink %q changed modtime before publish", sourcePath)
+	}
+	target, err := os.Readlink(sourcePath)
+	if err != nil {
+		return "", fmt.Errorf("read source symlink %q before publish: %w", sourcePath, err)
+	}
+	if target != entry.SymlinkTarget {
+		return "", fmt.Errorf("source symlink %q changed target from %q to %q before publish", sourcePath, entry.SymlinkTarget, target)
+	}
+	return target, nil
 }
 
 func manifestEntry(entry scan.Entry, kind string, digest string) control.ManifestEntry {

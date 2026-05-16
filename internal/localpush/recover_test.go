@@ -1,6 +1,7 @@
 package localpush
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func TestRecoverPublishesStagedSession(t *testing.T) {
 	p := profile.NewDefault("profile-local", "Local profile", source, target)
 	layout := transaction.NewLayout(control.ControlDir(target))
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
-	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
 		{Path: "notes/a.txt", TargetPath: "notes/a.txt", Kind: "file", Mode: 0o640, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
 	})
 	writeStageFile(t, layout, "session-recover", "notes/a.txt", "payload")
@@ -55,7 +56,7 @@ func TestRecoverCompletesAlreadyPublishedFileWithoutStage(t *testing.T) {
 	layout := transaction.NewLayout(control.ControlDir(target))
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
 	entry := control.ManifestEntry{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"}
-	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{entry})
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{entry})
 	writeTargetFile(t, filepath.Join(target, "file.txt"), "payload", 0o600)
 
 	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
@@ -69,8 +70,8 @@ func TestRecoverCompletesAlreadyPublishedFileWithoutStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Stat(recovered existing file) error = %v, want nil", err)
 	}
-	if info.Mode().Perm() != 0o644 {
-		t.Fatalf("existing file mode after Recover = %v, want manifest 0644", info.Mode().Perm())
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("existing file mode after Recover = %v, want existing 0600", info.Mode().Perm())
 	}
 }
 
@@ -81,7 +82,7 @@ func TestRecoverMarksDivergentTargetNeedsRepair(t *testing.T) {
 	p := profile.NewDefault("profile-local", "Local profile", source, target)
 	layout := transaction.NewLayout(control.ControlDir(target))
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
-	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
 		{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
 	})
 	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
@@ -110,7 +111,7 @@ func TestRecoverRejectsCorruptStagedPayload(t *testing.T) {
 	p := profile.NewDefault("profile-local", "Local profile", source, target)
 	layout := transaction.NewLayout(control.ControlDir(target))
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
-	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
 		{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
 	})
 	writeStageFile(t, layout, "session-recover", "file.txt", "damaged")
@@ -134,14 +135,14 @@ func TestRecoverRejectsCorruptStagedPayload(t *testing.T) {
 	}
 }
 
-func TestRecoverRecordsWarningForUnpublishedSymlinkEntry(t *testing.T) {
+func TestRecoverPublishesStagedSymlinkEntry(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
 	target := filepath.Join(dir, "target")
 	p := profile.NewDefault("profile-local", "Local profile", source, target)
 	layout := transaction.NewLayout(control.ControlDir(target))
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
-	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
 		{Path: "link.txt", TargetPath: "link.txt", Kind: "symlink", SymlinkTarget: "real.txt"},
 	})
 
@@ -150,25 +151,42 @@ func TestRecoverRecordsWarningForUnpublishedSymlinkEntry(t *testing.T) {
 		t.Fatalf("Recover(symlink-only staged session) error = %v, want nil", err)
 	}
 	if got.Recovered != 1 || got.RepairNeeded != 0 {
-		t.Fatalf("Recover(symlink-only staged session) = %#v, want recovered with warning", got)
+		t.Fatalf("Recover(symlink-only staged session) = %#v, want recovered", got)
+	}
+	gotTarget, err := os.Readlink(filepath.Join(target, "link.txt"))
+	if err != nil {
+		t.Fatalf("os.Readlink(recovered symlink target) error = %v, want nil", err)
+	}
+	if gotTarget != "real.txt" {
+		t.Fatalf("os.Readlink(recovered symlink target) = %q, want real.txt", gotTarget)
+	}
+}
+
+func TestRecoverPreflightRejectsUnsafeSymlinkBeforePartialPublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
+		{Path: "ok.txt", TargetPath: "ok.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	})
+	appendRawManifestEntry(t, target, "session-recover", `{"path":"link.txt","target_path":"link.txt","kind":"symlink","symlink_target":"../outside"}`)
+	writeStageFile(t, layout, "session-recover", "ok.txt", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(unsafe symlink) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(unsafe symlink).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+	if _, err := os.Stat(filepath.Join(target, "ok.txt")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(partially published file) error = %v, want os.ErrNotExist", err)
 	}
 	if _, err := os.Lstat(filepath.Join(target, "link.txt")); !os.IsNotExist(err) {
-		t.Fatalf("os.Lstat(recovered symlink target) error = %v, want os.ErrNotExist", err)
-	}
-	warningDir := filepath.Join(target, control.DirName, "warnings")
-	entries, err := os.ReadDir(warningDir)
-	if err != nil {
-		t.Fatalf("os.ReadDir(%q) error = %v, want nil", warningDir, err)
-	}
-	if len(entries) != 1 {
-		t.Fatalf("warning artifacts = %d, want 1", len(entries))
-	}
-	warning, err := control.ReadFile[control.Warning](filepath.Join(warningDir, entries[0].Name()))
-	if err != nil {
-		t.Fatalf("control.ReadFile(recover warning) error = %v, want nil", err)
-	}
-	if warning.Code != "symlink_not_copied" || warning.SessionID != "session-recover" || warning.Detected["target"] != "real.txt" {
-		t.Fatalf("recover warning = %#v, want symlink_not_copied with target evidence", warning)
+		t.Fatalf("os.Lstat(unsafe symlink) error = %v, want os.ErrNotExist", err)
 	}
 }
 
@@ -179,7 +197,7 @@ func TestRecoverRejectsReservedControlPlaneTargetPath(t *testing.T) {
 	p := profile.NewDefault("profile-local", "Local profile", source, target)
 	layout := transaction.NewLayout(control.ControlDir(target))
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
-	writeStagedLocalSession(t, layout, target, "session-recover", []control.ManifestEntry{
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{
 		{Path: "payload.json", TargetPath: ".supermover/sessions/forged/receipt.json", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
 	})
 	writeStageFile(t, layout, "session-recover", "payload.json", "payload")
@@ -193,6 +211,39 @@ func TestRecoverRejectsReservedControlPlaneTargetPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "forged", "receipt.json")); !os.IsNotExist(err) {
 		t.Fatalf("os.Stat(forged receipt) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRecoverRejectsWrongProfileSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	sourceA := filepath.Join(dir, "source-a")
+	sourceB := filepath.Join(dir, "source-b")
+	target := filepath.Join(dir, "target")
+	profileA := profile.NewDefault("profile-a", "Profile A", sourceA, target)
+	profileB := profile.NewDefault("profile-b", "Profile B", sourceB, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	writeStagedLocalSession(t, layout, target, profileA, "session-recover", []control.ManifestEntry{
+		{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"},
+	})
+	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: profileB, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(wrong profile) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 {
+		t.Fatalf("Recover(wrong profile).RepairNeeded = %d, want 1", got.RepairNeeded)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(wrong profile recovered file) error = %v, want os.ErrNotExist", err)
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-recover"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(wrong profile repair) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "profile") {
+		t.Fatalf("wrong profile repair record = %#v, want needs_repair with profile note", record)
 	}
 }
 
@@ -260,10 +311,29 @@ func TestRecoverReportsInvalidSessionRecords(t *testing.T) {
 	}
 }
 
-func writeStagedLocalSession(t *testing.T, layout transaction.Layout, target string, sessionID string, entries []control.ManifestEntry) {
+func writeStagedLocalSession(t *testing.T, layout transaction.Layout, target string, p profile.Profile, sessionID string, entries []control.ManifestEntry) {
 	t.Helper()
 	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
 	writeRecoverRecord(t, layout, sessionID, transaction.StateStaged, now)
+	profilePayload, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("json.Marshal(profile) error = %v, want nil", err)
+	}
+	snapshot := control.ProfileSnapshot{
+		Version:    control.CurrentVersion,
+		ID:         "profile-" + sessionID,
+		ProfileID:  p.ProfileID,
+		SessionID:  sessionID,
+		CapturedAt: now.Format(time.RFC3339Nano),
+		Profile:    profilePayload,
+	}
+	snapshotPath, err := control.Path(target, control.ArtifactProfileSnapshot, snapshot.ID)
+	if err != nil {
+		t.Fatalf("control.Path(profile snapshot) error = %v, want nil", err)
+	}
+	if err := control.WriteFile(snapshotPath, snapshot); err != nil {
+		t.Fatalf("control.WriteFile(%q) error = %v, want nil", snapshotPath, err)
+	}
 	manifest := control.Manifest{
 		Version:   control.CurrentVersion,
 		ID:        "manifest-" + sessionID,
@@ -278,6 +348,27 @@ func writeStagedLocalSession(t *testing.T, layout transaction.Layout, target str
 	}
 	if err := control.WriteFile(path, manifest); err != nil {
 		t.Fatalf("control.WriteFile(%q) error = %v, want nil", path, err)
+	}
+}
+
+func appendRawManifestEntry(t *testing.T, target string, sessionID string, entryJSON string) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactManifest, sessionID)
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", path, err)
+	}
+	needle := []byte("\n  ]")
+	replacement := []byte(",\n    " + entryJSON + "\n  ]")
+	next := strings.Replace(string(data), string(needle), string(replacement), 1)
+	if next == string(data) {
+		t.Fatalf("appendRawManifestEntry(%q) could not find entries terminator in %s", entryJSON, path)
+	}
+	if err := os.WriteFile(path, []byte(next), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
 	}
 }
 

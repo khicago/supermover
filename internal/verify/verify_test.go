@@ -96,8 +96,8 @@ func TestBuildReportVerifiesLatestManifest(t *testing.T) {
 	if got.Summary.FilesVerified != 1 {
 		t.Errorf("BuildReport(%q).Summary.FilesVerified = %d, want 1", target, got.Summary.FilesVerified)
 	}
-	if got.Summary.ErrorFindings != 3 {
-		t.Errorf("BuildReport(%q).Summary.ErrorFindings = %d, want 3", target, got.Summary.ErrorFindings)
+	if got.Summary.ErrorFindings != 4 {
+		t.Errorf("BuildReport(%q).Summary.ErrorFindings = %d, want 4", target, got.Summary.ErrorFindings)
 	}
 	if got.Summary.WarningFindings != 1 {
 		t.Errorf("BuildReport(%q).Summary.WarningFindings = %d, want 1", target, got.Summary.WarningFindings)
@@ -308,6 +308,91 @@ func TestBuildReportFindsMetadataMismatch(t *testing.T) {
 	}
 	if !hasFinding(got.Findings, FindingModTimeMismatch, "file.txt") {
 		t.Fatalf("BuildReport(%q).Findings = %#v, want mtime mismatch", target, got.Findings)
+	}
+}
+
+func TestBuildReportVerifiesDirectoryAndSymlinkEntries(t *testing.T) {
+	target := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(target, "dir"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(dir) error = %v, want nil", err)
+	}
+	if err := os.Symlink("dir", filepath.Join(target, "link")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "dir", Kind: "dir", TargetPath: "dir"},
+			{Path: "link", Kind: "symlink", TargetPath: "link", SymlinkTarget: "dir"},
+		},
+	})
+	writePublishedReceipt(t, target, "session")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ErrorFindings != 0 || len(got.Findings) != 0 {
+		t.Fatalf("BuildReport(%q).Findings = %#v summary=%+v, want no findings", target, got.Findings, got.Summary)
+	}
+}
+
+func TestBuildReportFindsDirectoryAndSymlinkMismatch(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "dir", []byte("not-dir"))
+	if err := os.Symlink("other", filepath.Join(target, "link")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "dir", Kind: "dir", TargetPath: "dir"},
+			{Path: "link", Kind: "symlink", TargetPath: "link", SymlinkTarget: "dir"},
+			{Path: "missing-link", Kind: "symlink", TargetPath: "missing-link", SymlinkTarget: "dir"},
+		},
+	})
+	writePublishedReceipt(t, target, "session")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !hasFinding(got.Findings, FindingNotDirectory, "dir") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want not_directory", target, got.Findings)
+	}
+	if !hasFinding(got.Findings, FindingSymlinkMismatch, "link") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want symlink_mismatch", target, got.Findings)
+	}
+	if !hasFinding(got.Findings, FindingMissingSymlink, "missing-link") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want missing_symlink", target, got.Findings)
+	}
+}
+
+func TestBuildReportFindsUnsupportedManifestKind(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "socket", Kind: "socket", TargetPath: "socket"},
+		},
+	})
+	writePublishedReceipt(t, target, "session")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !hasFinding(got.Findings, FindingUnsupportedKind, "socket") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want unsupported_kind", target, got.Findings)
 	}
 }
 

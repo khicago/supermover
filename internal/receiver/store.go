@@ -18,6 +18,7 @@ import (
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/filelock"
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/protocol"
 	"github.com/khicago/supermover/internal/transaction"
@@ -78,6 +79,9 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		if !sameManifest(existing, req) {
 			return protocol.BeginSessionResponse{}, fmt.Errorf("%w: session %q already exists with different metadata", ErrConflict, req.SessionID)
 		}
+		if err := s.reconcileBegin(existing); err != nil {
+			return protocol.BeginSessionResponse{}, err
+		}
 		status, err := s.statusLocked(req.SessionID)
 		if err != nil {
 			return protocol.BeginSessionResponse{}, err
@@ -95,7 +99,7 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 	if err != nil {
 		return protocol.BeginSessionResponse{}, err
 	}
-	if err := writeJSONAtomic(s.metaPath(req.SessionID), sessionMeta{
+	meta := sessionMeta{
 		ProtocolVersion: req.ProtocolVersion,
 		SessionID:       req.SessionID,
 		ProfileID:       req.ProfileID,
@@ -104,7 +108,8 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		RootID:          req.RootID,
 		CreatedAt:       req.CreatedAt.UTC(),
 		Manifest:        req.Manifest,
-	}); err != nil {
+	}
+	if err := writeJSONAtomic(s.metaPath(req.SessionID), meta); err != nil {
 		return protocol.BeginSessionResponse{}, err
 	}
 	if err := s.writeManifestArtifact(req); err != nil {
@@ -244,9 +249,7 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 	}
 	if record.State == transaction.StatePublished {
 		if err := s.ensurePublishedArtifacts(meta); err != nil {
-			if repair, markErr := record.WithState(transaction.StateNeedsRepair, s.now()); markErr == nil {
-				_ = s.layout().WriteSessionRecord(repair)
-			}
+			s.markNeedsRepair(record)
 			return protocol.CommitSessionResponse{}, err
 		}
 		return protocol.CommitSessionResponse{
@@ -261,35 +264,33 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 	if record.State == transaction.StateNeedsRepair {
 		return protocol.CommitSessionResponse{}, fmt.Errorf("%w: session %q needs repair", ErrConflict, req.SessionID)
 	}
-	if err := s.stageNonRegularEntries(meta); err != nil {
-		return protocol.CommitSessionResponse{}, err
-	}
-	if err := s.verifyFiles(meta); err != nil {
-		marked, markErr := record.WithState(transaction.StateNeedsRepair, s.now())
-		if markErr == nil {
-			_ = s.layout().WriteSessionRecord(marked)
+	staged := record
+	if record.State != transaction.StateStaged {
+		if err := s.stageNonRegularEntries(meta); err != nil {
+			return protocol.CommitSessionResponse{}, err
 		}
-		return protocol.CommitSessionResponse{}, err
-	}
-	staged, err := record.WithState(transaction.StateStaged, s.now())
-	if err != nil {
-		return protocol.CommitSessionResponse{}, err
-	}
-	if err := s.layout().WriteSessionRecord(staged); err != nil {
+		if err := s.verifyFiles(meta); err != nil {
+			s.markNeedsRepair(record)
+			return protocol.CommitSessionResponse{}, err
+		}
+		var err error
+		staged, err = record.WithState(transaction.StateStaged, s.now())
+		if err != nil {
+			return protocol.CommitSessionResponse{}, err
+		}
+		if err := s.layout().WriteSessionRecord(staged); err != nil {
+			return protocol.CommitSessionResponse{}, err
+		}
+	} else if err := s.reconcileStagedFiles(meta); err != nil {
+		s.markNeedsRepair(staged)
 		return protocol.CommitSessionResponse{}, err
 	}
 	if err := s.publish(meta); err != nil {
-		repair, markErr := staged.WithState(transaction.StateNeedsRepair, s.now())
-		if markErr == nil {
-			_ = s.layout().WriteSessionRecord(repair)
-		}
+		s.markNeedsRepair(staged)
 		return protocol.CommitSessionResponse{}, err
 	}
 	if err := s.writeReceipt(meta, req.EndedAt); err != nil {
-		repair, markErr := staged.WithState(transaction.StateNeedsRepair, s.now())
-		if markErr == nil {
-			_ = s.layout().WriteSessionRecord(repair)
-		}
+		s.markNeedsRepair(staged)
 		return protocol.CommitSessionResponse{}, err
 	}
 	published, err := staged.WithState(transaction.StatePublished, s.now())
@@ -304,6 +305,14 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 		State:     protocol.SessionStatePublished,
 		ReceiptID: req.SessionID,
 	}, nil
+}
+
+func (s FileStore) markNeedsRepair(record transaction.SessionRecord) {
+	repair, err := record.WithState(transaction.StateNeedsRepair, s.now())
+	if err != nil {
+		return
+	}
+	_ = s.layout().WriteSessionRecord(repair)
 }
 
 func (s FileStore) layout() transaction.Layout {
@@ -325,22 +334,40 @@ func (s FileStore) now() time.Time {
 }
 
 func (s FileStore) lockSession(sessionID string) (func(), error) {
-	key, err := s.sessionLockKey(sessionID)
+	target, err := pathguard.CanonicalPath(s.TargetRoot)
 	if err != nil {
 		return nil, err
 	}
-	value, _ := receiverLocks.LoadOrStore(key, &sync.Mutex{})
-	mu := value.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock, nil
-}
-
-func (s FileStore) sessionLockKey(sessionID string) (string, error) {
-	root, err := pathguard.CanonicalPath(s.TargetRoot)
-	if err != nil {
-		return "", err
+	locksDir := filepath.Join(control.ControlDir(s.TargetRoot), "locks")
+	if err := pathguard.EnsurePlainDirectory(s.TargetRoot, locksDir, 0o700); err != nil {
+		return nil, err
 	}
-	return root + "\x00session\x00" + sessionID, nil
+
+	targetValue, _ := receiverLocks.LoadOrStore(target+"\x00target", &sync.Mutex{})
+	targetMu := targetValue.(*sync.Mutex)
+	targetMu.Lock()
+	unlockTargetFile, err := filelock.LockInDir(locksDir, "target.lock")
+	if err != nil {
+		targetMu.Unlock()
+		return nil, err
+	}
+
+	sessionValue, _ := receiverLocks.LoadOrStore(target+"\x00session\x00"+sessionID, &sync.Mutex{})
+	sessionMu := sessionValue.(*sync.Mutex)
+	sessionMu.Lock()
+	unlockSessionFile, err := filelock.LockInDir(locksDir, sessionID+".lock")
+	if err != nil {
+		sessionMu.Unlock()
+		unlockTargetFile()
+		targetMu.Unlock()
+		return nil, err
+	}
+	return func() {
+		unlockSessionFile()
+		sessionMu.Unlock()
+		unlockTargetFile()
+		targetMu.Unlock()
+	}, nil
 }
 
 func (s FileStore) metaPath(sessionID string) string {
@@ -391,6 +418,70 @@ func (s FileStore) loadSession(sessionID string) (sessionMeta, transaction.Sessi
 		return sessionMeta{}, transaction.SessionRecord{}, err
 	}
 	return meta, record, nil
+}
+
+func (s FileStore) reconcileBegin(meta sessionMeta) error {
+	record, err := transaction.ReadSessionRecord(s.layout().RecordPath(meta.SessionID))
+	if err == nil {
+		if record.ID != meta.SessionID {
+			return fmt.Errorf("%w: session record id %q does not match metadata %q", ErrConflict, record.ID, meta.SessionID)
+		}
+		if record.State == transaction.StatePublished {
+			if err := s.ensurePublishedArtifacts(meta); err != nil {
+				s.markNeedsRepair(record)
+				return err
+			}
+			return nil
+		}
+		req := beginRequestFromMeta(meta)
+		if err := s.writeManifestArtifact(req); err != nil {
+			return err
+		}
+		return nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	published, err := s.hasPublishedReceipt(meta)
+	if err != nil {
+		return err
+	}
+	if published {
+		if err := s.ensurePublishedArtifacts(meta); err != nil {
+			return err
+		}
+		return s.rebuildSessionRecord(meta, transaction.StatePublished)
+	}
+	req := beginRequestFromMeta(meta)
+	if err := s.writeManifestArtifact(req); err != nil {
+		return err
+	}
+	return s.rebuildSessionRecord(meta, transaction.StateValidated)
+}
+
+func (s FileStore) rebuildSessionRecord(meta sessionMeta, state transaction.State) error {
+	record, err := transaction.NewSessionRecord(meta.SessionID, meta.CreatedAt)
+	if err != nil {
+		return err
+	}
+	record, err = record.WithState(state, s.now())
+	if err != nil {
+		return err
+	}
+	return s.layout().WriteSessionRecord(record)
+}
+
+func beginRequestFromMeta(meta sessionMeta) protocol.BeginSessionRequest {
+	return protocol.BeginSessionRequest{
+		ProtocolVersion: meta.ProtocolVersion,
+		SessionID:       meta.SessionID,
+		ProfileID:       meta.ProfileID,
+		SourceDeviceID:  meta.SourceDeviceID,
+		TargetDeviceID:  meta.TargetDeviceID,
+		RootID:          meta.RootID,
+		CreatedAt:       meta.CreatedAt,
+		Manifest:        meta.Manifest,
+	}
 }
 
 func (s FileStore) fileStatuses(meta sessionMeta) ([]protocol.FileStatus, error) {
@@ -464,6 +555,87 @@ func (s FileStore) verifyFiles(meta sessionMeta) error {
 	return nil
 }
 
+func (s FileStore) reconcileStagedFiles(meta sessionMeta) error {
+	for _, entry := range meta.Manifest.Entries {
+		switch entry.Kind {
+		case protocol.FileKindFile:
+			if err := s.reconcileStagedFile(meta, entry); err != nil {
+				return err
+			}
+		case protocol.FileKindDir:
+			final, err := s.finalPath(entry)
+			if err != nil {
+				return err
+			}
+			if _, exists, err := finalDirectoryState(final); err != nil || exists {
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			stage, err := s.stageFilePath(meta.SessionID, entry.Path)
+			if err != nil {
+				return err
+			}
+			if _, err := os.Lstat(stage); err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return err
+			}
+		case protocol.FileKindSymlink:
+			final, err := s.finalPath(entry)
+			if err != nil {
+				return err
+			}
+			same, exists, err := symlinkTargetState(final, entry.SymlinkTarget)
+			if err != nil {
+				return err
+			}
+			if exists && !same {
+				return fmt.Errorf("%w: target symlink %q already exists with different target; refusing to overwrite", ErrConflict, publishPath(entry))
+			}
+		}
+	}
+	return nil
+}
+
+func (s FileStore) reconcileStagedFile(meta sessionMeta, entry protocol.ManifestEntry) error {
+	final, err := s.finalPath(entry)
+	if err != nil {
+		return err
+	}
+	same, exists, err := finalFileState(final, entry.Size, entry.Digest)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if same {
+			return nil
+		}
+		return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
+	}
+	stage, err := s.stageFilePath(meta.SessionID, entry.Path)
+	if err != nil {
+		return err
+	}
+	size, err := fileSize(stage)
+	if err != nil {
+		return err
+	}
+	if size != entry.Size {
+		return fmt.Errorf("%w: %q size = %d, want %d", ErrIntegrity, entry.Path, size, entry.Size)
+	}
+	got, err := fileDigest(stage)
+	if err != nil {
+		return err
+	}
+	if got != entry.Digest {
+		return fmt.Errorf("%w: %q digest = %s, want %s", ErrIntegrity, entry.Path, got, entry.Digest)
+	}
+	return nil
+}
+
 func (s FileStore) publish(meta sessionMeta) error {
 	for _, entry := range meta.Manifest.Entries {
 		final, err := s.finalPath(entry)
@@ -472,11 +644,11 @@ func (s FileStore) publish(meta sessionMeta) error {
 		}
 		switch entry.Kind {
 		case protocol.FileKindDir:
-			if err := publishDirectory(final, entry.Path); err != nil {
+			if err := publishDirectory(s.TargetRoot, final, entry.Path); err != nil {
 				return err
 			}
 		case protocol.FileKindSymlink:
-			if err := publishSymlinkNoReplace(final, entry); err != nil {
+			if err := publishSymlinkNoReplace(s.TargetRoot, final, entry); err != nil {
 				return err
 			}
 		case protocol.FileKindFile:
@@ -490,21 +662,37 @@ func (s FileStore) publish(meta sessionMeta) error {
 			}
 			if exists {
 				if same {
-					if err := os.Remove(stage); err != nil {
+					if err := os.Remove(stage); err != nil && !errors.Is(err, fs.ErrNotExist) {
 						return fmt.Errorf("remove duplicate staged file %q: %w", entry.Path, err)
 					}
 					continue
 				}
 				return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
 			}
+			if err := pathguard.EnsurePlainDirectory(s.TargetRoot, filepath.Dir(final), 0o755); err != nil {
+				return fmt.Errorf("publish file parent %q: %w", entry.Path, err)
+			}
+			if err := applyReceiverFileMetadata(stage, entry); err != nil {
+				return err
+			}
 			if err := durable.PromoteFileNoReplace(stage, final); err != nil {
 				return fmt.Errorf("publish file %q: %w", entry.Path, err)
 			}
-			if !entry.ModTime.IsZero() {
-				if err := os.Chtimes(final, entry.ModTime, entry.ModTime); err != nil {
-					return fmt.Errorf("apply mtime %q: %w", entry.Path, err)
-				}
-			}
+		}
+	}
+	return nil
+}
+
+func applyReceiverFileMetadata(path string, entry protocol.ManifestEntry) error {
+	mode := os.FileMode(entry.Mode).Perm()
+	if mode != 0 {
+		if err := os.Chmod(path, mode); err != nil {
+			return fmt.Errorf("apply mode %q: %w", entry.Path, err)
+		}
+	}
+	if !entry.ModTime.IsZero() {
+		if err := os.Chtimes(path, entry.ModTime, entry.ModTime); err != nil {
+			return fmt.Errorf("apply mtime %q: %w", entry.Path, err)
 		}
 	}
 	return nil
@@ -517,8 +705,11 @@ func publishPath(entry protocol.ManifestEntry) string {
 	return entry.Path
 }
 
-func publishSymlinkNoReplace(final string, entry protocol.ManifestEntry) error {
-	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+func publishSymlinkNoReplace(root, final string, entry protocol.ManifestEntry) error {
+	if err := pathguard.ValidateRelativeSymlinkTarget(entry.SymlinkTarget); err != nil {
+		return fmt.Errorf("publish symlink %q: %w", entry.Path, err)
+	}
+	if err := pathguard.EnsurePlainDirectory(root, filepath.Dir(final), 0o755); err != nil {
 		return fmt.Errorf("publish symlink parent %q: %w", entry.Path, err)
 	}
 	same, exists, err := symlinkTargetState(final, entry.SymlinkTarget)
@@ -543,7 +734,7 @@ func publishSymlinkNoReplace(final string, entry protocol.ManifestEntry) error {
 	return nil
 }
 
-func publishDirectory(final, path string) error {
+func publishDirectory(root, final, path string) error {
 	info, err := os.Lstat(final)
 	if err == nil {
 		if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
@@ -554,10 +745,24 @@ func publishDirectory(final, path string) error {
 	if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("stat target directory %q: %w", path, err)
 	}
-	if err := os.MkdirAll(final, 0o755); err != nil {
+	if err := pathguard.EnsurePlainDirectory(root, final, 0o755); err != nil {
 		return fmt.Errorf("publish directory %q: %w", path, err)
 	}
 	return nil
+}
+
+func finalDirectoryState(path string) (same bool, exists bool, err error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, false, nil
+		}
+		return false, false, fmt.Errorf("stat target directory %q: %w", path, err)
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		return true, true, nil
+	}
+	return false, true, fmt.Errorf("%w: target directory %q already exists as non-directory; refusing to overwrite", ErrConflict, path)
 }
 
 func finalFileState(path string, size int64, digest string) (same bool, exists bool, err error) {
@@ -599,13 +804,32 @@ func symlinkTargetState(path string, target string) (same bool, exists bool, err
 	return got == target, true, nil
 }
 
+func (s FileStore) hasPublishedReceipt(meta sessionMeta) (bool, error) {
+	receiptPath, err := control.Path(s.TargetRoot, control.ArtifactSessionReceipt, meta.SessionID)
+	if err != nil {
+		return false, err
+	}
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	return receipt.Status == string(protocol.SessionStatePublished), nil
+}
+
 func (s FileStore) ensurePublishedArtifacts(meta sessionMeta) error {
 	manifestPath, err := control.Path(s.TargetRoot, control.ArtifactManifest, meta.SessionID)
 	if err != nil {
 		return err
 	}
-	if _, err := control.ReadFile[control.Manifest](manifestPath); err != nil {
+	manifest, err := control.ReadFile[control.Manifest](manifestPath)
+	if err != nil {
 		return fmt.Errorf("%w: published session %q is missing manifest: %v", ErrConflict, meta.SessionID, err)
+	}
+	if err := ensureManifestMatchesMeta(manifest, meta); err != nil {
+		return err
 	}
 	receiptPath, err := control.Path(s.TargetRoot, control.ArtifactSessionReceipt, meta.SessionID)
 	if err != nil {
@@ -618,10 +842,53 @@ func (s FileStore) ensurePublishedArtifacts(meta sessionMeta) error {
 	if receipt.ID != meta.SessionID {
 		return fmt.Errorf("%w: published session %q receipt id = %q", ErrConflict, meta.SessionID, receipt.ID)
 	}
+	if receipt.Status != string(protocol.SessionStatePublished) {
+		return fmt.Errorf("%w: published session %q receipt status = %q", ErrConflict, meta.SessionID, receipt.Status)
+	}
 	if receipt.ProfileID != meta.ProfileID || receipt.TargetID != meta.TargetDeviceID {
 		return fmt.Errorf("%w: published session %q receipt scope = %q/%q, want %q/%q", ErrConflict, meta.SessionID, receipt.ProfileID, receipt.TargetID, meta.ProfileID, meta.TargetDeviceID)
 	}
+	if receipt.StartedAt != meta.CreatedAt.UTC().Format(time.RFC3339) {
+		return fmt.Errorf("%w: published session %q receipt started_at = %q, want %q", ErrConflict, meta.SessionID, receipt.StartedAt, meta.CreatedAt.UTC().Format(time.RFC3339))
+	}
 	return nil
+}
+
+func ensureManifestMatchesMeta(manifest control.Manifest, meta sessionMeta) error {
+	if manifest.ID != meta.Manifest.ID {
+		return fmt.Errorf("%w: published session %q manifest id = %q, want %q", ErrConflict, meta.SessionID, manifest.ID, meta.Manifest.ID)
+	}
+	if manifest.SessionID != meta.SessionID {
+		return fmt.Errorf("%w: published session %q manifest session_id = %q", ErrConflict, meta.SessionID, manifest.SessionID)
+	}
+	if manifest.RootID != meta.RootID {
+		return fmt.Errorf("%w: published session %q manifest root_id = %q, want %q", ErrConflict, meta.SessionID, manifest.RootID, meta.RootID)
+	}
+	if manifest.CreatedAt != meta.CreatedAt.UTC().Format(time.RFC3339) {
+		return fmt.Errorf("%w: published session %q manifest created_at = %q, want %q", ErrConflict, meta.SessionID, manifest.CreatedAt, meta.CreatedAt.UTC().Format(time.RFC3339))
+	}
+	wantEntries := controlEntriesFromProtocol(meta.Manifest.Entries)
+	if !reflect.DeepEqual(manifest.Entries, wantEntries) {
+		return fmt.Errorf("%w: published session %q manifest entries do not match session metadata", ErrConflict, meta.SessionID)
+	}
+	return nil
+}
+
+func controlEntriesFromProtocol(entries []protocol.ManifestEntry) []control.ManifestEntry {
+	out := make([]control.ManifestEntry, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, control.ManifestEntry{
+			Path:          entry.Path,
+			Kind:          string(entry.Kind),
+			Mode:          entry.Mode,
+			Size:          entry.Size,
+			ModTime:       formatOptionalTime(entry.ModTime),
+			Digest:        entry.Digest,
+			TargetPath:    entry.TargetPath,
+			SymlinkTarget: entry.SymlinkTarget,
+		})
+	}
+	return out
 }
 
 func protocolPathError(err error) error {
@@ -640,17 +907,7 @@ func (s FileStore) writeManifestArtifact(req protocol.BeginSessionRequest) error
 		CreatedAt: req.CreatedAt.UTC().Format(time.RFC3339),
 		Entries:   make([]control.ManifestEntry, 0, len(req.Manifest.Entries)),
 	}
-	for _, entry := range req.Manifest.Entries {
-		manifest.Entries = append(manifest.Entries, control.ManifestEntry{
-			Path:          entry.Path,
-			Kind:          string(entry.Kind),
-			Size:          entry.Size,
-			ModTime:       formatOptionalTime(entry.ModTime),
-			Digest:        entry.Digest,
-			TargetPath:    entry.TargetPath,
-			SymlinkTarget: entry.SymlinkTarget,
-		})
-	}
+	manifest.Entries = controlEntriesFromProtocol(req.Manifest.Entries)
 	path, err := control.Path(s.TargetRoot, control.ArtifactManifest, req.SessionID)
 	if err != nil {
 		return err
@@ -684,16 +941,7 @@ func readMeta(path string) (sessionMeta, error) {
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return sessionMeta{}, err
 	}
-	if err := (protocol.BeginSessionRequest{
-		ProtocolVersion: meta.ProtocolVersion,
-		SessionID:       meta.SessionID,
-		ProfileID:       meta.ProfileID,
-		SourceDeviceID:  meta.SourceDeviceID,
-		TargetDeviceID:  meta.TargetDeviceID,
-		RootID:          meta.RootID,
-		CreatedAt:       meta.CreatedAt,
-		Manifest:        meta.Manifest,
-	}).Validate(); err != nil {
+	if err := beginRequestFromMeta(meta).Validate(); err != nil {
 		return sessionMeta{}, err
 	}
 	return meta, nil
@@ -751,7 +999,7 @@ func appendAt(root, path string, data []byte) error {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
@@ -926,5 +1174,5 @@ func formatOptionalTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
-	return t.UTC().Format(time.RFC3339)
+	return t.UTC().Format(time.RFC3339Nano)
 }

@@ -12,6 +12,7 @@ import (
 var ErrUnsafePath = errors.New("unsafe path")
 
 const ReservedControlDir = ".supermover"
+const MaxSymlinkTargetLen = 4096
 
 func SafeJoin(root, rel string) (string, error) {
 	if filepath.IsAbs(rel) {
@@ -28,6 +29,41 @@ func IsReservedControlPath(path string) bool {
 	path = filepath.ToSlash(path)
 	first, _, _ := strings.Cut(path, "/")
 	return strings.EqualFold(first, ReservedControlDir)
+}
+
+func ValidateRelativeSymlinkTarget(target string) error {
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("%w: symlink target is required", ErrUnsafePath)
+	}
+	if len(target) > MaxSymlinkTargetLen {
+		return fmt.Errorf("%w: symlink target is too long", ErrUnsafePath)
+	}
+	if strings.HasPrefix(target, "/") || strings.HasPrefix(target, `\`) || strings.Contains(target, `\`) {
+		return fmt.Errorf("%w: symlink target must be a slash-separated relative path", ErrUnsafePath)
+	}
+	if hasWindowsVolumeName(target) {
+		return fmt.Errorf("%w: symlink target must not include a Windows volume name", ErrUnsafePath)
+	}
+	if IsReservedControlPath(target) {
+		return fmt.Errorf("%w: symlink target uses reserved control directory", ErrUnsafePath)
+	}
+	for _, part := range strings.Split(target, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("%w: symlink target contains unsafe segment %q", ErrUnsafePath, part)
+		}
+	}
+	return nil
+}
+
+func hasWindowsVolumeName(path string) bool {
+	if len(path) >= 2 && path[1] == ':' && isASCIILetter(path[0]) {
+		return true
+	}
+	return strings.HasPrefix(path, "//")
+}
+
+func isASCIILetter(value byte) bool {
+	return ('A' <= value && value <= 'Z') || ('a' <= value && value <= 'z')
 }
 
 func EnsurePlainDirectory(root, dir string, mode os.FileMode) error {

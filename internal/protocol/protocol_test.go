@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -20,6 +21,9 @@ func TestBeginSessionRequestValidate(t *testing.T) {
 		{name: "reserved target path", req: withManifestEntry(valid, ManifestEntry{Path: "file.bin", TargetPath: ".supermover/sessions/fake/receipt.json", Kind: FileKindFile, Size: 1, Digest: validDigest()}), wantErr: true},
 		{name: "reserved path without target override", req: withManifestEntry(valid, ManifestEntry{Path: ".Supermover/sessions/fake/receipt.json", Kind: FileKindFile, Size: 1, Digest: validDigest()}), wantErr: true},
 		{name: "missing file digest", req: withManifestEntry(valid, ManifestEntry{Path: "file.bin", Kind: FileKindFile, Size: 1}), wantErr: true},
+		{name: "invalid mode", req: withManifestEntry(valid, ManifestEntry{Path: "file.bin", Kind: FileKindFile, Mode: 0o1000, Size: 1, Digest: validDigest()}), wantErr: true},
+		{name: "unsafe symlink target", req: withManifestEntry(valid, ManifestEntry{Path: "link", Kind: FileKindSymlink, SymlinkTarget: "../outside"}), wantErr: true},
+		{name: "reserved symlink target", req: withManifestEntry(valid, ManifestEntry{Path: "link", Kind: FileKindSymlink, SymlinkTarget: ".supermover/sessions/fake/receipt.json"}), wantErr: true},
 		{name: "duplicate path", req: withManifest(valid, TransferManifest{ID: "manifest1", Entries: []ManifestEntry{
 			{Path: "file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
 			{Path: "file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
@@ -44,6 +48,7 @@ func TestBeginSessionRequestValidate(t *testing.T) {
 			{Path: "linkdir", Kind: FileKindSymlink, SymlinkTarget: "outside"},
 			{Path: "linkdir2/file.bin", Kind: FileKindFile, Size: 1, Digest: validDigest()},
 		}})},
+		{name: "manifest total bytes too large", req: withManifestEntry(valid, ManifestEntry{Path: "huge.bin", Kind: FileKindFile, Size: MaxTotalDeclaredBytes + 1, Digest: validDigest()}), wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -79,6 +84,18 @@ func TestChunkUploadRequestValidate(t *testing.T) {
 				t.Errorf("ChunkUploadRequest.Validate(%+v) error = %v, want error presence = %t", tt.req, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestTransferManifestValidateLargeSymlinkSet(t *testing.T) {
+	entries := make([]ManifestEntry, 0, 5_000)
+	for i := 0; i < 2_500; i++ {
+		entries = append(entries, ManifestEntry{Path: "links/link" + strconv.Itoa(i), Kind: FileKindSymlink, SymlinkTarget: "targets/target" + strconv.Itoa(i)})
+		entries = append(entries, ManifestEntry{Path: "files/file" + strconv.Itoa(i), Kind: FileKindFile, Size: 1, Digest: validDigest()})
+	}
+	manifest := TransferManifest{ID: "manifest1", Entries: entries}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("TransferManifest.Validate(large symlink set) error = %v, want nil", err)
 	}
 }
 

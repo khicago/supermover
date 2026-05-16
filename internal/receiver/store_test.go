@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -79,6 +80,13 @@ func TestFileStoreBeginStatusChunkCommit(t *testing.T) {
 	if string(got) != "hello world" {
 		t.Errorf("published file = %q, want %q", got, "hello world")
 	}
+	info, err := os.Stat(filepath.Join(root, "docs", "a.txt"))
+	if err != nil {
+		t.Fatalf("os.Stat(published file) error = %v, want nil", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("published file mode = %v, want 0600 from manifest", info.Mode().Perm())
+	}
 
 	layout := transaction.NewLayout(control.ControlDir(root))
 	record, err := transaction.ReadSessionRecord(layout.RecordPath(req.SessionID))
@@ -93,6 +101,16 @@ func TestFileStoreBeginStatusChunkCommit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "receipt.json")); err != nil {
 		t.Errorf("os.Stat(receipt artifact) error = %v, want nil", err)
+	}
+	manifest := readControlDoc[control.Manifest](t, root, control.ArtifactManifest, req.SessionID)
+	if len(manifest.Entries) < 2 || manifest.Entries[1].Mode != 0o600 {
+		t.Fatalf("manifest file mode = %#v, want 0600", manifest.Entries)
+	}
+	if _, err := os.Stat(filepath.Join(control.ControlDir(root), "locks", "target.lock")); err != nil {
+		t.Fatalf("os.Stat(target lock) error = %v, want nil", err)
+	}
+	if _, err := os.Stat(filepath.Join(control.ControlDir(root), "locks", req.SessionID+".lock")); err != nil {
+		t.Fatalf("os.Stat(session lock) error = %v, want nil", err)
 	}
 }
 
@@ -214,6 +232,100 @@ func TestFileStoreStatusReturnsResumeOffset(t *testing.T) {
 	}
 }
 
+func TestFileStoreBeginRebuildsMissingRecordFromMeta(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	layout := transaction.NewLayout(control.ControlDir(root))
+	if err := os.Remove(layout.RecordPath(req.SessionID)); err != nil {
+		t.Fatalf("os.Remove(session record) error = %v, want nil", err)
+	}
+
+	begin, err := store.Begin(req)
+	if err != nil {
+		t.Fatalf("FileStore.Begin(rebuild record) error = %v, want nil", err)
+	}
+	if begin.State != protocol.SessionStateValidated {
+		t.Fatalf("FileStore.Begin(rebuild record).State = %q, want validated", begin.State)
+	}
+	if _, err := transaction.ReadSessionRecord(layout.RecordPath(req.SessionID)); err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(rebuilt) error = %v, want nil", err)
+	}
+}
+
+func TestFileStoreBeginRewritesMissingManifestFromMeta(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	manifestPath, err := control.Path(root, control.ArtifactManifest, req.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatalf("os.Remove(manifest) error = %v, want nil", err)
+	}
+
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(rewrite manifest) error = %v, want nil", err)
+	}
+	if _, err := control.ReadFile[control.Manifest](manifestPath); err != nil {
+		t.Fatalf("control.ReadFile(rewritten manifest) error = %v, want nil", err)
+	}
+}
+
+func TestFileStoreBeginDoesNotRewritePublishedManifestDrift(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want nil", commitReq, err)
+	}
+	manifestPath, err := control.Path(root, control.ArtifactManifest, req.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	manifest, err := control.ReadFile[control.Manifest](manifestPath)
+	if err != nil {
+		t.Fatalf("control.ReadFile(manifest) error = %v, want nil", err)
+	}
+	manifest.Entries[1].Digest = digest([]byte("other"))
+	if err := control.WriteFile(manifestPath, manifest); err != nil {
+		t.Fatalf("control.WriteFile(manifest drift) error = %v, want nil", err)
+	}
+
+	if _, err := store.Begin(req); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Begin(published manifest drift) error = %v, want ErrConflict", err)
+	}
+	drifted, err := control.ReadFile[control.Manifest](manifestPath)
+	if err != nil {
+		t.Fatalf("control.ReadFile(drifted manifest) error = %v, want nil", err)
+	}
+	if drifted.Entries[1].Digest != digest([]byte("other")) {
+		t.Fatalf("manifest digest after Begin = %q, want drift retained for audit", drifted.Entries[1].Digest)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if record.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after Begin manifest drift = %q, want %q", record.State, transaction.StateNeedsRepair)
+	}
+}
+
 func TestFileStoreBeginRejectsUnsafeTargetPath(t *testing.T) {
 	store := FileStore{TargetRoot: t.TempDir()}
 	req := validBeginRequest([]byte("hello"))
@@ -235,6 +347,30 @@ func TestFileStoreBeginRejectsReservedControlPlaneTargetPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, control.DirName, "sessions", "fake", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("os.Stat(forged control artifact) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestFileStoreBeginRejectsUnsafeSymlinkTarget(t *testing.T) {
+	store := FileStore{TargetRoot: t.TempDir()}
+	req := validBeginRequest(nil)
+	req.Manifest.Entries = []protocol.ManifestEntry{
+		{Path: "docs/link.txt", Kind: protocol.FileKindSymlink, SymlinkTarget: "../outside"},
+	}
+
+	if _, err := store.Begin(req); !errors.Is(err, protocol.ErrValidation) {
+		t.Fatalf("FileStore.Begin(unsafe symlink target) error = %v, want protocol.ErrValidation", err)
+	}
+}
+
+func TestFileStoreBeginRejectsManifestEntryLimit(t *testing.T) {
+	req := validBeginRequest(nil)
+	req.Manifest.Entries = make([]protocol.ManifestEntry, protocol.MaxManifestEntries+1)
+	for i := range req.Manifest.Entries {
+		req.Manifest.Entries[i] = protocol.ManifestEntry{Path: "f" + strconv.Itoa(i), Kind: protocol.FileKindFile, Size: 0, Digest: digest(nil)}
+	}
+
+	if err := req.Validate(); !errors.Is(err, protocol.ErrValidation) {
+		t.Fatalf("BeginSessionRequest.Validate(too many entries) error = %v, want protocol.ErrValidation", err)
 	}
 }
 
@@ -402,6 +538,128 @@ func TestFileStorePublishedSessionRequiresReceipt(t *testing.T) {
 	}
 }
 
+func TestFileStoreCommitRecoversAfterPublishBeforeReceipt(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	meta, _, err := store.loadSession(req.SessionID)
+	if err != nil {
+		t.Fatalf("FileStore.loadSession(%q) error = %v, want nil", req.SessionID, err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	staged, err := record.WithState(transaction.StateStaged, time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(staged) error = %v, want nil", err)
+	}
+	if err := store.layout().WriteSessionRecord(staged); err != nil {
+		t.Fatalf("Layout.WriteSessionRecord(staged) error = %v, want nil", err)
+	}
+	if err := store.publish(meta); err != nil {
+		t.Fatalf("FileStore.publish(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if _, err := os.Lstat(filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "stage", "docs", "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Lstat(staged file after simulated publish) error = %v, want os.ErrNotExist", err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 2, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(recover after publish before receipt) error = %v, want nil", err)
+	}
+	final, err := os.ReadFile(filepath.Join(root, "docs", "a.txt"))
+	if err != nil || string(final) != "hello" {
+		t.Fatalf("published file after recovered commit = (%q, %v), want hello", string(final), err)
+	}
+	finalRecord, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(final) error = %v, want nil", err)
+	}
+	if finalRecord.State != transaction.StatePublished {
+		t.Fatalf("session state after recovered commit = %q, want published", finalRecord.State)
+	}
+}
+
+func TestFileStoreCommitMarksStagedReconcileFailureNeedsRepair(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	staged, err := record.WithState(transaction.StateStaged, time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(staged) error = %v, want nil", err)
+	}
+	if err := store.layout().WriteSessionRecord(staged); err != nil {
+		t.Fatalf("Layout.WriteSessionRecord(staged) error = %v, want nil", err)
+	}
+	stagePath := filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "stage", "docs", "a.txt")
+	if err := os.WriteFile(stagePath, []byte("corrupt"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", stagePath, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 2, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("FileStore.Commit(corrupt staged retry) error = %v, want ErrIntegrity", err)
+	}
+	finalRecord, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(final) error = %v, want nil", err)
+	}
+	if finalRecord.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after corrupt staged retry = %q, want %q", finalRecord.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStoreCommitMarksReceiptWriteFailureNeedsRepair(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	receiptPath, err := control.Path(root, control.ArtifactSessionReceipt, req.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	if err := os.MkdirAll(receiptPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", receiptPath, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 2, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err == nil {
+		t.Fatalf("FileStore.Commit(receipt path directory) error = nil, want receipt write failure")
+	}
+	finalRecord, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(final) error = %v, want nil", err)
+	}
+	if finalRecord.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after receipt write failure = %q, want %q", finalRecord.State, transaction.StateNeedsRepair)
+	}
+}
+
 func TestFileStorePublishedSessionRequiresReceiptScope(t *testing.T) {
 	root := t.TempDir()
 	store := FileStore{TargetRoot: root}
@@ -439,6 +697,112 @@ func TestFileStorePublishedSessionRequiresReceiptScope(t *testing.T) {
 	}
 	if record.State != transaction.StateNeedsRepair {
 		t.Fatalf("session state after receipt scope drift = %q, want %q", record.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStorePublishedSessionRequiresReceiptStartedAt(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want nil", commitReq, err)
+	}
+	receiptPath, err := control.Path(root, control.ArtifactSessionReceipt, req.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
+		t.Fatalf("control.ReadFile(receipt) error = %v, want nil", err)
+	}
+	receipt.StartedAt = "2026-05-16T00:00:00Z"
+	if err := control.WriteFile(receiptPath, receipt); err != nil {
+		t.Fatalf("control.WriteFile(receipt time drift) error = %v, want nil", err)
+	}
+
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(receipt time drift) error = %v, want ErrConflict", err)
+	}
+}
+
+func TestFileStorePublishedSessionRequiresManifestEntriesMatch(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want nil", commitReq, err)
+	}
+	manifestPath, err := control.Path(root, control.ArtifactManifest, req.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	manifest, err := control.ReadFile[control.Manifest](manifestPath)
+	if err != nil {
+		t.Fatalf("control.ReadFile(manifest) error = %v, want nil", err)
+	}
+	manifest.Entries[1].Digest = digest([]byte("other"))
+	if err := control.WriteFile(manifestPath, manifest); err != nil {
+		t.Fatalf("control.WriteFile(manifest drift) error = %v, want nil", err)
+	}
+
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(manifest drift) error = %v, want ErrConflict", err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if record.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after manifest drift = %q, want %q", record.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStorePublishedSessionRequiresManifestCreatedAt(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want nil", commitReq, err)
+	}
+	manifestPath, err := control.Path(root, control.ArtifactManifest, req.SessionID)
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	manifest, err := control.ReadFile[control.Manifest](manifestPath)
+	if err != nil {
+		t.Fatalf("control.ReadFile(manifest) error = %v, want nil", err)
+	}
+	manifest.CreatedAt = "2026-05-16T00:00:00Z"
+	if err := control.WriteFile(manifestPath, manifest); err != nil {
+		t.Fatalf("control.WriteFile(manifest time drift) error = %v, want nil", err)
+	}
+
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Commit(manifest time drift) error = %v, want ErrConflict", err)
 	}
 }
 
@@ -540,8 +904,14 @@ func TestFileStoreCommitAllowsIdenticalExistingTargetFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), []byte("hello"), 0o600); err != nil {
 		t.Fatalf("os.WriteFile(existing target) error = %v, want nil", err)
 	}
+	existingTime := time.Date(2026, 5, 15, 8, 1, 0, 0, time.UTC)
+	if err := os.Chtimes(filepath.Join(root, "docs", "a.txt"), existingTime, existingTime); err != nil {
+		t.Fatalf("os.Chtimes(existing target) error = %v, want nil", err)
+	}
 	store := FileStore{TargetRoot: root}
 	req := validBeginRequest([]byte("hello"))
+	req.Manifest.Entries[0].Mode = 0o700
+	req.Manifest.Entries[0].ModTime = time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)
 	if _, err := store.Begin(req); err != nil {
 		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
 	}
@@ -567,6 +937,9 @@ func TestFileStoreCommitAllowsIdenticalExistingTargetFile(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("target mode after idempotent Commit = %v, want existing 0600", info.Mode().Perm())
+	}
+	if !info.ModTime().Equal(existingTime) {
+		t.Fatalf("target mtime after idempotent Commit = %v, want existing %v", info.ModTime(), existingTime)
 	}
 }
 
@@ -658,6 +1031,20 @@ func TestFileStoreCommitAllowsIdenticalExistingTargetSymlink(t *testing.T) {
 	}
 	if got != "a.txt" {
 		t.Fatalf("target symlink after Commit = %q, want a.txt", got)
+	}
+}
+
+func TestFileStoreManifestPreservesEntryModTimeNanos(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	req.Manifest.Entries[1].ModTime = time.Date(2026, 5, 16, 8, 1, 2, 123456789, time.UTC)
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	manifest := readControlDoc[control.Manifest](t, root, control.ArtifactManifest, req.SessionID)
+	if got := manifest.Entries[1].ModTime; got != "2026-05-16T08:01:02.123456789Z" {
+		t.Fatalf("manifest file mod_time = %q, want RFC3339Nano", got)
 	}
 }
 
@@ -758,7 +1145,7 @@ func validBeginRequest(data []byte) protocol.BeginSessionRequest {
 			ID: "manifest-1",
 			Entries: []protocol.ManifestEntry{
 				{Path: "docs", Kind: protocol.FileKindDir},
-				{Path: "docs/a.txt", Kind: protocol.FileKindFile, Size: int64(len(data)), Digest: digest(data), ModTime: now},
+				{Path: "docs/a.txt", Kind: protocol.FileKindFile, Mode: 0o600, Size: int64(len(data)), Digest: digest(data), ModTime: now},
 			},
 		},
 	}

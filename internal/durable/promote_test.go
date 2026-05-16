@@ -16,6 +16,9 @@ func TestPromoteFileRenamesSyncedTempToFinal(t *testing.T) {
 	if err := os.WriteFile(tempPath, []byte("durable payload"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
 	}
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(finalPath), err)
+	}
 
 	if err := PromoteFile(tempPath, finalPath); err != nil {
 		t.Fatalf("PromoteFile(%q, %q) error = %v, want nil", tempPath, finalPath, err)
@@ -40,6 +43,9 @@ func TestPromoteFileNoReplaceCreatesFinal(t *testing.T) {
 
 	if err := os.WriteFile(tempPath, []byte("durable payload"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(finalPath), err)
 	}
 
 	if err := PromoteFileNoReplace(tempPath, finalPath); err != nil {
@@ -109,6 +115,27 @@ func TestCopyFileNoReplaceRefusesExistingFinal(t *testing.T) {
 	}
 	if _, err := os.Stat(tempPath); err != nil {
 		t.Fatalf("os.Stat(%q) error = %v, want temp retained", tempPath, err)
+	}
+}
+
+func TestCopyFileNoReplacePreservesTempPermissions(t *testing.T) {
+	dir := t.TempDir()
+	tempPath := filepath.Join(dir, "file.tmp")
+	finalPath := filepath.Join(dir, "file.txt")
+
+	if err := os.WriteFile(tempPath, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", tempPath, err)
+	}
+
+	if err := copyFileNoReplace(tempPath, finalPath); err != nil {
+		t.Fatalf("copyFileNoReplace(%q, %q) error = %v, want nil", tempPath, finalPath, err)
+	}
+	info, err := os.Stat(finalPath)
+	if err != nil {
+		t.Fatalf("os.Stat(%q) error = %v, want nil", finalPath, err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("copyFileNoReplace(%q, %q) mode = %v, want 0600", tempPath, finalPath, info.Mode().Perm())
 	}
 }
 

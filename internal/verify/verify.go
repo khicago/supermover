@@ -37,6 +37,12 @@ const (
 	FindingDigestMissing     FindingKind = "digest_missing"
 	FindingModeMismatch      FindingKind = "mode_mismatch"
 	FindingModTimeMismatch   FindingKind = "mtime_mismatch"
+	FindingMissingDirectory  FindingKind = "missing_directory"
+	FindingNotDirectory      FindingKind = "not_directory"
+	FindingMissingSymlink    FindingKind = "missing_symlink"
+	FindingNotSymlink        FindingKind = "not_symlink"
+	FindingSymlinkMismatch   FindingKind = "symlink_mismatch"
+	FindingUnsupportedKind   FindingKind = "unsupported_kind"
 	FindingReadError         FindingKind = "read_error"
 )
 
@@ -156,13 +162,14 @@ func BuildReport(opts Options) (Report, error) {
 	report.Manifest = summarizeManifest(manifest)
 	report.Summary.ManifestEntries = len(manifest.Entries)
 	for _, entry := range manifest.Entries {
-		if entry.Kind != "file" {
-			continue
-		}
-		report.Summary.FilesExpected++
-		findings := verifyFile(targetRoot, manifest.SessionID, entry)
-		if len(findings) == 0 {
-			report.Summary.FilesVerified++
+		findings := verifyEntry(targetRoot, manifest.SessionID, entry)
+		if entry.Kind == "file" {
+			report.Summary.FilesExpected++
+			if len(findings) == 0 {
+				report.Summary.FilesVerified++
+				continue
+			}
+		} else if len(findings) == 0 {
 			continue
 		}
 		for _, finding := range findings {
@@ -180,6 +187,27 @@ func BuildReport(opts Options) (Report, error) {
 	}
 	sortFindings(report.Findings)
 	return report, nil
+}
+
+func verifyEntry(targetRoot, sessionID string, entry control.ManifestEntry) []Finding {
+	switch entry.Kind {
+	case "file":
+		return verifyFile(targetRoot, sessionID, entry)
+	case "dir":
+		return verifyDirectory(targetRoot, sessionID, entry)
+	case "symlink":
+		return verifySymlink(targetRoot, sessionID, entry)
+	default:
+		return []Finding{{
+			Kind:       FindingUnsupportedKind,
+			Severity:   SeverityError,
+			SessionID:  sessionID,
+			Path:       entry.Path,
+			TargetPath: targetPath(entry),
+			Message:    "manifest entry uses an unsupported kind",
+			Err:        entry.Kind,
+		}}
+	}
 }
 
 func LoadArtifacts(targetRoot string) (Artifacts, error) {
@@ -536,6 +564,107 @@ func verifyFile(targetRoot, sessionID string, entry control.ManifestEntry) []Fin
 		})
 	}
 	return findings
+}
+
+func verifyDirectory(targetRoot, sessionID string, entry control.ManifestEntry) []Finding {
+	targetRel := targetPath(entry)
+	fullPath, err := safeTargetPath(targetRoot, targetRel)
+	if err != nil {
+		return []Finding{unsafeEntryFinding(sessionID, entry, targetRel, "manifest directory target path escapes the target root", err)}
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := pathguard.EnsureDirectory(targetRoot, filepath.Dir(fullPath)); err != nil {
+				return []Finding{unsafeEntryFinding(sessionID, entry, targetRel, "manifest directory target parent is unsafe", err)}
+			}
+			return []Finding{{
+				Kind:       FindingMissingDirectory,
+				Severity:   SeverityError,
+				SessionID:  sessionID,
+				Path:       entry.Path,
+				TargetPath: targetRel,
+				Message:    "manifest directory is missing from the target",
+			}}
+		}
+		return []Finding{readErrorFinding(sessionID, entry, targetRel, err)}
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return []Finding{{
+			Kind:       FindingNotDirectory,
+			Severity:   SeverityError,
+			SessionID:  sessionID,
+			Path:       entry.Path,
+			TargetPath: targetRel,
+			Message:    "manifest directory target is not a plain directory",
+			Err:        info.Mode().String(),
+		}}
+	}
+	return nil
+}
+
+func verifySymlink(targetRoot, sessionID string, entry control.ManifestEntry) []Finding {
+	targetRel := targetPath(entry)
+	fullPath, err := safeTargetPath(targetRoot, targetRel)
+	if err != nil {
+		return []Finding{unsafeEntryFinding(sessionID, entry, targetRel, "manifest symlink target path escapes the target root", err)}
+	}
+	if err := pathguard.EnsureDirectory(targetRoot, filepath.Dir(fullPath)); err != nil {
+		return []Finding{unsafeEntryFinding(sessionID, entry, targetRel, "manifest symlink target parent is unsafe", err)}
+	}
+	info, err := os.Lstat(fullPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return []Finding{{
+				Kind:       FindingMissingSymlink,
+				Severity:   SeverityError,
+				SessionID:  sessionID,
+				Path:       entry.Path,
+				TargetPath: targetRel,
+				Message:    "manifest symlink is missing from the target",
+			}}
+		}
+		return []Finding{readErrorFinding(sessionID, entry, targetRel, err)}
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return []Finding{{
+			Kind:       FindingNotSymlink,
+			Severity:   SeverityError,
+			SessionID:  sessionID,
+			Path:       entry.Path,
+			TargetPath: targetRel,
+			Message:    "manifest symlink target is not a symlink",
+			Err:        info.Mode().String(),
+		}}
+	}
+	got, err := os.Readlink(fullPath)
+	if err != nil {
+		return []Finding{readErrorFinding(sessionID, entry, targetRel, err)}
+	}
+	if got != entry.SymlinkTarget {
+		return []Finding{{
+			Kind:       FindingSymlinkMismatch,
+			Severity:   SeverityError,
+			SessionID:  sessionID,
+			Path:       entry.Path,
+			TargetPath: targetRel,
+			Message:    "target symlink destination does not match the manifest",
+			Err:        got,
+		}}
+	}
+	return nil
+}
+
+func unsafeEntryFinding(sessionID string, entry control.ManifestEntry, targetRel string, message string, err error) Finding {
+	return Finding{
+		Kind:       FindingUnsafeTargetPath,
+		Severity:   SeverityError,
+		SessionID:  sessionID,
+		Path:       entry.Path,
+		TargetPath: targetRel,
+		Message:    message,
+		Err:        err.Error(),
+	}
 }
 
 func parseManifestTime(value string) (time.Time, bool) {

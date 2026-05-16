@@ -57,6 +57,22 @@ func TestIsReservedControlPath(t *testing.T) {
 	}
 }
 
+func TestValidateRelativeSymlinkTargetRejectsUnsafeValues(t *testing.T) {
+	for _, target := range []string{"", "/abs", `bad\path`, "../outside", "a/../b", "./file", "a//b", "C:/Users/example", "c:relative", "//server/share", ".supermover/receipt.json", ".Supermover/receipt.json"} {
+		t.Run(target, func(t *testing.T) {
+			if err := ValidateRelativeSymlinkTarget(target); !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("ValidateRelativeSymlinkTarget(%q) error = %v, want ErrUnsafePath", target, err)
+			}
+		})
+	}
+}
+
+func TestValidateRelativeSymlinkTargetAcceptsSafeRelativeValue(t *testing.T) {
+	if err := ValidateRelativeSymlinkTarget("dir/file.txt"); err != nil {
+		t.Fatalf("ValidateRelativeSymlinkTarget(dir/file.txt) error = %v, want nil", err)
+	}
+}
+
 func TestEnsurePlainDirectoryRejectsSymlinkComponent(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
