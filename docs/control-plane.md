@@ -84,11 +84,15 @@ target still matches the previous `sha256:` digest, size, mode, and
 modification time. Missing or partial previous evidence keeps overwrite refusal
 conservative. If a staged replacement finds the target missing during recovery,
 recovery refuses to publish the new file because the previous target evidence
-can no longer be verified automatically. During an active changed-file publish,
-Supermover rechecks the previous target evidence immediately before direct
-atomic replacement; it does not create an automatic backup sidecar. The local
-target remains a single-writer surface during a run; concurrent external writes
-to a target file are treated as outside the current safety contract.
+can no longer be verified automatically unless the interrupted session retained
+a matching pair of replacement holds. During an active changed-file publish,
+Supermover rechecks the previous target evidence, creates an immutable previous
+snapshot under `.supermover/replacement-holds/<session>/previous/...`, moves the
+current target into `.supermover/replacement-holds/<session>/current/...` with
+no-replace semantics, then publishes the staged replacement with no-replace
+semantics. The local target remains a single-writer surface during a run;
+concurrent external writes to a target file are treated as outside the current
+safety contract.
 
 `warning` records audit-relevant issues:
 

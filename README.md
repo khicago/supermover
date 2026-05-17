@@ -38,8 +38,13 @@ time evidence. If that previous target file is missing or was edited outside
 Supermover, the run refuses the update and leaves recovery to the operator. The
 local target is expected to be under Supermover control during a run; concurrent
 external writes to the same file are outside the current safety contract.
-Managed changed-file publish uses direct atomic replacement after rechecking the
-previous target evidence; it does not create an automatic backup sidecar.
+Managed changed-file publish first creates session-scoped replacement holds
+under `.supermover/replacement-holds/<session>/previous/...` and
+`.supermover/replacement-holds/<session>/current/...`, removes the previous
+target only after rechecking previous evidence, and publishes the staged
+replacement with no-replace semantics. Recovery can complete a held replacement
+only when the target is absent and both holds still match previous evidence;
+divergent target/hold state is marked `needs_repair`.
 
 `push --dry-run` reports counts only; full warning JSON is written after a
 published run. Source scanner `scan_error` findings block push instead of being

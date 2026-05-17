@@ -121,10 +121,13 @@ recovery subset:
   regular files may be atomically replaced only when the manifest carries
   previous-session evidence and the current target still matches that previous
   size, `sha256:` digest, mode, and modification time. If the final path is
-  missing for a changed-file replacement, recovery treats it as repair-needed
-  because the previous target evidence can no longer be verified automatically.
-  Recovery does not create or consume automatic backup sidecars for managed
-  replacements.
+  missing for a changed-file replacement, recovery looks for session-scoped
+  replacement holds under `.supermover/replacement-holds/<session>/previous/...`
+  and `.supermover/replacement-holds/<session>/current/...`; both holds must
+  still match the previous evidence before recovery publishes the staged
+  replacement with no-replace semantics. If the target and matching hold pair are
+  unavailable, recovery treats the session as repair-needed because the previous
+  target evidence can no longer be verified automatically.
   Directory and symlink entries are also checked before recovery publish so an
   unsafe or conflicting non-file entry cannot create a partial target update.
 - `received` and `validated` sessions are not silently discarded. `recover
