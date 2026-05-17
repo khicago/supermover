@@ -158,9 +158,17 @@ directory. Treat `.supermover` as part of the migration result, not disposable
 cache.
 
 Use an empty target directory for first migration. Current local push refuses to
-overwrite existing files unless the existing file content is byte-identical to
-the source. This makes reruns idempotent while preventing accidental replacement
-of unrelated target data.
+overwrite unrelated existing target data. Reruns are idempotent when existing
+files are byte-identical to the source. A changed regular file is replaced only
+when the latest published manifest for the same profile, target, and root proves
+Supermover published the previous target content and the target still matches
+that previous size, `sha256:` digest, mode, and modification time. If the target
+was edited manually after the last publish, `push` refuses the update and leaves
+the target file intact. If the previous target file was deleted, the update is
+also refused because the old target evidence can no longer be verified. Avoid
+editing the target tree while `push` or `recover` is running. Managed
+changed-file publish uses direct atomic replacement after a final evidence
+check; it does not create an automatic backup sidecar.
 
 ## Review Control-Plane Evidence
 

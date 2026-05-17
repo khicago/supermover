@@ -7,11 +7,12 @@ machine.
 The current implementation is a local push vertical slice. Available commands
 are `profile`, `scan`, `push`, `verify`, `deleted list`, `health`, `report`,
 and `recover`. It supports first migration, idempotent reruns,
-additions, warning records, soft-delete records, read-only operator reports,
-and conservative recovery. Changed-file incremental update, network receiver
-CLI wiring, pairing, physical prune, broader recovery reconciliation, status,
-discovery, and drift review commands are planned and may appear in design docs
-before CLI wiring exists.
+additions, managed changed-file updates for previously published regular
+files, warning records, soft-delete records, read-only operator reports, and
+conservative recovery. Network receiver CLI wiring, pairing, physical prune,
+broader recovery reconciliation, status, discovery, traffic-shaping transport,
+and drift review commands are planned and may appear in design docs before CLI
+wiring exists.
 
 ## Quickstart
 
@@ -28,9 +29,17 @@ go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 ```
 
 Use an empty target directory for first migration. Current publish code refuses
-to overwrite an existing target file or symlink unless the existing object is
-content-identical, which keeps the migration path conservative for machine
-replacement.
+to overwrite an unrelated existing target file or symlink. Reruns are
+idempotent when the existing object is content-identical. Changed regular files
+are replaced only when the latest published manifest for the same
+profile/target/root proves Supermover published the previous target content and
+the target still matches that previous SHA-256, size, mode, and modification
+time evidence. If that previous target file is missing or was edited outside
+Supermover, the run refuses the update and leaves recovery to the operator. The
+local target is expected to be under Supermover control during a run; concurrent
+external writes to the same file are outside the current safety contract.
+Managed changed-file publish uses direct atomic replacement after rechecking the
+previous target evidence; it does not create an automatic backup sidecar.
 
 `push --dry-run` reports counts only; full warning JSON is written after a
 published run. Source scanner `scan_error` findings block push instead of being
@@ -49,7 +58,8 @@ The v1 direction is intentionally conservative:
 - one-way `source -> trusted target`
 - profile files as the configuration SSOT
 - `.supermover` control-plane artifacts for receipts, manifests, warnings,
-  soft deletes, and recovery; history and drift writers remain planned
+  previous-manifest evidence, soft deletes, and recovery; history and drift
+  writers remain planned
 - planned explicit LAN pairing; discovery is not trust
 - planned bounded traffic metadata reduction, not anonymity
 - ordinary file-tree fidelity with auditable supplemental migration records

@@ -8,13 +8,13 @@ magic.
 
 - One-way migration from source to trusted target. Current local push supports
   first migration, idempotent reruns, additions, warning records, soft-delete
-  records, read-only local operator reports, and conservative recovery;
-  changed-file incremental update is planned.
+  records, managed changed-file updates for previously published regular files,
+  read-only local operator reports, and conservative recovery.
 - Profile JSON as the configuration single source of truth.
 - Target-side `.supermover` control plane. The current local slice stores
   profile snapshots, session receipts, manifests, warnings, soft-delete
-  records, and transaction recovery state; history, network, and drift writer
-  surfaces remain planned.
+  records, previous-manifest replacement evidence, and transaction recovery
+  state; history, network, and drift writer surfaces remain planned.
 - Local push vertical slice that copies supported regular files to a trusted
   local target and writes auditable control artifacts.
 - Explicit warning records for recoverable or reviewable gaps.

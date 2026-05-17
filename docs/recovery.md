@@ -116,10 +116,17 @@ recovery subset:
 - `staged` sessions are replayed from the durable manifest and stage directory.
   Staged file size and SHA-256 digest must match the manifest before
   publication unless the final file already exists and matches the manifest.
-  File publication still uses no-replace semantics. Existing final files are
-  accepted only when size and digest match the manifest. Directory and symlink
-  entries are also checked before recovery publish so an unsafe or conflicting
-  non-file entry cannot create a partial target update.
+  New final files still use no-replace semantics. Existing final files are
+  accepted when size and digest already match the manifest. Changed managed
+  regular files may be atomically replaced only when the manifest carries
+  previous-session evidence and the current target still matches that previous
+  size, `sha256:` digest, mode, and modification time. If the final path is
+  missing for a changed-file replacement, recovery treats it as repair-needed
+  because the previous target evidence can no longer be verified automatically.
+  Recovery does not create or consume automatic backup sidecars for managed
+  replacements.
+  Directory and symlink entries are also checked before recovery publish so an
+  unsafe or conflicting non-file entry cannot create a partial target update.
 - `received` and `validated` sessions are not silently discarded. `recover
   --dry-run` reports the rollback action; `recover --rollback-incomplete`
   explicitly marks them `rolled_back` when the operator decides they never

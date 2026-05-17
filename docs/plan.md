@@ -16,18 +16,21 @@ but the table below is the checked-in execution summary:
 | --- | --- |
 | `f-223nw49qj` | Migration audit report UX. `report` is implemented; compact `status` remains planned. |
 | `f-224nw98v7` | Reviewed physical prune flow. |
-| `f-225nwsa3h` | Changed-file incremental local sync. |
+| `f-225nwsa3h` | Changed-file incremental local sync. Local regular-file updates are implemented; drift review UX remains separate. |
 | `f-226nwy2vy` | LAN agent discovery and pairing. |
 | `f-227nw2p2n` | Secure resumable transport integration. |
 | `f-228nws66k` | Traffic privacy level 2 implementation. |
 | `f-229nwwybc` | Failure injection and release hardening. |
 
 Current checkpoint: `f-223nw49qj` has shipped the `report` command, while
-compact `status` stays in the backlog. The implemented `report` command closes
-the main operator visibility gap for
-warnings, soft deletes, recovery state, profile suggestions, and
-published-manifest verification state at report time. Compact `status` remains
-planned so it is not confused with daemon, LAN, or long-running sync status.
+compact `status` stays in the backlog. `f-225nwsa3h` implements managed
+changed-file updates for local regular files by requiring previous published
+manifest evidence from the same profile/target/root and rechecking target
+content and metadata before publish or recovery replacement. The implemented
+`report` command closes the main operator visibility gap for warnings, soft
+deletes, recovery state, profile suggestions, and published-manifest
+verification state at report time. Compact `status` remains planned so it is
+not confused with daemon, LAN, or long-running sync status.
 
 ## Phase 1: Project Skeleton
 
