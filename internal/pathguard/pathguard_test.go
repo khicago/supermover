@@ -30,6 +30,10 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 	}{
 		{name: "parent traversal", rel: "../a.txt"},
 		{name: "absolute path", rel: "/tmp/a.txt"},
+		{name: "windows absolute volume", rel: "C:/tmp/a.txt"},
+		{name: "windows drive relative", rel: "C:tmp/a.txt"},
+		{name: "windows unc", rel: "//server/share"},
+		{name: "backslash path", rel: `docs\a.txt`},
 		{name: "clean current directory", rel: "."},
 		{name: "nested traversal escapes", rel: "safe/../../a.txt"},
 	}
@@ -44,16 +48,33 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 }
 
 func TestSafeJoinAllowsHiddenDataBelowRoot(t *testing.T) {
-	root := t.TempDir()
-	rel := filepath.ToSlash(filepath.Join("docs", ".hidden", "file.txt"))
-
-	got, err := SafeJoin(root, rel)
-	if err != nil {
-		t.Fatalf("SafeJoin(%q, %q) error = %v, want nil", root, rel, err)
+	tests := []string{
+		".env",
+		".config/settings.json",
+		filepath.ToSlash(filepath.Join("docs", ".hidden", "file.txt")),
 	}
-	want := filepath.Join(root, "docs", ".hidden", "file.txt")
-	if got != want {
-		t.Fatalf("SafeJoin(%q, %q) = %q, want %q", root, rel, got, want)
+
+	for _, rel := range tests {
+		t.Run(rel, func(t *testing.T) {
+			root := t.TempDir()
+			got, err := SafeJoin(root, rel)
+			if err != nil {
+				t.Fatalf("SafeJoin(%q, %q) error = %v, want nil", root, rel, err)
+			}
+			want := filepath.Join(root, filepath.FromSlash(rel))
+			if got != want {
+				t.Fatalf("SafeJoin(%q, %q) = %q, want %q", root, rel, got, want)
+			}
+		})
+	}
+}
+
+func TestValidateSlashRelativePathLength(t *testing.T) {
+	if err := ValidateSlashRelativePath("abcd", 3); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("ValidateSlashRelativePath(too long) error = %v, want ErrUnsafePath", err)
+	}
+	if err := ValidateSlashRelativePath("abcd", 4); err != nil {
+		t.Fatalf("ValidateSlashRelativePath(max length) error = %v, want nil", err)
 	}
 }
 

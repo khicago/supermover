@@ -1,7 +1,10 @@
 package scan
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -31,6 +34,7 @@ type Entry struct {
 	Mode          fs.FileMode `json:"mode"`
 	ModTime       time.Time   `json:"mtime"`
 	Executable    bool        `json:"executable"`
+	Digest        string      `json:"digest,omitempty"`
 	SymlinkTarget string      `json:"symlink_target,omitempty"`
 
 	observed fs.FileInfo
@@ -81,7 +85,14 @@ func Scan(root string) (Result, error) {
 			return nil
 		}
 
-		entry := entryFromInfo(absRoot, path, rel, info)
+		entry, err := entryFromInfo(absRoot, path, rel, info)
+		if err != nil {
+			result.Audit = append(result.Audit, audit.WithDetected(
+				audit.New(rel, "", audit.SeverityWarning, "scan_error", "digest error"),
+				map[string]string{"error": err.Error(), "path": filepath.ToSlash(path)},
+			))
+			return nil
+		}
 		result.Entries = append(result.Entries, entry)
 		if entry.Kind == KindSpecial {
 			result.Audit = append(result.Audit, audit.WithDetected(
@@ -104,7 +115,7 @@ func Scan(root string) (Result, error) {
 	return result, nil
 }
 
-func entryFromInfo(root, path, rel string, info fs.FileInfo) Entry {
+func entryFromInfo(root, path, rel string, info fs.FileInfo) (Entry, error) {
 	mode := info.Mode()
 	entry := Entry{
 		Path:       rel,
@@ -116,6 +127,13 @@ func entryFromInfo(root, path, rel string, info fs.FileInfo) Entry {
 		Executable: mode.IsRegular() && mode.Perm()&0o111 != 0,
 		observed:   info,
 	}
+	if mode.IsRegular() {
+		digest, err := digestObservedRegular(path, info)
+		if err != nil {
+			return Entry{}, err
+		}
+		entry.Digest = digest
+	}
 	if mode&os.ModeSymlink != 0 {
 		if target, err := os.Readlink(path); err == nil {
 			entry.SymlinkTarget = filepath.ToSlash(target)
@@ -124,7 +142,34 @@ func entryFromInfo(root, path, rel string, info fs.FileInfo) Entry {
 	if path == root {
 		entry.Hidden = false
 	}
-	return entry
+	return entry, nil
+}
+
+func digestObservedRegular(path string, observed fs.FileInfo) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(observed, opened) {
+		return "", fmt.Errorf("regular file changed before digest")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !after.Mode().IsRegular() || !os.SameFile(observed, after) || after.Size() != observed.Size() || after.ModTime() != observed.ModTime() || after.Mode().Perm() != observed.Mode().Perm() {
+		return "", fmt.Errorf("regular file changed during digest")
+	}
+	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 // MatchesObservedRegular reports whether info still describes the exact

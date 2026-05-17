@@ -92,6 +92,29 @@ func TestScanRecoveryReportsInvalidRecords(t *testing.T) {
 	}
 }
 
+func TestScanRecoveryReportsMissingSessionRecord(t *testing.T) {
+	layout := NewLayout(t.TempDir())
+	missingDir := filepath.Join(layout.SessionsDir(), "missing-record")
+	if err := os.MkdirAll(filepath.Join(missingDir, "stage"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", missingDir, err)
+	}
+
+	scan, err := ScanRecovery(layout)
+	if err != nil {
+		t.Fatalf("ScanRecovery(%+v) error = %v, want nil", layout, err)
+	}
+	if len(scan.Items) != 0 {
+		t.Errorf("ScanRecovery(%+v) items = %v, want empty", layout, scan.Items)
+	}
+	if len(scan.Invalid) != 1 {
+		t.Fatalf("ScanRecovery(%+v) invalid length = %d, want 1", layout, len(scan.Invalid))
+	}
+	wantPath := filepath.Join(missingDir, "session.json")
+	if scan.Invalid[0].Path != wantPath {
+		t.Errorf("ScanRecovery(%+v) invalid path = %q, want %q", layout, scan.Invalid[0].Path, wantPath)
+	}
+}
+
 func writeRecord(t *testing.T, layout Layout, id string, state State, now time.Time) {
 	t.Helper()
 	record, err := NewSessionRecord(id, now)

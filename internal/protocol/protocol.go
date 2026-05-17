@@ -336,22 +336,17 @@ func validateToken(field, value string, maxLen int, errs *[]error) {
 }
 
 func validateRelativePath(field, value string, errs *[]error) {
-	if strings.TrimSpace(value) == "" {
-		*errs = append(*errs, fmt.Errorf("%s is required", field))
-		return
-	}
-	if len(value) > MaxPathLen {
-		*errs = append(*errs, fmt.Errorf("%s is too long", field))
-		return
-	}
-	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) || strings.Contains(value, `\`) {
-		*errs = append(*errs, fmt.Errorf("%s must be a slash-separated relative path", field))
-		return
-	}
-	for _, part := range strings.Split(value, "/") {
-		if part == "" || part == "." || part == ".." {
-			*errs = append(*errs, fmt.Errorf("%s contains unsafe segment %q", field, part))
-			return
+	if err := pathguard.ValidateSlashRelativePath(value, MaxPathLen); err != nil {
+		switch {
+		case strings.Contains(err.Error(), "is required"):
+			*errs = append(*errs, fmt.Errorf("%s is required", field))
+		case strings.Contains(err.Error(), "is too long"):
+			*errs = append(*errs, fmt.Errorf("%s is too long", field))
+		case strings.Contains(err.Error(), "unsafe segment"):
+			_, segment, _ := strings.Cut(err.Error(), "unsafe segment ")
+			*errs = append(*errs, fmt.Errorf("%s contains unsafe segment %s", field, segment))
+		default:
+			*errs = append(*errs, fmt.Errorf("%s must be a slash-separated relative path", field))
 		}
 	}
 }

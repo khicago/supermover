@@ -91,6 +91,12 @@ func TestLeafHelpReturnsSuccess(t *testing.T) {
 			if stdout.Len() == 0 && stderr.Len() == 0 {
 				t.Fatalf("Run(%v) produced no help output, want usage text", args)
 			}
+			if !strings.Contains(stdout.String(), "Usage") {
+				t.Fatalf("Run(%v) stdout = %q, want usage text", args, stdout.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("Run(%v) stderr = %q, want empty", args, stderr.String())
+			}
 		})
 	}
 }
@@ -327,7 +333,7 @@ func TestScanUsesProfileRoots(t *testing.T) {
 	}
 }
 
-func TestScanUsesProfileAgentKnowledgeCategories(t *testing.T) {
+func TestScanRejectsUnsupportedAgentKnowledgeCategoriesBeforeListingPaths(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
 	target := filepath.Join(dir, "target")
@@ -347,20 +353,19 @@ func TestScanUsesProfileAgentKnowledgeCategories(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	got := Run([]string{"scan", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
-	if got != 0 {
-		t.Fatalf("scan --format json exit = %d, stderr = %q, want 0", got, stderr.String())
+	if got == 0 {
+		t.Fatalf("scan --format json exit = 0, want unsupported agent_knowledge failure")
 	}
-
-	var report struct {
-		Influence []struct {
-			Path string `json:"path"`
-		} `json:"influence"`
+	if stdout.Len() != 0 {
+		t.Fatalf("scan --format json stdout = %q, want empty", stdout.String())
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("json.Unmarshal(scan stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	if !strings.Contains(stderr.String(), "custom agent_knowledge categories are not implemented") {
+		t.Fatalf("scan --format json stderr = %q, want unsupported agent_knowledge error", stderr.String())
 	}
-	if len(report.Influence) != 1 || report.Influence[0].Path != "TEAM.md" {
-		t.Fatalf("scan influence = %#v, want only TEAM.md from profile categories", report.Influence)
+	for _, leaked := range []string{"AGENTS.md", "TEAM.md", source} {
+		if strings.Contains(stdout.String(), leaked) || strings.Contains(stderr.String(), leaked) {
+			t.Fatalf("scan leaked path %q; stdout=%q stderr=%q", leaked, stdout.String(), stderr.String())
+		}
 	}
 }
 
@@ -422,6 +427,73 @@ func TestScanRejectsUnsupportedSelectionRules(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "exclude rules are not implemented") {
 		t.Fatalf("scan stderr = %q, want unsupported exclude error", stderr.String())
+	}
+}
+
+func TestScanRejectsUnsupportedPrivacyPolicyWithoutListingPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*profile.Profile)
+		want string
+	}{
+		{
+			name: "hidden files disabled",
+			edit: func(p *profile.Profile) {
+				p.PrivacyPolicy.AllowHiddenFiles = false
+			},
+			want: "allow_hidden_files=false",
+		},
+		{
+			name: "sensitive filenames disabled",
+			edit: func(p *profile.Profile) {
+				p.PrivacyPolicy.AllowSensitiveFilenames = false
+			},
+			want: "allow_sensitive_filenames=false",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := filepath.Join(dir, "source")
+			target := filepath.Join(dir, "target")
+			profilePath := filepath.Join(dir, "profile.json")
+			mustMkdir(t, source)
+			mustMkdir(t, target)
+			mustWrite(t, filepath.Join(source, ".env"), "secret")
+			mustWrite(t, filepath.Join(source, "visible.txt"), "public")
+			p := profile.NewDefault("profile-local", "Local profile", source, target)
+			tt.edit(&p)
+			if err := profile.WriteFile(profilePath, p); err != nil {
+				t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+			}
+
+			for _, args := range [][]string{
+				{"scan", "--profile", profilePath},
+				{"scan", "--profile", profilePath, "--format", "json"},
+			} {
+				t.Run(strings.Join(args, " "), func(t *testing.T) {
+					var stdout bytes.Buffer
+					var stderr bytes.Buffer
+
+					got := Run(args, &stdout, &stderr)
+
+					if got == 0 {
+						t.Fatalf("Run(%v) exit = 0, want nonzero", args)
+					}
+					if stdout.Len() != 0 {
+						t.Fatalf("Run(%v) stdout = %q, want empty", args, stdout.String())
+					}
+					if !strings.Contains(stderr.String(), tt.want) {
+						t.Fatalf("Run(%v) stderr = %q, want %q", args, stderr.String(), tt.want)
+					}
+					for _, leaked := range []string{".env", "visible.txt", source} {
+						if strings.Contains(stdout.String(), leaked) || strings.Contains(stderr.String(), leaked) {
+							t.Fatalf("Run(%v) leaked path %q; stdout=%q stderr=%q", args, leaked, stdout.String(), stderr.String())
+						}
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -1010,6 +1082,68 @@ func TestReportShowsRecoveryIssuesWithoutMutatingState(t *testing.T) {
 	}
 	if record.State != transaction.StateStaged {
 		t.Fatalf("report mutated session state to %q, want %q", record.State, transaction.StateStaged)
+	}
+}
+
+func TestRecoverCompletesStateAfterReceiptCrash(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-crash"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	layout := transaction.NewLayout(control.ControlDir(target))
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-crash"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(session-crash) error = %v, want nil", err)
+	}
+	staged, err := record.WithState(transaction.StateStaged, record.UpdatedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(staged) error = %v, want nil", err)
+	}
+	if err := layout.WriteSessionRecord(staged); err != nil {
+		t.Fatalf("Layout.WriteSessionRecord(staged) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"recover", "--profile", profilePath, "--session", "session-crash", "--dry-run"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("recover dry-run receipt crash exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status=would_complete_state") {
+		t.Fatalf("recover dry-run receipt crash stdout = %q, want would_complete_state", stdout.String())
+	}
+	record, err = transaction.ReadSessionRecord(layout.RecordPath("session-crash"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(session-crash after dry-run) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateStaged {
+		t.Fatalf("recover dry-run mutated state to %q, want staged", record.State)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = Run([]string{"recover", "--profile", profilePath, "--session", "session-crash"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("recover receipt crash exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status=completed_state") {
+		t.Fatalf("recover receipt crash stdout = %q, want completed_state", stdout.String())
+	}
+	record, err = transaction.ReadSessionRecord(layout.RecordPath("session-crash"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(session-crash final) error = %v, want nil", err)
+	}
+	if record.State != transaction.StatePublished {
+		t.Fatalf("recover receipt crash state = %q, want published", record.State)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -811,6 +812,31 @@ func TestFileStoreCommitMarksReceiptWriteFailureNeedsRepair(t *testing.T) {
 	}
 	if finalRecord.State != transaction.StateNeedsRepair {
 		t.Fatalf("session state after receipt write failure = %q, want %q", finalRecord.State, transaction.StateNeedsRepair)
+	}
+	if !strings.Contains(finalRecord.Note, "receipt") {
+		t.Fatalf("session note after receipt write failure = %q, want receipt cause", finalRecord.Note)
+	}
+}
+
+func TestFileStoreStatusRejectsUnknownMetadataField(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	metaPath := filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "network-session.json")
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", metaPath, err)
+	}
+	next := strings.Replace(string(data), "{", `{"unexpected":true,`, 1)
+	if err := os.WriteFile(metaPath, []byte(next), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", metaPath, err)
+	}
+
+	if _, err := store.Status(req.SessionID); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("FileStore.Status(unknown metadata field) error = %v, want unknown field", err)
 	}
 }
 

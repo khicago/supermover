@@ -16,14 +16,10 @@ const ReservedControlDir = ".supermover"
 const MaxSymlinkTargetLen = 4096
 
 func SafeJoin(root, rel string) (string, error) {
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("%w: absolute path %q", ErrUnsafePath, rel)
+	if err := ValidateSlashRelativePath(rel, 0); err != nil {
+		return "", err
 	}
-	clean := filepath.Clean(filepath.FromSlash(rel))
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("%w: unsafe relative path %q", ErrUnsafePath, rel)
-	}
-	return filepath.Join(root, clean), nil
+	return filepath.Join(root, filepath.FromSlash(rel)), nil
 }
 
 func IsReservedControlPath(path string) bool {
@@ -33,24 +29,32 @@ func IsReservedControlPath(path string) bool {
 }
 
 func ValidateRelativeSymlinkTarget(target string) error {
-	if strings.TrimSpace(target) == "" {
-		return fmt.Errorf("%w: symlink target is required", ErrUnsafePath)
-	}
-	if len(target) > MaxSymlinkTargetLen {
-		return fmt.Errorf("%w: symlink target is too long", ErrUnsafePath)
-	}
-	if strings.HasPrefix(target, "/") || strings.HasPrefix(target, `\`) || strings.Contains(target, `\`) {
-		return fmt.Errorf("%w: symlink target must be a slash-separated relative path", ErrUnsafePath)
-	}
-	if hasWindowsVolumeName(target) {
-		return fmt.Errorf("%w: symlink target must not include a Windows volume name", ErrUnsafePath)
+	if err := ValidateSlashRelativePath(target, MaxSymlinkTargetLen); err != nil {
+		detail := strings.TrimPrefix(err.Error(), ErrUnsafePath.Error()+": data path ")
+		return fmt.Errorf("%w: symlink target %s", ErrUnsafePath, detail)
 	}
 	if IsReservedControlPath(target) {
 		return fmt.Errorf("%w: symlink target uses reserved control directory", ErrUnsafePath)
 	}
-	for _, part := range strings.Split(target, "/") {
+	return nil
+}
+
+func ValidateSlashRelativePath(value string, maxLen int) error {
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("%w: data path is required", ErrUnsafePath)
+	}
+	if maxLen > 0 && len(value) > maxLen {
+		return fmt.Errorf("%w: data path is too long", ErrUnsafePath)
+	}
+	if strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) || strings.Contains(value, `\`) {
+		return fmt.Errorf("%w: data path must be a slash-separated relative path", ErrUnsafePath)
+	}
+	if hasWindowsVolumeName(value) {
+		return fmt.Errorf("%w: data path must not include a Windows volume name", ErrUnsafePath)
+	}
+	for _, part := range strings.Split(value, "/") {
 		if part == "" || part == "." || part == ".." {
-			return fmt.Errorf("%w: symlink target contains unsafe segment %q", ErrUnsafePath, part)
+			return fmt.Errorf("%w: data path contains unsafe segment %q", ErrUnsafePath, part)
 		}
 	}
 	return nil

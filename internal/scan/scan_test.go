@@ -35,6 +35,9 @@ func TestScanRecordsFilesystemMetadata(t *testing.T) {
 	if entries["file.txt"].Kind != KindRegular {
 		t.Fatalf("file kind = %q", entries["file.txt"].Kind)
 	}
+	if entries["file.txt"].Digest != "sha256:2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881" {
+		t.Fatalf("file digest = %q, want sha256 for scanned content", entries["file.txt"].Digest)
+	}
 	if entries["script.sh"].Executable != true {
 		t.Fatal("expected executable bit on script")
 	}
@@ -77,6 +80,11 @@ func TestScanJSONDoesNotExposeObservedIdentity(t *testing.T) {
 		}
 		if _, ok := entry["Observed"]; ok {
 			t.Fatalf("json.Marshal(Scan(%q)) entry keys = %#v, want no Observed field", root, entry)
+		}
+		if entry["kind"] == string(KindRegular) {
+			if got, ok := entry["digest"].(string); !ok || !strings.HasPrefix(got, "sha256:") {
+				t.Fatalf("json.Marshal(Scan(%q)) entry keys = %#v, want regular digest", root, entry)
+			}
 		}
 	}
 	if !strings.Contains(string(data), `"file.txt"`) {

@@ -802,6 +802,37 @@ func TestCopyRegularToStageRejectsChangedSourceWithoutPublishingStage(t *testing
 	}
 }
 
+func TestCopyRegularToStageRejectsSameMetadataContentChange(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	stage := filepath.Join(dir, "stage", "file.txt")
+	stamp := time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)
+	mustWriteFile(t, source, "trusted", 0o640)
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", source, err)
+	}
+	entry := scan.Entry{
+		Path:    "file.txt",
+		Kind:    scan.KindRegular,
+		Size:    int64(len("trusted")),
+		Mode:    0o640,
+		ModTime: stamp,
+	}
+
+	_, err := copyRegularToStageWithPostCopy(source, stage, entry, func() error {
+		if err := os.WriteFile(source, []byte("changed"), 0o640); err != nil {
+			return err
+		}
+		return os.Chtimes(source, stamp, stamp)
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed during copy") {
+		t.Fatalf("copyRegularToStageWithPostCopy(same metadata changed source) error = %v, want changed during copy", err)
+	}
+	if _, err := os.Stat(stage); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(staged payload after changed source) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestCopyRegularRejectsReplacedSourceBeforePublish(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.txt")
@@ -868,6 +899,42 @@ func TestCopyRegularRejectsChangedSourceSinceScan(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "changed since scan") {
 		t.Fatalf("copyRegularToStage(replaced since scan) error = %q, want source changed error", err.Error())
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
+		t.Fatalf("target after failed copy = (%q, %v), want existing", string(got), err)
+	}
+}
+
+func TestCopyRegularRejectsSameMetadataContentChangeSinceScan(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	target := filepath.Join(dir, "target.txt")
+	stamp := time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)
+	mustWriteFile(t, source, "old", 0o644)
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", source, err)
+	}
+	result, err := scan.Scan(dir)
+	if err != nil {
+		t.Fatalf("scan.Scan(%q) error = %v, want nil", dir, err)
+	}
+	entry := scanEntryByPath(t, result, "source.txt")
+	if err := os.WriteFile(source, []byte("new"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", source, err)
+	}
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) after rewrite error = %v, want nil", source, err)
+	}
+	if err := os.WriteFile(target, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", target, err)
+	}
+
+	_, err = copyRegularToStage(source, target+".stage", entry)
+	if err == nil {
+		t.Fatalf("copyRegularToStage(same metadata changed since scan) error = nil, want source changed error")
+	}
+	if !strings.Contains(err.Error(), "changed since scan") {
+		t.Fatalf("copyRegularToStage(same metadata changed since scan) error = %q, want source changed error", err.Error())
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
 		t.Fatalf("target after failed copy = (%q, %v), want existing", string(got), err)
@@ -1278,6 +1345,72 @@ func TestRecoverRejectsStagedSessionWithMismatchedProfileSnapshot(t *testing.T) 
 				t.Fatalf("session state after rejected recovery = %q, want %q", record.State, transaction.StateNeedsRepair)
 			}
 		})
+	}
+}
+
+func TestRunRefusesExistingRecoveryStateBeforeCopying(t *testing.T) {
+	tests := []struct {
+		name  string
+		state transaction.State
+	}{
+		{name: "received", state: transaction.StateReceived},
+		{name: "staged", state: transaction.StateStaged},
+		{name: "needs repair", state: transaction.StateNeedsRepair},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := filepath.Join(dir, "source")
+			target := filepath.Join(dir, "target")
+			mustWriteFile(t, filepath.Join(source, "new.txt"), "new", 0o644)
+			p := profile.NewDefault("profile-local", "Local profile", source, target)
+			layout := transaction.NewLayout(control.ControlDir(target))
+			record, err := transaction.NewSessionRecord("session-old", time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC))
+			if err != nil {
+				t.Fatalf("transaction.NewSessionRecord() error = %v, want nil", err)
+			}
+			record, err = record.WithState(tt.state, time.Date(2026, 5, 16, 1, 1, 0, 0, time.UTC))
+			if err != nil {
+				t.Fatalf("SessionRecord.WithState(%q) error = %v, want nil", tt.state, err)
+			}
+			if err := layout.WriteSessionRecord(record); err != nil {
+				t.Fatalf("Layout.WriteSessionRecord(%+v) error = %v, want nil", record, err)
+			}
+
+			_, err = Run(Options{Profile: p, TargetDir: target, SessionID: "session-new", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+			if err == nil {
+				t.Fatalf("Run(existing %s recovery state) error = nil, want refusal", tt.name)
+			}
+			if !strings.Contains(err.Error(), "health") || !strings.Contains(err.Error(), "recover") {
+				t.Fatalf("Run(existing %s recovery state) error = %v, want health/recover guidance", tt.name, err)
+			}
+			if _, err := os.Stat(filepath.Join(target, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("os.Stat(target data after refusal) error = %v, want os.ErrNotExist", err)
+			}
+		})
+	}
+}
+
+func TestRunRefusesOrphanedSessionDirectoryBeforeCopying(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "new.txt"), "new", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	orphanedStage := filepath.Join(control.ControlDir(target), "sessions", "session-orphan", "stage")
+	if err := os.MkdirAll(orphanedStage, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", orphanedStage, err)
+	}
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-new", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err == nil {
+		t.Fatalf("Run(orphaned session directory) error = nil, want invalid recovery refusal")
+	}
+	if !strings.Contains(err.Error(), "invalid recovery state") {
+		t.Fatalf("Run(orphaned session directory) error = %v, want invalid recovery state", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target data after refusal) error = %v, want os.ErrNotExist", err)
 	}
 }
 

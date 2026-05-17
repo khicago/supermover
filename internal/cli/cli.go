@@ -99,8 +99,15 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 	targetID := fs.String("target-id", "", "stable target identity to persist")
 	profileID := fs.String("id", "profile-local", "profile id to persist")
 	name := fs.String("name", "Local profile", "human-readable profile name")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -135,8 +142,15 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 func (r Runner) runProfileLint(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := newFlagSet("profile lint", stderr)
 	profilePath := fs.String("profile", "", "profile path to lint")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -160,8 +174,15 @@ func (r Runner) runProfileSetTarget(args []string, stdout io.Writer, stderr io.W
 	targetPath := fs.String("target", "", "trusted local target directory to persist")
 	targetID := fs.String("target-id", "", "target identity override")
 	name := fs.String("name", "", "human-readable target name override")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -214,8 +235,15 @@ func (r Runner) runScan(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := newFlagSet("scan", stderr)
 	profilePath := fs.String("profile", "", "profile path")
 	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -233,7 +261,7 @@ func (r Runner) runScan(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "scan: %v\n", err)
 		return 2
 	}
-	if err := localpush.ValidateSupportedRules(p); err != nil {
+	if err := localpush.ValidateProfileForLocalPush(p); err != nil {
 		fmt.Fprintf(stderr, "scan: %v\n", err)
 		return 2
 	}
@@ -262,8 +290,15 @@ func (r Runner) runPush(args []string, stdout io.Writer, stderr io.Writer) int {
 	profilePath := fs.String("profile", "", "profile path")
 	dryRun := fs.Bool("dry-run", false, "scan and report without writing target files or control-plane artifacts")
 	sessionID := fs.String("session", "", "session id for deterministic tests and controlled reruns")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -317,8 +352,15 @@ func (r Runner) runVerify(args []string, stdout io.Writer, stderr io.Writer) int
 	profilePath := fs.String("profile", "", "profile path")
 	sessionID := fs.String("session", "", "session id to verify")
 	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -396,8 +438,15 @@ func (r Runner) runDeletedList(args []string, stdout io.Writer, stderr io.Writer
 	profilePath := fs.String("profile", "", "profile path")
 	sessionID := fs.String("session", "", "optional session id filter")
 	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -449,8 +498,15 @@ func (r Runner) runHealth(args []string, stdout io.Writer, stderr io.Writer) int
 	fs := newFlagSet("health", stderr)
 	profilePath := fs.String("profile", "", "profile path")
 	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2
@@ -577,8 +633,15 @@ func (r Runner) runRecover(args []string, stdout io.Writer, stderr io.Writer) in
 	dryRun := fs.Bool("dry-run", false, "report recovery actions without mutating target state")
 	rollbackIncomplete := fs.Bool("rollback-incomplete", false, "mark received/validated sessions as rolled_back when they never reached durable staging")
 	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
 			return 0
 		}
 		return 2

@@ -1,6 +1,7 @@
 package receiver
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -249,8 +250,7 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 	}
 	if record.State == transaction.StatePublished {
 		if err := s.ensurePublishedArtifacts(meta); err != nil {
-			s.markNeedsRepair(record)
-			return protocol.CommitSessionResponse{}, err
+			return protocol.CommitSessionResponse{}, s.markNeedsRepair(record, err)
 		}
 		return protocol.CommitSessionResponse{
 			SessionID: req.SessionID,
@@ -270,12 +270,10 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 			return protocol.CommitSessionResponse{}, err
 		}
 		if err := s.verifyFiles(meta); err != nil {
-			s.markNeedsRepair(record)
-			return protocol.CommitSessionResponse{}, err
+			return protocol.CommitSessionResponse{}, s.markNeedsRepair(record, err)
 		}
 		if err := s.reconcileStagedFiles(meta); err != nil {
-			s.markNeedsRepair(record)
-			return protocol.CommitSessionResponse{}, err
+			return protocol.CommitSessionResponse{}, s.markNeedsRepair(record, err)
 		}
 		var err error
 		staged, err = record.WithState(transaction.StateStaged, s.now())
@@ -286,16 +284,13 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 			return protocol.CommitSessionResponse{}, err
 		}
 	} else if err := s.reconcileStagedFiles(meta); err != nil {
-		s.markNeedsRepair(staged)
-		return protocol.CommitSessionResponse{}, err
+		return protocol.CommitSessionResponse{}, s.markNeedsRepair(staged, err)
 	}
 	if err := s.publish(meta); err != nil {
-		s.markNeedsRepair(staged)
-		return protocol.CommitSessionResponse{}, err
+		return protocol.CommitSessionResponse{}, s.markNeedsRepair(staged, err)
 	}
 	if err := s.writeReceipt(meta, req.EndedAt); err != nil {
-		s.markNeedsRepair(staged)
-		return protocol.CommitSessionResponse{}, err
+		return protocol.CommitSessionResponse{}, s.markNeedsRepair(staged, err)
 	}
 	published, err := staged.WithState(transaction.StatePublished, s.now())
 	if err != nil {
@@ -311,12 +306,16 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 	}, nil
 }
 
-func (s FileStore) markNeedsRepair(record transaction.SessionRecord) {
+func (s FileStore) markNeedsRepair(record transaction.SessionRecord, cause error) error {
 	repair, err := record.WithState(transaction.StateNeedsRepair, s.now())
 	if err != nil {
-		return
+		return errors.Join(cause, err)
 	}
-	_ = s.layout().WriteSessionRecord(repair)
+	repair.Note = cause.Error()
+	if err := s.layout().WriteSessionRecord(repair); err != nil {
+		return errors.Join(cause, fmt.Errorf("mark session %q needs_repair: %w", record.ID, err))
+	}
+	return cause
 }
 
 func (s FileStore) layout() transaction.Layout {
@@ -432,8 +431,7 @@ func (s FileStore) reconcileBegin(meta sessionMeta) error {
 		}
 		if record.State == transaction.StatePublished {
 			if err := s.ensurePublishedArtifacts(meta); err != nil {
-				s.markNeedsRepair(record)
-				return err
+				return s.markNeedsRepair(record, err)
 			}
 			return nil
 		}
@@ -602,6 +600,8 @@ func (s FileStore) reconcileStagedFiles(meta sessionMeta) error {
 			if exists && !same {
 				return fmt.Errorf("%w: target symlink %q already exists with different target; refusing to overwrite", ErrConflict, publishPath(entry))
 			}
+		default:
+			return fmt.Errorf("%w: manifest entry %q uses unsupported kind %q", ErrConflict, entry.Path, entry.Kind)
 		}
 	}
 	return nil
@@ -982,7 +982,15 @@ func readMeta(path string) (sessionMeta, error) {
 		return sessionMeta{}, err
 	}
 	var meta sessionMeta
-	if err := json.Unmarshal(data, &meta); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&meta); err != nil {
+		return sessionMeta{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return sessionMeta{}, errors.New("metadata contains multiple JSON values")
+		}
 		return sessionMeta{}, err
 	}
 	if err := beginRequestFromMeta(meta).Validate(); err != nil {
@@ -992,7 +1000,7 @@ func readMeta(path string) (sessionMeta, error) {
 }
 
 func writeJSONAtomic(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := pathguard.EnsurePlainDirectory(filepath.Dir(filepath.Dir(path)), filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".receiver-*.tmp")
