@@ -41,6 +41,29 @@ func TestNewDefaultBuildsValidProfile(t *testing.T) {
 	}
 }
 
+func TestDefaultPrivacyPolicyIsLevel2Compatible(t *testing.T) {
+	got := DefaultPrivacyPolicy()
+
+	if got.Mode != PrivacyModePlaintext {
+		t.Fatalf("DefaultPrivacyPolicy().Mode = %q, want %q", got.Mode, PrivacyModePlaintext)
+	}
+	if got.TrafficLevel != 2 {
+		t.Fatalf("DefaultPrivacyPolicy().TrafficLevel = %d, want 2", got.TrafficLevel)
+	}
+	if !got.AllowPlaintextRestore || !got.AllowHiddenFiles || !got.AllowSensitiveFilenames {
+		t.Fatalf("DefaultPrivacyPolicy() restore/data flags = %#v, want plaintext restore and hidden/sensitive filenames allowed", got)
+	}
+	if got.PaddingBucketBytes == 0 || got.BatchMaxBytes == 0 || got.BatchMaxCount == 0 || !got.DiscoveryLowInfo {
+		t.Fatalf("DefaultPrivacyPolicy() = %#v, want traffic level 2 shaping fields", got)
+	}
+
+	p := validProfile()
+	p.PrivacyPolicy = got
+	if err := p.Validate(); err != nil {
+		t.Fatalf("valid profile with DefaultPrivacyPolicy().Validate() error = %v, want nil", err)
+	}
+}
+
 func TestDefaultAgentKnowledgeCategoriesAreDetected(t *testing.T) {
 	knowledge := DefaultAgentKnowledge()
 	var entries []scan.Entry

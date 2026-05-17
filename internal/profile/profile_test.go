@@ -2,6 +2,8 @@ package profile
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -23,9 +25,49 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			wantErr: "roots must contain at least one root",
 		},
 		{
+			name:    "missing root id",
+			mutate:  func(p *Profile) { p.Roots[0].ID = " \t" },
+			wantErr: "roots[0].id is required",
+		},
+		{
+			name:    "missing root path",
+			mutate:  func(p *Profile) { p.Roots[0].Path = "" },
+			wantErr: "roots[0].path is required",
+		},
+		{
+			name:    "empty include pattern",
+			mutate:  func(p *Profile) { p.Include = []Rule{{Pattern: " "}} },
+			wantErr: "include[0].pattern is required",
+		},
+		{
+			name:    "empty exclude pattern",
+			mutate:  func(p *Profile) { p.Exclude = []Rule{{Pattern: ""}} },
+			wantErr: "exclude[0].pattern is required",
+		},
+		{
 			name:    "invalid consistency mode",
 			mutate:  func(p *Profile) { p.Consistency = "eventual" },
 			wantErr: "consistency must be one of",
+		},
+		{
+			name:    "invalid delete mode",
+			mutate:  func(p *Profile) { p.DeletePolicy.Mode = "trash" },
+			wantErr: "delete_policy.mode must be one of",
+		},
+		{
+			name:    "negative retention",
+			mutate:  func(p *Profile) { p.DeletePolicy.RetentionDays = -1 },
+			wantErr: "delete_policy.retention_days cannot be negative",
+		},
+		{
+			name:    "invalid metadata mode",
+			mutate:  func(p *Profile) { p.MetadataPolicy.Mode = "full" },
+			wantErr: "metadata_policy.mode must be one of",
+		},
+		{
+			name:    "invalid privacy mode",
+			mutate:  func(p *Profile) { p.PrivacyPolicy.Mode = "sealed" },
+			wantErr: "privacy_policy.mode must be one of",
 		},
 		{
 			name:    "unsafe plaintext privacy",
@@ -53,6 +95,26 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			wantErr: "discovery_low_info must be true",
 		},
 		{
+			name:    "negative padding",
+			mutate:  func(p *Profile) { p.PrivacyPolicy.PaddingBucketBytes = -1 },
+			wantErr: "privacy_policy.padding_bucket_bytes cannot be negative",
+		},
+		{
+			name:    "negative batch bytes",
+			mutate:  func(p *Profile) { p.PrivacyPolicy.BatchMaxBytes = -1 },
+			wantErr: "privacy_policy.batch_max_bytes cannot be negative",
+		},
+		{
+			name:    "negative batch count",
+			mutate:  func(p *Profile) { p.PrivacyPolicy.BatchMaxCount = -1 },
+			wantErr: "privacy_policy.batch_max_count cannot be negative",
+		},
+		{
+			name:    "negative jitter",
+			mutate:  func(p *Profile) { p.PrivacyPolicy.JitterBudgetMillis = -1 },
+			wantErr: "privacy_policy.jitter_budget_millis cannot be negative",
+		},
+		{
 			name:    "prune without review",
 			mutate:  func(p *Profile) { p.DeletePolicy.Mode = DeleteModePrune; p.DeletePolicy.RequireReview = false },
 			wantErr: "require_review must be true",
@@ -78,6 +140,11 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			},
 			wantErr: "target.target_id must not equal target.local_path",
 		},
+		{
+			name:    "missing knowledge category name",
+			mutate:  func(p *Profile) { p.AgentKnowledge.Categories = []KnowledgeCategory{{Name: " "}} },
+			wantErr: "agent_knowledge.categories[0].name is required",
+		},
 	}
 
 	for _, tt := range tests {
@@ -91,6 +158,94 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Validate() error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateCollectsMultipleProfileErrors(t *testing.T) {
+	p := validProfile()
+	p.ProfileID = ""
+	p.DeletePolicy.Mode = DeleteModePrune
+	p.DeletePolicy.RequireReview = false
+	p.PrivacyPolicy.PaddingBucketBytes = 0
+	p.Target.TargetID = ""
+
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want multiple validation errors")
+	}
+	for _, want := range []string{
+		"profile_id is required",
+		"delete_policy.require_review must be true",
+		"privacy_policy.padding_bucket_bytes is required",
+		"target.target_id is required",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %q, want substring %q", err.Error(), want)
+		}
+	}
+}
+
+func TestValidateAcceptsPrivacyTrafficLevelsWithRequiredFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Profile)
+	}{
+		{
+			name: "level 1 plaintext without traffic shaping fields",
+			mutate: func(p *Profile) {
+				p.PrivacyPolicy.TrafficLevel = 1
+				p.PrivacyPolicy.PaddingBucketBytes = 0
+				p.PrivacyPolicy.BatchMaxBytes = 0
+				p.PrivacyPolicy.BatchMaxCount = 0
+				p.PrivacyPolicy.DiscoveryLowInfo = false
+			},
+		},
+		{
+			name: "level 2 requires padding batching and low info discovery",
+			mutate: func(p *Profile) {
+				p.PrivacyPolicy.TrafficLevel = 2
+				p.PrivacyPolicy.PaddingBucketBytes = 4096
+				p.PrivacyPolicy.BatchMaxBytes = 8192
+				p.PrivacyPolicy.BatchMaxCount = 8
+				p.PrivacyPolicy.DiscoveryLowInfo = true
+			},
+		},
+		{
+			name: "level 3 with explicit shaping fields",
+			mutate: func(p *Profile) {
+				p.PrivacyPolicy.TrafficLevel = 3
+				p.PrivacyPolicy.PaddingBucketBytes = 4096
+				p.PrivacyPolicy.BatchMaxBytes = 8192
+				p.PrivacyPolicy.BatchMaxCount = 8
+				p.PrivacyPolicy.DiscoveryLowInfo = true
+			},
+		},
+		{
+			name: "redacted mode does not require plaintext restore",
+			mutate: func(p *Profile) {
+				p.PrivacyPolicy.Mode = PrivacyModeRedacted
+				p.PrivacyPolicy.AllowPlaintextRestore = false
+			},
+		},
+		{
+			name: "prune with review gate",
+			mutate: func(p *Profile) {
+				p.DeletePolicy.Mode = DeleteModePrune
+				p.DeletePolicy.RequireReview = true
+				p.DeletePolicy.AllowPhysicalPrune = true
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := validProfile()
+			tt.mutate(&p)
+
+			if err := p.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
 			}
 		})
 	}
@@ -116,6 +271,64 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	}
 	if got.Roots[0].Path != want.Roots[0].Path {
 		t.Fatalf("Read() roots[0].path = %q, want %q", got.Roots[0].Path, want.Roots[0].Path)
+	}
+}
+
+func TestWriteRejectsInvalidProfile(t *testing.T) {
+	var buf bytes.Buffer
+	p := validProfile()
+	p.Target.TargetID = ""
+
+	err := Write(&buf, p)
+	if err == nil {
+		t.Fatal("Write(invalid profile) error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "target.target_id is required") {
+		t.Fatalf("Write(invalid profile) error = %q, want target id validation", err.Error())
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("Write(invalid profile) wrote %d bytes, want 0", buf.Len())
+	}
+}
+
+func TestWriteReadFileRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "profiles", "profile.json")
+	want := validProfile()
+
+	if err := WriteFile(path, want); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v, want nil", path, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "profiles")); err != nil {
+		t.Fatalf("os.Stat(profile dir) error = %v, want nil", err)
+	}
+	got, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v, want nil", path, err)
+	}
+	if got.ProfileID != want.ProfileID || got.Target.TargetID != want.Target.TargetID {
+		t.Fatalf("ReadFile(%q) = %#v, want profile_id %q and target_id %q", path, got, want.ProfileID, want.Target.TargetID)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", filepath.Dir(path), err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".profile-") {
+			t.Fatalf("WriteFile(%q) left temporary file %q", path, entry.Name())
+		}
+	}
+}
+
+func TestReadFilePropagatesOpenError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing.json")
+
+	_, err := ReadFile(path)
+	if err == nil {
+		t.Fatalf("ReadFile(%q) error = nil, want open error", path)
+	}
+	if !os.IsNotExist(err) {
+		t.Fatalf("ReadFile(%q) error = %v, want not exist", path, err)
 	}
 }
 
@@ -147,6 +360,22 @@ func TestReadRejectsTrailingJSONDocument(t *testing.T) {
 	}
 }
 
+func TestReadRejectsMalformedTrailingJSON(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Write(&buf, validProfile()); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	buf.WriteString(`{"ignored":`)
+
+	_, err := Read(&buf)
+	if err == nil {
+		t.Fatal("Read() error = nil, want malformed trailing JSON error")
+	}
+	if strings.Contains(err.Error(), "trailing JSON") {
+		t.Fatalf("Read() error = %q, want decoder error for malformed trailing JSON", err.Error())
+	}
+}
+
 func TestReadForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
 	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}`
 
@@ -159,6 +388,22 @@ func TestReadForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
 	}
 	if got.Target.TargetID != "/tmp/target" || got.Target.LocalPath != "/tmp/target" {
 		t.Fatalf("ReadForTargetRepair target = %#v, want legacy target loaded", got.Target)
+	}
+}
+
+func TestReadFileForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.json")
+	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}`
+	if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
+	}
+
+	got, err := ReadFileForTargetRepair(path)
+	if err != nil {
+		t.Fatalf("ReadFileForTargetRepair(%q) error = %v, want nil", path, err)
+	}
+	if got.Target.TargetID != got.Target.LocalPath {
+		t.Fatalf("ReadFileForTargetRepair(%q) target = %#v, want equal legacy identity", path, got.Target)
 	}
 }
 
