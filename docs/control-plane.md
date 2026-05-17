@@ -86,7 +86,7 @@ conservative. If a staged replacement finds the target missing during recovery,
 recovery refuses to publish the new file because the previous target evidence
 can no longer be verified automatically unless the interrupted session retained
 a matching pair of replacement holds. During an active changed-file publish,
-Supermover rechecks the previous target evidence, creates an immutable previous
+Supermover rechecks the previous target evidence, creates a no-replace previous
 snapshot under `.supermover/replacement-holds/<session>/previous/...`, moves the
 current target into `.supermover/replacement-holds/<session>/current/...` with
 no-replace semantics, then publishes the staged replacement with no-replace
