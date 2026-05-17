@@ -45,8 +45,18 @@ type Result struct {
 var localPushLocks sync.Map
 
 var errSymlinkTargetConflict = errors.New("target symlink conflict")
+var errManagedReplaceTargetChanged = errors.New("managed replace target changed")
 
 var beforeReadStableSymlink func(sourcePath string, entry scan.Entry) error
+var beforePublishStaged func(entry control.ManifestEntry, targetPath string) error
+var beforeManagedReplacePromote func(entry control.ManifestEntry, targetPath string) error
+
+type publishMode int
+
+const (
+	publishModeRun publishMode = iota
+	publishModeRecover
+)
 
 type RecoverOptions struct {
 	Profile            profile.Profile
@@ -74,6 +84,15 @@ type RecoverItem struct {
 	Action    string `json:"action"`
 	Status    string `json:"status"`
 	Message   string `json:"message,omitempty"`
+}
+
+type previousFileEvidence struct {
+	SessionID  string
+	ManifestID string
+	Size       int64
+	Digest     string
+	Mode       uint32
+	ModTime    string
 }
 
 func Run(opts Options) (Result, error) {
@@ -118,8 +137,13 @@ func Run(opts Options) (Result, error) {
 	if err := rejectScanErrors(scanResult); err != nil {
 		return Result{}, err
 	}
+	previous, hasPrevious, err := latestPublishedManifest(opts.Profile, opts.TargetDir)
+	if err != nil {
+		return Result{}, err
+	}
+	previousEntries := previousManifestEntries(previous, hasPrevious)
 	influences := agentkb.Detect(scanResult.Entries, agentKnowledgeCategories(opts.Profile.AgentKnowledge))
-	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
+	softDeletes, err := softDeletesForRun(opts.Profile, previous, hasPrevious, scanResult, sessionID, now)
 	if err != nil {
 		return Result{}, err
 	}
@@ -157,7 +181,7 @@ func Run(opts Options) (Result, error) {
 				return Result{}, err
 			}
 			copied++
-			manifestEntries = append(manifestEntries, manifestEntry(entry, "file", digest))
+			manifestEntries = append(manifestEntries, manifestEntryWithPrevious(entry, "file", digest, previousEntries[cleanManifestTarget(entry.Path)]))
 		case scan.KindSymlink:
 			if beforeReadStableSymlink != nil {
 				if err := beforeReadStableSymlink(sourcePath, entry); err != nil {
@@ -192,7 +216,7 @@ func Run(opts Options) (Result, error) {
 		}
 	}
 
-	if err := preflightPublishPlan(layout, opts.TargetDir, sessionID, manifestEntries); err != nil {
+	if err := preflightPublishPlan(layout, opts.TargetDir, sessionID, manifestEntries, publishModeRun); err != nil {
 		return Result{}, err
 	}
 	existingDirs, err := captureExistingPublishDirs(opts.TargetDir, manifestEntries)
@@ -209,7 +233,7 @@ func Run(opts Options) (Result, error) {
 	if err := layout.WriteSessionRecord(record); err != nil {
 		return Result{}, err
 	}
-	if err := publishStaged(layout, opts.TargetDir, sessionID, manifestEntries, existingDirs); err != nil {
+	if err := publishStaged(layout, opts.TargetDir, sessionID, manifestEntries, existingDirs, publishModeRun); err != nil {
 		return Result{}, err
 	}
 	if err := writeSessionReceipt(opts.TargetDir, opts.Profile, sessionID, now); err != nil {
@@ -264,7 +288,12 @@ func Preflight(opts Options) (Result, error) {
 	}
 	warnings := append([]audit.Record(nil), scanResult.Audit...)
 	influences := agentkb.Detect(scanResult.Entries, agentKnowledgeCategories(opts.Profile.AgentKnowledge))
-	softDeletes, err := softDeletesForRun(opts.Profile, opts.TargetDir, scanResult, sessionID, now)
+	previous, hasPrevious, err := latestPublishedManifest(opts.Profile, opts.TargetDir)
+	if err != nil {
+		return Result{}, err
+	}
+	previousEntries := previousManifestEntries(previous, hasPrevious)
+	softDeletes, err := softDeletesForRun(opts.Profile, previous, hasPrevious, scanResult, sessionID, now)
 	if err != nil {
 		return Result{}, err
 	}
@@ -286,7 +315,7 @@ func Preflight(opts Options) (Result, error) {
 			entries++
 		case scan.KindRegular:
 			sourcePath := filepath.Join(root.Path, filepath.FromSlash(entry.Path))
-			if err := preflightRegularTarget(sourcePath, targetPath); err != nil {
+			if err := preflightRegularTarget(sourcePath, targetPath, previousEntries[cleanManifestTarget(entry.Path)]); err != nil {
 				return Result{}, err
 			}
 			entries++
@@ -477,6 +506,9 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 	if err := validateRecoverProfileSnapshot(targetDir, p, manifest); err != nil {
 		return err
 	}
+	if err := validatePreviousEvidenceForRecover(p, targetDir, manifest); err != nil {
+		return err
+	}
 	if err := validateRecoverableStagedFiles(layout, targetDir, record.ID, manifest.Entries); err != nil {
 		return err
 	}
@@ -490,7 +522,7 @@ func recoverStagedSession(layout transaction.Layout, p profile.Profile, targetDi
 	if err != nil {
 		return err
 	}
-	if err := publishStaged(layout, targetDir, record.ID, manifest.Entries, existingDirs); err != nil {
+	if err := publishStaged(layout, targetDir, record.ID, manifest.Entries, existingDirs, publishModeRecover); err != nil {
 		return err
 	}
 	if err := writeSessionReceiptWithTimes(targetDir, p, record.ID, record.CreatedAt, now); err != nil {
@@ -546,11 +578,77 @@ func validateRecoverProfileSnapshot(targetDir string, p profile.Profile, manifes
 	return nil
 }
 
-func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
-	return preflightPublishPlan(layout, targetDir, sessionID, entries)
+func validatePreviousEvidenceForRecover(p profile.Profile, targetDir string, manifest control.Manifest) error {
+	for _, entry := range manifest.Entries {
+		if entry.Kind != "file" || !previousFileEvidenceComplete(previousEvidenceFromManifestEntry(entry)) {
+			continue
+		}
+		previousReceiptPath, err := control.Path(targetDir, control.ArtifactSessionReceipt, entry.PreviousSessionID)
+		if err != nil {
+			return err
+		}
+		previousReceipt, err := control.ReadFile[control.SessionReceipt](previousReceiptPath)
+		if err != nil {
+			return fmt.Errorf("read previous receipt %q for recover evidence: %w", entry.PreviousSessionID, err)
+		}
+		if previousReceipt.Status != "published" {
+			return fmt.Errorf("previous receipt %q status = %q, want published", previousReceipt.ID, previousReceipt.Status)
+		}
+		if previousReceipt.ID != entry.PreviousSessionID {
+			return fmt.Errorf("previous receipt %q id = %q", entry.PreviousSessionID, previousReceipt.ID)
+		}
+		if previousReceipt.ProfileID != p.ProfileID || previousReceipt.TargetID != p.Target.TargetID {
+			return fmt.Errorf("previous receipt %q scope does not match current profile/target", previousReceipt.ID)
+		}
+		previousManifestPath, err := control.Path(targetDir, control.ArtifactManifest, entry.PreviousSessionID)
+		if err != nil {
+			return err
+		}
+		previousManifest, err := control.ReadManifestCompatFile(previousManifestPath)
+		if err != nil {
+			return fmt.Errorf("read previous manifest %q for recover evidence: %w", entry.PreviousSessionID, err)
+		}
+		if previousManifest.ID != entry.PreviousManifestID {
+			return fmt.Errorf("previous manifest %q id = %q, want %q", entry.PreviousSessionID, previousManifest.ID, entry.PreviousManifestID)
+		}
+		if previousManifest.SessionID != entry.PreviousSessionID {
+			return fmt.Errorf("previous manifest %q session_id = %q", entry.PreviousSessionID, previousManifest.SessionID)
+		}
+		if previousManifest.RootID != p.Roots[0].ID && !(previousManifest.RootID == "" && len(p.Roots) == 1) {
+			return fmt.Errorf("previous manifest %q root_id %q does not match current root %q", previousManifest.ID, previousManifest.RootID, p.Roots[0].ID)
+		}
+		previousEntry, ok := manifestFileEntryByTarget(previousManifest, targetPath(entry))
+		if !ok {
+			return fmt.Errorf("previous manifest %q does not contain target path %q", previousManifest.ID, targetPath(entry))
+		}
+		if previousEntry.Size != entry.PreviousSize || previousEntry.Digest != entry.PreviousDigest {
+			return fmt.Errorf("previous manifest %q evidence for %q does not match staged manifest", previousManifest.ID, targetPath(entry))
+		}
+		if previousEntry.Mode != entry.PreviousMode || previousEntry.ModTime != entry.PreviousModTime {
+			return fmt.Errorf("previous manifest %q metadata for %q does not match staged manifest", previousManifest.ID, targetPath(entry))
+		}
+	}
+	return nil
 }
 
-func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
+func manifestFileEntryByTarget(manifest control.Manifest, target string) (control.ManifestEntry, bool) {
+	cleanTarget := cleanManifestTarget(target)
+	for _, entry := range manifest.Entries {
+		if entry.Kind != "file" {
+			continue
+		}
+		if cleanManifestTarget(targetPath(entry)) == cleanTarget {
+			return entry, true
+		}
+	}
+	return control.ManifestEntry{}, false
+}
+
+func validateRecoverableStagedFiles(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry) error {
+	return preflightPublishPlan(layout, targetDir, sessionID, entries, publishModeRecover)
+}
+
+func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry, mode publishMode) error {
 	if err := validateTargetPlan(entries, func(entry control.ManifestEntry) (string, string) {
 		return targetPath(entry), entry.Kind
 	}); err != nil {
@@ -571,11 +669,34 @@ func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID
 			if err != nil {
 				return err
 			}
+			previous := previousEvidenceFromManifestEntry(entry)
 			if exists {
 				if same {
+					if previousFileEvidenceComplete(previous) && mode != publishModeRecover {
+						previousSame, err := targetMatchesPreviousFile(finalPath, previous)
+						if err != nil {
+							return err
+						}
+						if !previousSame {
+							return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", finalPath)
+						}
+					}
+					continue
+				}
+				previousSame, err := targetMatchesPreviousFile(finalPath, previous)
+				if err != nil {
+					return err
+				}
+				if previousSame {
+					if err := validateStagedManifestFile(layout, sessionID, entry); err != nil {
+						return err
+					}
 					continue
 				}
 				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
+			}
+			if previousFileEvidenceComplete(previous) {
+				return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", finalPath)
 			}
 			if err := validateStagedManifestFile(layout, sessionID, entry); err != nil {
 				return err
@@ -874,15 +995,11 @@ func ensureSessionUnused(targetDir, sessionID string) error {
 	return nil
 }
 
-func softDeletesForRun(p profile.Profile, targetDir string, scanResult scan.Result, sessionID string, now time.Time) ([]control.SoftDelete, error) {
+func softDeletesForRun(p profile.Profile, previous control.Manifest, hasPrevious bool, scanResult scan.Result, sessionID string, now time.Time) ([]control.SoftDelete, error) {
 	if p.DeletePolicy.Mode == profile.DeleteModeIgnore || len(scanResult.Entries) == 0 {
 		return nil, nil
 	}
-	previous, ok, err := latestPublishedManifest(p, targetDir)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
+	if !hasPrevious {
 		return nil, nil
 	}
 	result, err := deleted.Generate(deleted.Options{
@@ -898,6 +1015,27 @@ func softDeletesForRun(p profile.Profile, targetDir string, scanResult scan.Resu
 		return nil, err
 	}
 	return result.Records, nil
+}
+
+func previousManifestEntries(previous control.Manifest, ok bool) map[string]previousFileEvidence {
+	out := map[string]previousFileEvidence{}
+	if !ok {
+		return out
+	}
+	for _, entry := range previous.Entries {
+		if entry.Kind != "file" || !isSHA256Digest(entry.Digest) {
+			continue
+		}
+		out[cleanManifestTarget(targetPath(entry))] = previousFileEvidence{
+			SessionID:  previous.SessionID,
+			ManifestID: previous.ID,
+			Size:       entry.Size,
+			Digest:     entry.Digest,
+			Mode:       entry.Mode,
+			ModTime:    entry.ModTime,
+		}
+	}
+	return out
 }
 
 func latestPublishedManifest(p profile.Profile, targetDir string) (control.Manifest, bool, error) {
@@ -1027,7 +1165,7 @@ func copyRegularToStage(sourcePath, stagePath string, entry scan.Entry) (string,
 	return copyRegularToStageWithPostCopy(sourcePath, stagePath, entry, nil)
 }
 
-func preflightRegularTarget(sourcePath, targetPath string) error {
+func preflightRegularTarget(sourcePath, targetPath string, previous previousFileEvidence) error {
 	sourceInfo, err := os.Stat(sourcePath)
 	if err != nil {
 		return fmt.Errorf("stat source file %q: %w", sourcePath, err)
@@ -1043,8 +1181,27 @@ func preflightRegularTarget(sourcePath, targetPath string) error {
 	if err != nil {
 		return err
 	}
+	if exists && same && previousFileEvidenceComplete(previous) {
+		previousSame, err := targetMatchesPreviousFile(targetPath, previous)
+		if err != nil {
+			return err
+		}
+		if !previousSame {
+			return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", targetPath)
+		}
+	}
 	if exists && !same {
+		previousSame, err := targetMatchesPreviousFile(targetPath, previous)
+		if err != nil {
+			return err
+		}
+		if previousSame {
+			return nil
+		}
 		return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+	}
+	if !exists && previousFileEvidenceComplete(previous) {
+		return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", targetPath)
 	}
 	return nil
 }
@@ -1228,7 +1385,7 @@ func ancestorDirs(root, dir string) []string {
 	return dirs
 }
 
-func publishStaged(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry, existingDirs map[string]existingDirMeta) error {
+func publishStaged(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry, existingDirs map[string]existingDirMeta, mode publishMode) error {
 	defer restoreExistingDirs(existingDirs)
 	for _, entry := range entries {
 		entryTarget := targetPath(entry)
@@ -1262,32 +1419,51 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 			if err != nil {
 				return err
 			}
+			if beforePublishStaged != nil {
+				if err := beforePublishStaged(entry, targetPath); err != nil {
+					return err
+				}
+			}
+			previous := previousEvidenceFromManifestEntry(entry)
 			same, exists, err := targetFileState(targetPath, entry.Size, entry.Digest)
 			if err != nil {
 				return err
 			}
 			if exists {
 				if same {
+					if previousFileEvidenceComplete(previous) && mode != publishModeRecover {
+						previousSame, err := targetMatchesPreviousFile(targetPath, previous)
+						if err != nil {
+							return err
+						}
+						if !previousSame {
+							return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", targetPath)
+						}
+					}
 					if err := removeStagedIfPresent(stagePath, entry.Path); err != nil {
 						return err
 					}
 					continue
 				}
-				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+				previousSame, err := targetMatchesPreviousFile(targetPath, previous)
+				if err != nil {
+					return err
+				}
+				if !previousSame {
+					return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+				}
+				if err := publishManagedReplacement(stagePath, targetPath, entry, previous); err != nil {
+					return err
+				}
+				continue
 			}
-			if err := pathguard.EnsurePlainDirectory(targetDir, filepath.Dir(targetPath), 0o755); err != nil {
-				return fmt.Errorf("publish file parent %q: %w", entry.Path, err)
+			if !previousFileEvidenceComplete(previous) {
+				if err := publishNewStagedFile(stagePath, targetDir, targetPath, entry); err != nil {
+					return err
+				}
+				continue
 			}
-			mode := os.FileMode(entry.Mode)
-			if mode == 0 {
-				mode = 0o644
-			}
-			if err := applyFileMetadata(stagePath, mode, parseManifestModTime(entry.ModTime)); err != nil {
-				return err
-			}
-			if err := durable.PromoteFileNoReplace(stagePath, targetPath); err != nil {
-				return err
-			}
+			return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", targetPath)
 		case "symlink":
 			if err := pathguard.ValidateRelativeSymlinkTarget(entry.SymlinkTarget); err != nil {
 				return fmt.Errorf("publish symlink %q: %w", entry.Path, err)
@@ -1324,6 +1500,20 @@ func removeStagedIfPresent(stagePath string, entryPath string) error {
 		return fmt.Errorf("remove duplicate staged file %q: %w", entryPath, err)
 	}
 	return nil
+}
+
+func publishNewStagedFile(stagePath, targetDir, targetPath string, entry control.ManifestEntry) error {
+	if err := pathguard.EnsurePlainDirectory(targetDir, filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("publish file parent %q: %w", entry.Path, err)
+	}
+	mode := os.FileMode(entry.Mode)
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := applyFileMetadata(stagePath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+		return err
+	}
+	return durable.PromoteFileNoReplace(stagePath, targetPath)
 }
 
 func restoreExistingDirs(dirs map[string]existingDirMeta) {
@@ -1458,6 +1648,105 @@ func targetFileState(path string, size int64, digest string) (same bool, exists 
 	return got == digest, true, nil
 }
 
+func targetMatchesPreviousFile(path string, previous previousFileEvidence) (bool, error) {
+	if !previousFileEvidenceComplete(previous) {
+		return false, nil
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat previous target file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("target path %q already exists and is not a regular file; refusing to overwrite", path)
+	}
+	if info.Size() != previous.Size {
+		return false, nil
+	}
+	if previous.Mode != 0 && uint32(info.Mode().Perm()) != previous.Mode {
+		return false, nil
+	}
+	if previous.ModTime != "" {
+		previousModTime := parseManifestModTime(previous.ModTime)
+		if previousModTime.IsZero() || !info.ModTime().Equal(previousModTime) {
+			return false, nil
+		}
+	}
+	got, err := digestFile(path)
+	if err != nil {
+		return false, err
+	}
+	return got == previous.Digest, nil
+}
+
+func previousFileEvidenceComplete(previous previousFileEvidence) bool {
+	return strings.TrimSpace(previous.SessionID) != "" &&
+		strings.TrimSpace(previous.ManifestID) != "" &&
+		isSHA256Digest(previous.Digest) &&
+		previous.Size >= 0
+}
+
+func isSHA256Digest(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	hexPart := strings.TrimPrefix(value, prefix)
+	if len(hexPart) != 64 {
+		return false
+	}
+	for _, r := range hexPart {
+		if ('0' <= r && r <= '9') || ('a' <= r && r <= 'f') || ('A' <= r && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func previousEvidenceFromManifestEntry(entry control.ManifestEntry) previousFileEvidence {
+	return previousFileEvidence{
+		SessionID:  entry.PreviousSessionID,
+		ManifestID: entry.PreviousManifestID,
+		Size:       entry.PreviousSize,
+		Digest:     entry.PreviousDigest,
+		Mode:       entry.PreviousMode,
+		ModTime:    entry.PreviousModTime,
+	}
+}
+
+func publishManagedReplacement(stagePath, finalPath string, entry control.ManifestEntry, previous previousFileEvidence) error {
+	previousSame, err := targetMatchesPreviousFile(finalPath, previous)
+	if err != nil {
+		return err
+	}
+	if !previousSame {
+		return fmt.Errorf("%w: target file %q no longer matches previous manifest evidence", errManagedReplaceTargetChanged, finalPath)
+	}
+	mode := os.FileMode(entry.Mode)
+	if mode == 0 {
+		mode = 0o644
+	}
+	if err := applyFileMetadata(stagePath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+		return err
+	}
+	if beforeManagedReplacePromote != nil {
+		if err := beforeManagedReplacePromote(entry, finalPath); err != nil {
+			return err
+		}
+	}
+	previousSame, err = targetMatchesPreviousFile(finalPath, previous)
+	if err != nil {
+		return err
+	}
+	if !previousSame {
+		return fmt.Errorf("%w: target file %q changed before managed replacement", errManagedReplaceTargetChanged, finalPath)
+	}
+	return durable.PromoteFile(stagePath, finalPath)
+}
+
 func digestFile(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -1512,6 +1801,19 @@ func manifestEntry(entry scan.Entry, kind string, digest string) control.Manifes
 		TargetPath:    entry.Path,
 		SymlinkTarget: entry.SymlinkTarget,
 	}
+}
+
+func manifestEntryWithPrevious(entry scan.Entry, kind string, digest string, previous previousFileEvidence) control.ManifestEntry {
+	out := manifestEntry(entry, kind, digest)
+	if previousFileEvidenceComplete(previous) {
+		out.PreviousSessionID = previous.SessionID
+		out.PreviousManifestID = previous.ManifestID
+		out.PreviousSize = previous.Size
+		out.PreviousDigest = previous.Digest
+		out.PreviousMode = previous.Mode
+		out.PreviousModTime = previous.ModTime
+	}
+	return out
 }
 
 func writeWarningArtifacts(targetDir string, sessionID string, now time.Time, warnings []audit.Record) error {

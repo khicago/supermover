@@ -72,14 +72,20 @@ type Manifest struct {
 }
 
 type ManifestEntry struct {
-	Path          string `json:"path"`
-	Kind          string `json:"kind"`
-	Mode          uint32 `json:"mode,omitempty"`
-	Size          int64  `json:"size,omitempty"`
-	ModTime       string `json:"mod_time,omitempty"`
-	Digest        string `json:"digest,omitempty"`
-	TargetPath    string `json:"target_path,omitempty"`
-	SymlinkTarget string `json:"symlink_target,omitempty"`
+	Path               string `json:"path"`
+	Kind               string `json:"kind"`
+	Mode               uint32 `json:"mode,omitempty"`
+	Size               int64  `json:"size,omitempty"`
+	ModTime            string `json:"mod_time,omitempty"`
+	Digest             string `json:"digest,omitempty"`
+	TargetPath         string `json:"target_path,omitempty"`
+	SymlinkTarget      string `json:"symlink_target,omitempty"`
+	PreviousSessionID  string `json:"previous_session_id,omitempty"`
+	PreviousManifestID string `json:"previous_manifest_id,omitempty"`
+	PreviousSize       int64  `json:"previous_size,omitempty"`
+	PreviousDigest     string `json:"previous_digest,omitempty"`
+	PreviousMode       uint32 `json:"previous_mode,omitempty"`
+	PreviousModTime    string `json:"previous_mod_time,omitempty"`
 }
 
 type Warning struct {
@@ -406,8 +412,52 @@ func (d Manifest) validateWithOptions(opts manifestValidationOptions) error {
 		if entry.Size < 0 {
 			errs = append(errs, fmt.Errorf("entries[%d].size cannot be negative", i))
 		}
+		if entry.PreviousSize < 0 {
+			errs = append(errs, fmt.Errorf("entries[%d].previous_size cannot be negative", i))
+		}
+		previousCoreFields := []string{
+			entry.PreviousSessionID,
+			entry.PreviousManifestID,
+			entry.PreviousDigest,
+		}
+		previousPresent := 0
+		for _, value := range previousCoreFields {
+			if strings.TrimSpace(value) != "" {
+				previousPresent++
+			}
+		}
+		if previousPresent > 0 && previousPresent != len(previousCoreFields) {
+			errs = append(errs, fmt.Errorf("entries[%d].previous evidence must include session_id, manifest_id, and digest together", i))
+		}
+		if previousPresent > 0 && entry.Kind != "file" {
+			errs = append(errs, fmt.Errorf("entries[%d].previous evidence is only valid for file entries", i))
+		}
+		if previousPresent == 0 && (entry.PreviousSize > 0 || entry.PreviousMode > 0 || strings.TrimSpace(entry.PreviousModTime) != "") {
+			errs = append(errs, fmt.Errorf("entries[%d].previous metadata requires previous evidence", i))
+		}
+		if strings.TrimSpace(entry.PreviousDigest) != "" && !isSHA256Digest(entry.PreviousDigest) {
+			errs = append(errs, fmt.Errorf("entries[%d].previous_digest must be sha256 hex", i))
+		}
 	}
 	return errors.Join(errs...)
+}
+
+func isSHA256Digest(value string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	hexPart := strings.TrimPrefix(value, prefix)
+	if len(hexPart) != 64 {
+		return false
+	}
+	for _, r := range hexPart {
+		if ('0' <= r && r <= '9') || ('a' <= r && r <= 'f') || ('A' <= r && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (d Warning) Validate() error {

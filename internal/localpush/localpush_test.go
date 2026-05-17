@@ -1,8 +1,10 @@
 package localpush
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
 	"github.com/khicago/supermover/internal/transaction"
+	"github.com/khicago/supermover/internal/verify"
 )
 
 func TestRunCopiesFilesAndWritesControlArtifacts(t *testing.T) {
@@ -463,7 +466,7 @@ func TestRunRejectsNormalizedReservedControlPlaneTargetPathBeforePublish(t *test
 	}
 	mustWriteFile(t, stagePath, "payload", 0o644)
 
-	if err := preflightPublishPlan(layout, target, "session-test", entries); err == nil || !strings.Contains(err.Error(), "reserved control") {
+	if err := preflightPublishPlan(layout, target, "session-test", entries, publishModeRun); err == nil || !strings.Contains(err.Error(), "reserved control") {
 		t.Fatalf("preflightPublishPlan(normalized reserved path) error = %v, want reserved control error", err)
 	}
 	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "forged", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
@@ -490,7 +493,7 @@ func TestPreflightPublishPlanRejectsFileTargetWithDescendant(t *testing.T) {
 	mustWriteFile(t, first, "a", 0o644)
 	mustWriteFile(t, second, "b", 0o644)
 
-	if err := preflightPublishPlan(layout, target, "session-test", entries); err == nil || !strings.Contains(err.Error(), "non-directory") {
+	if err := preflightPublishPlan(layout, target, "session-test", entries, publishModeRun); err == nil || !strings.Contains(err.Error(), "non-directory") {
 		t.Fatalf("preflightPublishPlan(file target with descendant) error = %v, want non-directory target error", err)
 	}
 }
@@ -1258,6 +1261,515 @@ func TestRecoverRejectsStagedSessionWithMismatchedProfileSnapshot(t *testing.T) 
 	}
 }
 
+func TestRunReplacesChangedManagedTargetFile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	oldTime := time.Date(2026, 5, 16, 1, 2, 3, 0, time.UTC)
+	newTime := time.Date(2026, 5, 16, 4, 5, 6, 0, time.UTC)
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	if err := os.Chtimes(filepath.Join(source, "file.txt"), oldTime, oldTime); err != nil {
+		t.Fatalf("os.Chtimes(source old file) error = %v, want nil", err)
+	}
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	previousManifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-one")
+	previousEntry := manifestEntryByPath(t, previousManifest, "file.txt")
+	if previousEntry.Digest != testDigest("old") {
+		t.Fatalf("session-one digest = %q, want digest for old content", previousEntry.Digest)
+	}
+
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new content", 0o600)
+	if err := os.Chtimes(filepath.Join(source, "file.txt"), newTime, newTime); err != nil {
+		t.Fatalf("os.Chtimes(source new file) error = %v, want nil", err)
+	}
+	preflight, err := Preflight(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Preflight(changed managed file) error = %v, want nil", err)
+	}
+	if preflight.Copied != 1 {
+		t.Fatalf("Preflight(changed managed file).Copied = %d, want 1", preflight.Copied)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "old" {
+		t.Fatalf("target after Preflight = (%q, %v), want old", string(got), err)
+	}
+
+	got, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 4, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("second Run(changed managed file) error = %v, want nil", err)
+	}
+	if got.Copied != 1 {
+		t.Fatalf("second Run(changed managed file).Copied = %d, want 1", got.Copied)
+	}
+	bytes, err := os.ReadFile(filepath.Join(target, "file.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(target changed file) error = %v, want nil", err)
+	}
+	if string(bytes) != "new content" {
+		t.Fatalf("target changed file = %q, want new content", string(bytes))
+	}
+	info, err := os.Stat(filepath.Join(target, "file.txt"))
+	if err != nil {
+		t.Fatalf("os.Stat(target changed file) error = %v, want nil", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("target changed file mode = %v, want 0600", info.Mode().Perm())
+	}
+	if !info.ModTime().Equal(newTime) {
+		t.Fatalf("target changed file mtime = %v, want %v", info.ModTime(), newTime)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-two")
+	entry := manifestEntryByPath(t, manifest, "file.txt")
+	if entry.Size != int64(len("new content")) || !strings.HasPrefix(entry.Digest, "sha256:") {
+		t.Fatalf("session-two manifest entry = %#v, want new size and digest", entry)
+	}
+	if entry.Digest != testDigest("new content") {
+		t.Fatalf("session-two digest = %q, want digest for new content", entry.Digest)
+	}
+	if entry.PreviousSessionID != "session-one" || entry.PreviousManifestID != "manifest-session-one" || !strings.HasPrefix(entry.PreviousDigest, "sha256:") {
+		t.Fatalf("session-two manifest entry = %#v, want previous evidence", entry)
+	}
+	if entry.PreviousSize != previousEntry.Size || entry.PreviousDigest != previousEntry.Digest || entry.PreviousMode != previousEntry.Mode || entry.PreviousModTime != previousEntry.ModTime {
+		t.Fatalf("session-two previous evidence = %#v, want previous entry %#v", entry, previousEntry)
+	}
+	if entry.Digest == entry.PreviousDigest {
+		t.Fatalf("session-two digest = previous digest %q, want changed file evidence", entry.Digest)
+	}
+	verifyReport, err := verify.BuildReport(verify.Options{TargetRoot: target, SessionID: "session-two", ProfileID: p.ProfileID, TargetID: p.Target.TargetID})
+	if err != nil {
+		t.Fatalf("verify.BuildReport(session-two) error = %v, want nil", err)
+	}
+	if len(verifyReport.Findings) != 0 || verifyReport.Summary.FilesVerified != 1 {
+		t.Fatalf("verify.BuildReport(session-two) findings=%#v summary=%+v, want one verified file", verifyReport.Findings, verifyReport.Summary)
+	}
+}
+
+func TestRunReplacesChangedHiddenManagedTargetFile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, ".env"), "TOKEN=old", 0o600)
+	mustWriteFile(t, filepath.Join(source, ".config", "settings.json"), `{"mode":"old"}`, 0o640)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run(hidden file) error = %v, want nil", err)
+	}
+
+	mustReplaceFile(t, filepath.Join(source, ".env"), "TOKEN=new", 0o600)
+	mustReplaceFile(t, filepath.Join(source, ".config", "settings.json"), `{"mode":"new"}`, 0o640)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("second Run(hidden changed file) error = %v, want nil", err)
+	}
+	got, err := os.ReadFile(filepath.Join(target, ".env"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(target hidden file) error = %v, want nil", err)
+	}
+	if string(got) != "TOKEN=new" {
+		t.Fatalf("target hidden file = %q, want TOKEN=new", string(got))
+	}
+	got, err = os.ReadFile(filepath.Join(target, ".config", "settings.json"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(target hidden directory child) error = %v, want nil", err)
+	}
+	if string(got) != `{"mode":"new"}` {
+		t.Fatalf("target hidden directory child = %q, want new settings", string(got))
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-two")
+	entry := manifestEntryByPath(t, manifest, ".config/settings.json")
+	if entry.PreviousSessionID != "session-one" || !strings.HasPrefix(entry.PreviousDigest, "sha256:") {
+		t.Fatalf("hidden directory child manifest entry = %#v, want previous evidence", entry)
+	}
+}
+
+func TestPreflightAndRunRefuseChangedManagedFileAfterTargetDrift(t *testing.T) {
+	tests := []struct {
+		name  string
+		drift func(t *testing.T, path string)
+		want  string
+	}{
+		{name: "content", drift: func(t *testing.T, path string) {
+			t.Helper()
+			mustReplaceFile(t, path, "manual target edit", 0o600)
+		}, want: "manual target edit"},
+		{name: "delete", drift: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Remove(path); err != nil {
+				t.Fatalf("os.Remove(%q) error = %v, want nil", path, err)
+			}
+		}},
+		{name: "mode", drift: func(t *testing.T, path string) {
+			t.Helper()
+			if err := os.Chmod(path, 0o600); err != nil {
+				t.Fatalf("os.Chmod(%q) error = %v, want nil", path, err)
+			}
+		}, want: "old"},
+		{name: "mtime", drift: func(t *testing.T, path string) {
+			t.Helper()
+			driftTime := time.Date(2026, 5, 16, 9, 0, 0, 0, time.UTC)
+			if err := os.Chtimes(path, driftTime, driftTime); err != nil {
+				t.Fatalf("os.Chtimes(%q) error = %v, want nil", path, err)
+			}
+		}, want: "old"},
+		{name: "external replacement", drift: func(t *testing.T, path string) {
+			t.Helper()
+			mustReplaceFile(t, path, "new source", 0o644)
+		}, want: "new source"},
+	}
+	pushes := []struct {
+		name string
+		push func(Options) (Result, error)
+	}{
+		{name: "preflight", push: Preflight},
+		{name: "run", push: Run},
+	}
+
+	for _, drift := range tests {
+		for _, push := range pushes {
+			t.Run(drift.name+"/"+push.name, func(t *testing.T) {
+				dir := t.TempDir()
+				source := filepath.Join(dir, "source")
+				target := filepath.Join(dir, "target")
+				mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+				oldTime := time.Date(2026, 5, 16, 1, 2, 3, 0, time.UTC)
+				if err := os.Chtimes(filepath.Join(source, "file.txt"), oldTime, oldTime); err != nil {
+					t.Fatalf("os.Chtimes(source old file) error = %v, want nil", err)
+				}
+				p := profile.NewDefault("profile-local", "Local profile", source, target)
+				if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+					t.Fatalf("first Run(%s/%s) error = %v, want nil", drift.name, push.name, err)
+				}
+				drift.drift(t, filepath.Join(target, "file.txt"))
+				mustReplaceFile(t, filepath.Join(source, "file.txt"), "new source", 0o644)
+
+				_, err := push.push(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+				if err == nil || !strings.Contains(err.Error(), "refusing") {
+					t.Fatalf("%s(changed source with target drift %s) error = %v, want refusal", push.name, drift.name, err)
+				}
+				got, err := os.ReadFile(filepath.Join(target, "file.txt"))
+				if drift.want == "" {
+					if !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("os.ReadFile(target after failed %s/%s) error = %v, want os.ErrNotExist", drift.name, push.name, err)
+					}
+				} else if err != nil || string(got) != drift.want {
+					t.Fatalf("target after failed %s/%s = (%q, %v), want %q", drift.name, push.name, string(got), err, drift.want)
+				}
+				if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "session-two", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("os.Stat(receipt after failed %s/%s) error = %v, want os.ErrNotExist", drift.name, push.name, err)
+				}
+			})
+		}
+	}
+}
+
+func TestRunRefusesManagedReplacementWhenTargetChangesBeforePublish(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new source", 0o644)
+
+	triggered := false
+	beforePublishStaged = func(entry control.ManifestEntry, targetPath string) error {
+		if entry.Path != "file.txt" || triggered {
+			return nil
+		}
+		triggered = true
+		mustReplaceFile(t, targetPath, "manual target edit", 0o644)
+		return nil
+	}
+	t.Cleanup(func() { beforePublishStaged = nil })
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	beforePublishStaged = nil
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("Run(changed target before publish) error = %v, want overwrite refusal", err)
+	}
+	if !triggered {
+		t.Fatalf("beforePublishStaged was not triggered")
+	}
+	got, err := os.ReadFile(filepath.Join(target, "file.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(target after refused publish) error = %v, want nil", err)
+	}
+	if string(got) != "manual target edit" {
+		t.Fatalf("target after refused publish = %q, want manual target edit", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "session-two", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(receipt after refused publish) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRunRefusesManagedReplacementWhenTargetChangesAfterFirstPreviousCheck(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new source", 0o644)
+
+	triggered := false
+	beforeManagedReplacePromote = func(entry control.ManifestEntry, targetPath string) error {
+		if entry.Path != "file.txt" || triggered {
+			return nil
+		}
+		triggered = true
+		mustReplaceFile(t, targetPath, "manual target edit", 0o644)
+		return nil
+	}
+	t.Cleanup(func() { beforeManagedReplacePromote = nil })
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	beforeManagedReplacePromote = nil
+	if err == nil || !errors.Is(err, errManagedReplaceTargetChanged) {
+		t.Fatalf("Run(target changed after managed replace check) error = %v, want %v", err, errManagedReplaceTargetChanged)
+	}
+	if !triggered {
+		t.Fatalf("beforeManagedReplacePromote was not triggered")
+	}
+	got, err := os.ReadFile(filepath.Join(target, "file.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(target after refused managed replace) error = %v, want nil", err)
+	}
+	if string(got) != "manual target edit" {
+		t.Fatalf("target after refused managed replace = %q, want manual target edit", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "session-two", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(receipt after refused managed replace) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestPushRefusesChangedFileWhenPreviousManifestBelongsToDifferentTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		push func(Options) (Result, error)
+	}{
+		{name: "preflight", push: Preflight},
+		{name: "run", push: Run},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			sourceA := filepath.Join(dir, "source-a")
+			sourceB := filepath.Join(dir, "source-b")
+			target := filepath.Join(dir, "target")
+			mustWriteFile(t, filepath.Join(sourceA, "file.txt"), "old", 0o644)
+			profileA := profile.NewDefault("profile-a", "Profile A", sourceA, target)
+			if _, err := Run(Options{Profile: profileA, TargetDir: target, SessionID: "session-a", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+				t.Fatalf("Run(profile-a) error = %v, want nil", err)
+			}
+			mustWriteFile(t, filepath.Join(sourceB, "file.txt"), "new", 0o644)
+			profileB := profile.NewDefault("profile-b", "Profile B", sourceB, target)
+
+			_, err := tt.push(Options{Profile: profileB, TargetDir: target, SessionID: "session-b", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+			if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+				t.Fatalf("%s(profile-b changed file) error = %v, want overwrite refusal without profile-b ownership proof", tt.name, err)
+			}
+			got, err := os.ReadFile(filepath.Join(target, "file.txt"))
+			if err != nil {
+				t.Fatalf("os.ReadFile(target after profile-b failure) error = %v, want nil", err)
+			}
+			if string(got) != "old" {
+				t.Fatalf("target after profile-b %s failure = %q, want old", tt.name, string(got))
+			}
+			if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "session-b", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("os.Stat(receipt after profile-b %s failure) error = %v, want os.ErrNotExist", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestRecoverPublishesStagedManagedReplacement(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new", 0o644)
+
+	triggered := false
+	beforePublishStaged = func(entry control.ManifestEntry, _ string) error {
+		if entry.Path != "file.txt" || triggered {
+			return nil
+		}
+		triggered = true
+		return errors.New("simulated interruption before publish")
+	}
+	t.Cleanup(func() { beforePublishStaged = nil })
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	beforePublishStaged = nil
+	if err == nil || !strings.Contains(err.Error(), "simulated interruption") {
+		t.Fatalf("second Run(simulated interruption) error = %v, want simulated interruption", err)
+	}
+	if !triggered {
+		t.Fatalf("beforePublishStaged was not triggered")
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(target)).RecordPath("session-two"))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(session-two) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateStaged {
+		t.Fatalf("session-two state after interrupted publish = %q, want %q", record.State, transaction.StateStaged)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "old" {
+		t.Fatalf("target after interrupted publish = (%q, %v), want old", string(got), err)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-two")
+	entry := manifestEntryByPath(t, manifest, "file.txt")
+	if entry.PreviousSessionID != "session-one" || entry.PreviousManifestID != "manifest-session-one" || !strings.HasPrefix(entry.PreviousDigest, "sha256:") {
+		t.Fatalf("interrupted manifest entry = %#v, want previous evidence for recovery", entry)
+	}
+
+	recovered, err := Recover(RecoverOptions{
+		Profile:   p,
+		TargetDir: target,
+		SessionID: "session-two",
+		Now:       time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Recover(staged managed replacement) error = %v, want nil", err)
+	}
+	if recovered.Recovered != 1 || recovered.RepairNeeded != 0 {
+		t.Fatalf("Recover(staged managed replacement) result = %+v, want one recovered session", recovered)
+	}
+	got, err := os.ReadFile(filepath.Join(target, "file.txt"))
+	if err != nil {
+		t.Fatalf("os.ReadFile(target after recover) error = %v, want nil", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("target after recover = %q, want new", string(got))
+	}
+	finalRecord, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(target)).RecordPath("session-two"))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(session-two final) error = %v, want nil", err)
+	}
+	if finalRecord.State != transaction.StatePublished {
+		t.Fatalf("session-two state after recover = %q, want %q", finalRecord.State, transaction.StatePublished)
+	}
+}
+
+func TestRecoverRefusesStagedManagedReplacementAfterTargetDrift(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new", 0o644)
+
+	beforePublishStaged = func(entry control.ManifestEntry, _ string) error {
+		if entry.Path == "file.txt" {
+			return errors.New("simulated interruption before publish")
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforePublishStaged = nil })
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	beforePublishStaged = nil
+	if err == nil || !strings.Contains(err.Error(), "simulated interruption") {
+		t.Fatalf("second Run(simulated interruption) error = %v, want simulated interruption", err)
+	}
+	mustReplaceFile(t, filepath.Join(target, "file.txt"), "manual target edit", 0o644)
+
+	recovered, err := Recover(RecoverOptions{
+		Profile:   p,
+		TargetDir: target,
+		SessionID: "session-two",
+		Now:       time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Recover(staged managed replacement after target drift) error = %v, want nil result with needs_repair", err)
+	}
+	if recovered.RepairNeeded != 1 || recovered.Recovered != 0 {
+		t.Fatalf("Recover(staged managed replacement after target drift) result = %+v, want needs_repair", recovered)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "manual target edit" {
+		t.Fatalf("target after refused recover = (%q, %v), want manual target edit", string(got), err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(target)).RecordPath("session-two"))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(session-two) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair {
+		t.Fatalf("session-two state after refused recover = %q, want %q", record.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestRecoverRejectsStagedManagedReplacementWithForgedPreviousManifestID(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new", 0o644)
+
+	beforePublishStaged = func(entry control.ManifestEntry, _ string) error {
+		if entry.Path == "file.txt" {
+			return errors.New("simulated interruption before publish")
+		}
+		return nil
+	}
+	t.Cleanup(func() { beforePublishStaged = nil })
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	beforePublishStaged = nil
+	if err == nil || !strings.Contains(err.Error(), "simulated interruption") {
+		t.Fatalf("second Run(simulated interruption) error = %v, want simulated interruption", err)
+	}
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "session-two")
+	if err != nil {
+		t.Fatalf("control.Path(session-two manifest) error = %v, want nil", err)
+	}
+	manifest := readControlDoc[control.Manifest](t, target, control.ArtifactManifest, "session-two")
+	for i := range manifest.Entries {
+		if manifest.Entries[i].Path == "file.txt" {
+			manifest.Entries[i].PreviousManifestID = "manifest-forged"
+		}
+	}
+	if err := control.WriteFile(manifestPath, manifest); err != nil {
+		t.Fatalf("control.WriteFile(forged manifest) error = %v, want nil", err)
+	}
+
+	recovered, err := Recover(RecoverOptions{
+		Profile:   p,
+		TargetDir: target,
+		SessionID: "session-two",
+		Now:       time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Recover(forged previous evidence) error = %v, want nil result with needs_repair", err)
+	}
+	if recovered.RepairNeeded != 1 || recovered.Recovered != 0 {
+		t.Fatalf("Recover(forged previous evidence) result = %+v, want needs_repair", recovered)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "old" {
+		t.Fatalf("target after forged evidence recover = (%q, %v), want old", string(got), err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(target)).RecordPath("session-two"))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(session-two) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "previous manifest") {
+		t.Fatalf("session-two state after forged evidence recover = %#v, want needs_repair with previous manifest note", record)
+	}
+}
+
 func TestRunDoesNotMutateExistingTargetDirectoryMetadata(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -1421,6 +1933,17 @@ func manifestContainsPath(manifest control.Manifest, path string) bool {
 	return false
 }
 
+func manifestEntryByPath(t *testing.T, manifest control.Manifest, path string) control.ManifestEntry {
+	t.Helper()
+	for _, entry := range manifest.Entries {
+		if entry.Path == path {
+			return entry
+		}
+	}
+	t.Fatalf("manifest entries = %#v, want path %q", manifest.Entries, path)
+	return control.ManifestEntry{}
+}
+
 func readOnlyWarning(t *testing.T, target string) control.Warning {
 	t.Helper()
 	warningDir := filepath.Join(target, control.DirName, "warnings")
@@ -1522,4 +2045,17 @@ func mustWriteFile(t *testing.T, path string, content string, mode os.FileMode) 
 	if err := os.WriteFile(path, []byte(content), mode); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
 	}
+}
+
+func mustReplaceFile(t *testing.T, path string, content string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Remove(%q) error = %v, want nil", path, err)
+	}
+	mustWriteFile(t, path, content, mode)
+}
+
+func testDigest(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return "sha256:" + fmt.Sprintf("%x", sum[:])
 }
