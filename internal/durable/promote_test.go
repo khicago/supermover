@@ -254,11 +254,18 @@ func TestPromoteFileNoReplaceReportsTempCleanupFailure(t *testing.T) {
 	}
 	tempPath := filepath.Join(tempDir, "file.tmp")
 	probePath := filepath.Join(tempDir, "probe.tmp")
+	linkProbePath := filepath.Join(finalDir, "link-probe.tmp")
 	finalPath := filepath.Join(finalDir, "file.txt")
 	for _, path := range []string{tempPath, probePath} {
 		if err := os.WriteFile(path, []byte("payload"), 0o644); err != nil {
 			t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
 		}
+	}
+	if err := os.Link(tempPath, linkProbePath); err != nil {
+		t.Skipf("hardlink from temp dir to final dir is unavailable: %v", err)
+	}
+	if err := os.Remove(linkProbePath); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v, want nil", linkProbePath, err)
 	}
 	if err := os.Chmod(tempDir, 0o555); err != nil {
 		t.Fatalf("os.Chmod(%q) error = %v, want nil", tempDir, err)
