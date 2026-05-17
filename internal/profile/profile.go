@@ -5,11 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
+	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/transport"
 )
 
 const CurrentVersion = 1
@@ -56,6 +62,7 @@ type Profile struct {
 	MetadataPolicy       MetadataPolicy    `json:"metadata_policy"`
 	PrivacyPolicy        PrivacyPolicy     `json:"privacy_policy"`
 	Target               TargetIdentity    `json:"target"`
+	Network              *NetworkConfig    `json:"network,omitempty"`
 	AgentKnowledge       AgentKnowledge    `json:"agent_knowledge"`
 	SupplementalMetadata map[string]string `json:"supplemental_metadata,omitempty"`
 }
@@ -103,6 +110,16 @@ type TargetIdentity struct {
 	DevicePublicKey  string `json:"device_public_key,omitempty"`
 	PairingReceiptID string `json:"pairing_receipt_id,omitempty"`
 	PairedAt         string `json:"paired_at,omitempty"`
+}
+
+type NetworkConfig struct {
+	ReceiverURL      string         `json:"receiver_url,omitempty"`
+	LocalTLSIdentity TLSIdentityRef `json:"local_tls_identity,omitempty"`
+}
+
+type TLSIdentityRef struct {
+	CertificatePath string `json:"certificate_path,omitempty"`
+	PrivateKeyPath  string `json:"private_key_path,omitempty"`
 }
 
 type AgentKnowledge struct {
@@ -165,6 +182,12 @@ func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 	if p.DeletePolicy.Mode == DeleteModePrune && !p.DeletePolicy.RequireReview {
 		errs = append(errs, errors.New("delete_policy.require_review must be true when mode is prune"))
 	}
+	if p.DeletePolicy.Mode == DeleteModePrune && !p.DeletePolicy.AllowPhysicalPrune {
+		errs = append(errs, errors.New("delete_policy.allow_physical_prune must be true when mode is prune"))
+	}
+	if p.DeletePolicy.AllowPhysicalPrune && p.DeletePolicy.Mode != DeleteModePrune {
+		errs = append(errs, errors.New("delete_policy.allow_physical_prune requires delete_policy.mode prune"))
+	}
 	if p.DeletePolicy.RetentionDays < 0 {
 		errs = append(errs, errors.New("delete_policy.retention_days cannot be negative"))
 	}
@@ -197,6 +220,9 @@ func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 		if p.PrivacyPolicy.BatchMaxBytes == 0 || p.PrivacyPolicy.BatchMaxCount == 0 {
 			errs = append(errs, errors.New("privacy_policy batching is required for traffic level 2"))
 		}
+		if p.PrivacyPolicy.JitterBudgetMillis == 0 {
+			errs = append(errs, errors.New("privacy_policy.jitter_budget_millis is required for traffic level 2"))
+		}
 		if !p.PrivacyPolicy.DiscoveryLowInfo {
 			errs = append(errs, errors.New("privacy_policy.discovery_low_info must be true for traffic level 2"))
 		}
@@ -204,11 +230,38 @@ func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 	if strings.TrimSpace(p.Target.TargetID) == "" {
 		errs = append(errs, errors.New("target.target_id is required"))
 	}
+	if strings.TrimSpace(p.Target.DevicePublicKey) != "" {
+		if err := transport.DeviceID(p.Target.DevicePublicKey).Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("target.device_public_key is invalid: %w", err))
+		}
+	}
+	if strings.TrimSpace(p.Target.PairingReceiptID) != "" {
+		if err := control.ValidateArtifactID(p.Target.PairingReceiptID); err != nil {
+			errs = append(errs, fmt.Errorf("target.pairing_receipt_id is unsafe: %w", err))
+		}
+	}
+	if strings.TrimSpace(p.Target.PairedAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, p.Target.PairedAt); err != nil {
+			errs = append(errs, fmt.Errorf("target.paired_at must be RFC3339 timestamp: %w", err))
+		}
+	}
+	if strings.TrimSpace(p.Target.DevicePublicKey) == "" && (strings.TrimSpace(p.Target.PairingReceiptID) != "" || strings.TrimSpace(p.Target.PairedAt) != "") {
+		errs = append(errs, errors.New("target.device_public_key is required when pairing_receipt_id or paired_at is set"))
+	}
+	if strings.TrimSpace(p.Target.PairingReceiptID) == "" && (strings.TrimSpace(p.Target.DevicePublicKey) != "" || strings.TrimSpace(p.Target.PairedAt) != "") {
+		errs = append(errs, errors.New("target.pairing_receipt_id is required when device_public_key or paired_at is set"))
+	}
+	if strings.TrimSpace(p.Target.PairedAt) == "" && (strings.TrimSpace(p.Target.DevicePublicKey) != "" || strings.TrimSpace(p.Target.PairingReceiptID) != "") {
+		errs = append(errs, errors.New("target.paired_at is required when device_public_key or pairing_receipt_id is set"))
+	}
 	if strings.TrimSpace(p.Target.LocalPath) != "" {
 		cleanLocalPath := filepath.Clean(p.Target.LocalPath)
 		if filepath.Clean(p.Target.TargetID) == cleanLocalPath && !opts.allowTargetIDLocalPathEquality {
 			errs = append(errs, errors.New("target.target_id must not equal target.local_path"))
 		}
+	}
+	if err := p.networkConfig().Validate(); err != nil {
+		errs = append(errs, err)
 	}
 	for i, category := range p.AgentKnowledge.Categories {
 		if strings.TrimSpace(category.Name) == "" {
@@ -217,6 +270,160 @@ func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 	}
 
 	return errors.Join(errs...)
+}
+
+func (p Profile) ValidateNetworkClientMaterial() error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	network := p.networkConfig()
+	if strings.TrimSpace(network.ReceiverURL) == "" {
+		return errors.New("network.receiver_url is required for network client transfer")
+	}
+	if !network.LocalTLSIdentity.Configured() {
+		return errors.New("network.local_tls_identity is required for network client transfer")
+	}
+	return nil
+}
+
+func (p Profile) ValidateNetworkServerMaterial() error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	network := p.networkConfig()
+	if strings.TrimSpace(network.ReceiverURL) == "" {
+		return errors.New("network.receiver_url is required for network receiver serve")
+	}
+	if !network.LocalTLSIdentity.Configured() {
+		return errors.New("network.local_tls_identity is required for network receiver serve")
+	}
+	return nil
+}
+
+func (p Profile) networkConfig() NetworkConfig {
+	if p.Network == nil {
+		return NetworkConfig{}
+	}
+	return *p.Network
+}
+
+func (n NetworkConfig) Validate() error {
+	var errs []error
+	if strings.TrimSpace(n.ReceiverURL) != "" {
+		if err := validateReceiverURL(n.ReceiverURL); err != nil {
+			errs = append(errs, fmt.Errorf("network.receiver_url is invalid: %w", err))
+		}
+	}
+	if err := n.LocalTLSIdentity.Validate("network.local_tls_identity"); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+func (r TLSIdentityRef) Configured() bool {
+	return strings.TrimSpace(r.CertificatePath) != "" && strings.TrimSpace(r.PrivateKeyPath) != ""
+}
+
+func (r TLSIdentityRef) Validate(prefix string) error {
+	var errs []error
+	cert := strings.TrimSpace(r.CertificatePath)
+	key := strings.TrimSpace(r.PrivateKeyPath)
+	if cert == "" && key == "" {
+		return nil
+	}
+	if cert == "" {
+		errs = append(errs, fmt.Errorf("%s.certificate_path is required when private_key_path is set", prefix))
+	}
+	if key == "" {
+		errs = append(errs, fmt.Errorf("%s.private_key_path is required when certificate_path is set", prefix))
+	}
+	if cert != "" {
+		if err := validateLocalIdentityPath(r.CertificatePath); err != nil {
+			errs = append(errs, fmt.Errorf("%s.certificate_path is invalid: %w", prefix, err))
+		}
+	}
+	if key != "" {
+		if err := validateLocalIdentityPath(r.PrivateKeyPath); err != nil {
+			errs = append(errs, fmt.Errorf("%s.private_key_path is invalid: %w", prefix, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateReceiverURL(raw string) error {
+	if strings.TrimSpace(raw) != raw {
+		return errors.New("must not contain leading or trailing whitespace")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "https" {
+		return errors.New("scheme must be https")
+	}
+	if parsed.User != nil {
+		return errors.New("userinfo is not allowed")
+	}
+	if parsed.Host == "" {
+		return errors.New("host is required")
+	}
+	if parsed.Port() == "" {
+		return errors.New("explicit port is required")
+	}
+	port, err := strconv.Atoi(parsed.Port())
+	if err != nil || port < 1 || port > 65535 {
+		return errors.New("port must be between 1 and 65535")
+	}
+	if net.ParseIP(parsed.Hostname()) == nil {
+		return errors.New("host must be an IP address")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return errors.New("path must be empty or /")
+	}
+	if parsed.RawQuery != "" {
+		return errors.New("query is not allowed")
+	}
+	if parsed.Fragment != "" {
+		return errors.New("fragment is not allowed")
+	}
+	return nil
+}
+
+func validateLocalIdentityPath(path string) error {
+	if strings.TrimSpace(path) != path {
+		return errors.New("must not contain leading or trailing whitespace")
+	}
+	if strings.TrimSpace(path) == "" {
+		return errors.New("path is required")
+	}
+	if strings.ContainsRune(path, '\x00') {
+		return errors.New("must not contain NUL")
+	}
+	if strings.Contains(path, `\`) {
+		return errors.New("must not contain backslash path separators")
+	}
+	if !filepath.IsAbs(path) {
+		return errors.New("must be absolute")
+	}
+	if strings.HasSuffix(filepath.ToSlash(path), "/") {
+		return errors.New("must name a file")
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(path), "/") {
+		if segment == ".." {
+			return errors.New("must not contain parent traversal")
+		}
+	}
+	clean := filepath.Clean(path)
+	if clean == "." || filepath.Dir(clean) == clean {
+		return errors.New("path must name a file")
+	}
+	for _, segment := range strings.Split(filepath.ToSlash(clean), "/") {
+		switch {
+		case strings.EqualFold(segment, control.DirName):
+			return errors.New("must not be stored under reserved .supermover control space")
+		}
+	}
+	return nil
 }
 
 func ReadFile(path string) (Profile, error) {

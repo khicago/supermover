@@ -119,6 +119,10 @@ func TestChangedFileUpdateRefusesWithoutPreviousSupermoverEvidence(t *testing.T)
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("Run(changed source without previous receipt) error = %v, want overwrite refusal", err)
 	}
+	var drift targetDriftCause
+	if errors.As(err, &drift) {
+		t.Fatalf("Run(changed source without previous receipt) error = %v, want ordinary overwrite refusal without target drift cause", err)
+	}
 	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "old" {
 		t.Fatalf("target after missing-evidence refusal = (%q, %v), want old", string(got), err)
 	}

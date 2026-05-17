@@ -11,18 +11,18 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/khicago/supermover/internal/agentkb"
 	"github.com/khicago/supermover/internal/audit"
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/deleted"
+	"github.com/khicago/supermover/internal/driftstore"
 	"github.com/khicago/supermover/internal/durable"
-	"github.com/khicago/supermover/internal/filelock"
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
+	"github.com/khicago/supermover/internal/targetlock"
 	"github.com/khicago/supermover/internal/transaction"
 )
 
@@ -41,8 +41,6 @@ type Result struct {
 	Influences int
 	Deleted    int
 }
-
-var localPushLocks sync.Map
 
 var errSymlinkTargetConflict = errors.New("target symlink conflict")
 var errManagedReplaceTargetChanged = errors.New("managed replace target changed")
@@ -97,6 +95,14 @@ type previousFileEvidence struct {
 	ModTime    string
 	HasSize    bool
 	HasMode    bool
+}
+
+type targetDriftCause struct {
+	TargetPath string
+	Change     string
+	Expected   control.TargetDriftExpectedState
+	Observed   control.TargetDriftObservedState
+	Evidence   []string
 }
 
 type replacementHolds struct {
@@ -229,7 +235,7 @@ func Run(opts Options) (Result, error) {
 	}
 
 	if err := preflightPublishPlan(layout, opts.TargetDir, sessionID, manifestEntries, publishModeRun); err != nil {
-		return Result{}, err
+		return Result{}, recordTargetDriftIfDetected(opts.Profile, opts.TargetDir, sessionID, now, err)
 	}
 	existingDirs, err := captureExistingPublishDirs(opts.TargetDir, manifestEntries)
 	if err != nil {
@@ -327,7 +333,7 @@ func Preflight(opts Options) (Result, error) {
 			entries++
 		case scan.KindRegular:
 			sourcePath := filepath.Join(root.Path, filepath.FromSlash(entry.Path))
-			if err := preflightRegularTarget(sourcePath, targetPath, previousEntries[cleanManifestTarget(entry.Path)]); err != nil {
+			if err := preflightRegularTarget(sourcePath, targetPath, entry.Path, previousEntries[cleanManifestTarget(entry.Path)]); err != nil {
 				return Result{}, err
 			}
 			entries++
@@ -891,7 +897,11 @@ func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID
 							return err
 						}
 						if !previousSame {
-							return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", finalPath)
+							observed := observedRegularFileState(entryTarget, finalPath, entry.Size, entry.Digest, true)
+							return targetDriftError(entryTarget, "metadata_mismatch", expectedFileState(entryTarget, previous), observed, []string{
+								"target matches new content",
+								"target does not match previous manifest evidence",
+							}, `target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement`, finalPath)
 						}
 					}
 					continue
@@ -906,7 +916,14 @@ func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID
 					}
 					continue
 				}
-				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
+				if !previousFileEvidenceComplete(previous) {
+					return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
+				}
+				observed := observedRegularFileState(entryTarget, finalPath, 0, "", true)
+				return targetDriftError(entryTarget, "content_mismatch", expectedFileState(entryTarget, previous), observed, []string{
+					"target content differs from staged manifest",
+					"target does not match previous manifest evidence",
+				}, `target file %q already exists with different content; refusing to overwrite`, finalPath)
 			}
 			if previousFileEvidenceComplete(previous) {
 				holdSame, err := replacementHoldMatchesPrevious(targetDir, sessionID, entryTarget, previous)
@@ -914,7 +931,10 @@ func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID
 					return err
 				}
 				if !holdSame {
-					return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", finalPath)
+					return targetDriftError(entryTarget, "missing", expectedFileState(entryTarget, previous), observedMissingState(entryTarget), []string{
+						"target path missing",
+						"previous manifest evidence exists",
+					}, `target file %q is missing for managed replacement; refusing to publish without previous target evidence`, finalPath)
 				}
 			}
 			if err := validateStagedManifestFile(layout, sessionID, entry); err != nil {
@@ -1168,40 +1188,7 @@ func validateSeparatedAbs(sourceAbs, targetAbs string) error {
 }
 
 func lockTargetSession(targetDir, sessionID string) (func(), error) {
-	target, err := pathguard.CanonicalPath(targetDir)
-	if err != nil {
-		return nil, err
-	}
-	locksDir := filepath.Join(control.ControlDir(targetDir), "locks")
-	if err := pathguard.EnsurePlainDirectory(targetDir, locksDir, 0o700); err != nil {
-		return nil, err
-	}
-
-	targetValue, _ := localPushLocks.LoadOrStore(target+"\x00target", &sync.Mutex{})
-	targetMu := targetValue.(*sync.Mutex)
-	targetMu.Lock()
-	unlockTargetFile, err := filelock.LockInDir(locksDir, "target.lock")
-	if err != nil {
-		targetMu.Unlock()
-		return nil, err
-	}
-
-	sessionValue, _ := localPushLocks.LoadOrStore(target+"\x00session\x00"+sessionID, &sync.Mutex{})
-	sessionMu := sessionValue.(*sync.Mutex)
-	sessionMu.Lock()
-	unlockSessionFile, err := filelock.LockInDir(locksDir, sessionID+".lock")
-	if err != nil {
-		sessionMu.Unlock()
-		unlockTargetFile()
-		targetMu.Unlock()
-		return nil, err
-	}
-	return func() {
-		unlockSessionFile()
-		sessionMu.Unlock()
-		unlockTargetFile()
-		targetMu.Unlock()
-	}, nil
+	return targetlock.LockTargetSession(targetDir, sessionID)
 }
 
 func inside(parent, child string) bool {
@@ -1500,7 +1487,8 @@ func copyRegularToStage(sourcePath, stagePath string, entry scan.Entry) (string,
 	return copyRegularToStageWithPostCopy(sourcePath, stagePath, entry, nil)
 }
 
-func preflightRegularTarget(sourcePath, targetPath string, previous previousFileEvidence) error {
+func preflightRegularTarget(sourcePath, targetPath, targetRel string, previous previousFileEvidence) error {
+	targetRel = cleanManifestTarget(targetRel)
 	sourceInfo, err := os.Stat(sourcePath)
 	if err != nil {
 		return fmt.Errorf("stat source file %q: %w", sourcePath, err)
@@ -1522,7 +1510,11 @@ func preflightRegularTarget(sourcePath, targetPath string, previous previousFile
 			return err
 		}
 		if !previousSame {
-			return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", targetPath)
+			observed := observedRegularFileState(targetRel, targetPath, sourceInfo.Size(), sourceDigest, true)
+			return targetDriftError(targetRel, "metadata_mismatch", expectedFileState(targetRel, previous), observed, []string{
+				"target matches new content",
+				"target does not match previous manifest evidence",
+			}, `target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement`, targetPath)
 		}
 	}
 	if exists && !same {
@@ -1533,10 +1525,20 @@ func preflightRegularTarget(sourcePath, targetPath string, previous previousFile
 		if previousSame {
 			return nil
 		}
-		return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+		if !previousFileEvidenceComplete(previous) {
+			return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
+		}
+		observed := observedRegularFileState(targetRel, targetPath, 0, "", true)
+		return targetDriftError(targetRel, "content_mismatch", expectedFileState(targetRel, previous), observed, []string{
+			"target content differs from source",
+			"target does not match previous manifest evidence",
+		}, `target file %q already exists with different content; refusing to overwrite`, targetPath)
 	}
 	if !exists && previousFileEvidenceComplete(previous) {
-		return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", targetPath)
+		return targetDriftError(targetRel, "missing", expectedFileState(targetRel, previous), observedMissingState(targetRel), []string{
+			"target path missing",
+			"previous manifest evidence exists",
+		}, `target file %q is missing for managed replacement; refusing to publish without previous target evidence`, targetPath)
 	}
 	return nil
 }
@@ -2122,6 +2124,149 @@ func targetMatchesFileEvidence(path string, size int64, digest string, mode uint
 		return false, err
 	}
 	return got == digest, nil
+}
+
+func targetDriftError(targetPath string, change string, expected control.TargetDriftExpectedState, observed control.TargetDriftObservedState, evidence []string, format string, args ...any) error {
+	return targetDriftCause{
+		TargetPath: cleanManifestTarget(targetPath),
+		Change:     change,
+		Expected:   expected,
+		Observed:   observed,
+		Evidence:   append([]string(nil), evidence...),
+	}.wrap(fmt.Errorf(format, args...))
+}
+
+func (d targetDriftCause) wrap(err error) error {
+	return fmt.Errorf("%w: %w", d, err)
+}
+
+func (d targetDriftCause) Error() string {
+	if d.TargetPath == "" {
+		return "target drift"
+	}
+	return "target drift at " + d.TargetPath
+}
+
+func recordTargetDriftIfDetected(p profile.Profile, targetDir string, sessionID string, now time.Time, err error) error {
+	var drift targetDriftCause
+	if !errors.As(err, &drift) {
+		return err
+	}
+	if strings.TrimSpace(drift.TargetPath) == "" {
+		return err
+	}
+	rootID := ""
+	if len(p.Roots) > 0 {
+		rootID = p.Roots[0].ID
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	id, idErr := targetDriftID(sessionID, p.ProfileID, p.Target.TargetID, rootID, drift.TargetPath, drift.Change, drift.Expected, drift.Observed, drift.Evidence)
+	if idErr != nil {
+		return errors.Join(err, fmt.Errorf("record target drift artifact: %w", idErr))
+	}
+	doc := control.TargetDrift{
+		Version:     control.CurrentVersion,
+		ID:          id,
+		SessionID:   sessionID,
+		ProfileID:   p.ProfileID,
+		TargetID:    p.Target.TargetID,
+		RootID:      rootID,
+		Path:        drift.TargetPath,
+		DetectedAt:  now.UTC().Format(time.RFC3339Nano),
+		Change:      drift.Change,
+		Expected:    drift.Expected,
+		Observed:    drift.Observed,
+		ReviewState: "needs_review",
+		Evidence:    append([]string(nil), drift.Evidence...),
+	}
+	if _, writeErr := driftstore.Put(targetDir, doc); writeErr != nil {
+		return errors.Join(err, fmt.Errorf("record target drift artifact: %w", writeErr))
+	}
+	return err
+}
+
+func targetDriftID(sessionID string, profileID string, targetID string, rootID string, targetPath string, change string, expected control.TargetDriftExpectedState, observed control.TargetDriftObservedState, evidence []string) (string, error) {
+	payload := struct {
+		SessionID string                           `json:"session_id"`
+		ProfileID string                           `json:"profile_id"`
+		TargetID  string                           `json:"target_id"`
+		RootID    string                           `json:"root_id"`
+		Path      string                           `json:"path"`
+		Change    string                           `json:"change"`
+		Expected  control.TargetDriftExpectedState `json:"expected"`
+		Observed  control.TargetDriftObservedState `json:"observed"`
+		Evidence  []string                         `json:"evidence,omitempty"`
+	}{
+		SessionID: sessionID,
+		ProfileID: profileID,
+		TargetID:  targetID,
+		RootID:    rootID,
+		Path:      cleanManifestTarget(targetPath),
+		Change:    change,
+		Expected:  expected,
+		Observed:  observed,
+		Evidence:  evidence,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal target drift identity: %w", err)
+	}
+	sum := sha256.Sum256(data)
+	return sessionID + "-drift_" + hex.EncodeToString(sum[:])[:16], nil
+}
+
+func expectedFileState(targetPath string, previous previousFileEvidence) control.TargetDriftExpectedState {
+	state := control.TargetDriftExpectedState{
+		SessionID:  previous.SessionID,
+		ManifestID: previous.ManifestID,
+		Kind:       "file",
+		Path:       cleanManifestTarget(targetPath),
+		Digest:     previous.Digest,
+		ModTime:    previous.ModTime,
+	}
+	if previous.HasSize {
+		state.SetSizeEvidence(previous.Size)
+	}
+	if previous.HasMode {
+		state.SetModeEvidence(previous.Mode)
+	}
+	return state
+}
+
+func observedRegularFileState(targetPath string, filesystemPath string, knownSize int64, knownDigest string, metadataFromExpected bool) control.TargetDriftObservedState {
+	present := true
+	state := control.TargetDriftObservedState{
+		Present: &present,
+		Kind:    "file",
+		Path:    cleanManifestTarget(targetPath),
+		Digest:  knownDigest,
+	}
+	if metadataFromExpected {
+		state.SetSizeEvidence(knownSize)
+	}
+	info, err := os.Lstat(filesystemPath)
+	if err == nil && info.Mode().IsRegular() {
+		state.SetSizeEvidence(info.Size())
+		state.SetModeEvidence(uint32(info.Mode().Perm()))
+		state.ModTime = info.ModTime().UTC().Format(time.RFC3339Nano)
+		if state.Digest == "" {
+			if digest, digestErr := digestFile(filesystemPath); digestErr == nil {
+				state.Digest = digest
+			}
+		}
+	}
+	return state
+}
+
+func observedMissingState(targetPath string) control.TargetDriftObservedState {
+	present := false
+	return control.TargetDriftObservedState{
+		Present: &present,
+		Kind:    "missing",
+		Path:    cleanManifestTarget(targetPath),
+	}
 }
 
 func previousFileEvidenceComplete(previous previousFileEvidence) bool {

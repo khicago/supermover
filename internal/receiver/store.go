@@ -2,6 +2,7 @@ package receiver
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/protocol"
 	"github.com/khicago/supermover/internal/transaction"
+	"github.com/khicago/supermover/internal/transport"
 )
 
 var (
@@ -38,6 +40,21 @@ type Store interface {
 	Status(sessionID string) (protocol.SessionStatusResponse, error)
 	AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkUploadResponse, error)
 	Commit(req protocol.CommitSessionRequest) (protocol.CommitSessionResponse, error)
+	WriteProfileSnapshot(req protocol.ProfileSnapshotArtifactRequest) (protocol.ArtifactWriteResponse, error)
+	WriteWarnings(req protocol.WarningArtifactRequest) (protocol.ArtifactWriteResponse, error)
+	WriteNetworkTransfer(req protocol.NetworkTransferArtifactRequest) (protocol.ArtifactWriteResponse, error)
+}
+
+type NetworkTransferReader interface {
+	ReadNetworkTransfer(sessionID string) (control.NetworkTransfer, error)
+}
+
+type BatchStore interface {
+	AppendChunkBatch(ctx context.Context, req protocol.ChunkBatchUploadRequest) (protocol.ChunkBatchUploadResponse, error)
+}
+
+type SessionPrivacyPolicyStore interface {
+	SessionPrivacyPolicy(sessionID string) (transport.PrivacyPolicy, error)
 }
 
 type FileStore struct {
@@ -51,11 +68,25 @@ type sessionMeta struct {
 	ProtocolVersion string                    `json:"protocol_version"`
 	SessionID       string                    `json:"session_id"`
 	ProfileID       string                    `json:"profile_id"`
+	TargetID        string                    `json:"target_id"`
 	SourceDeviceID  string                    `json:"source_device_id"`
 	TargetDeviceID  string                    `json:"target_device_id"`
+	PrivacyPolicy   transport.PrivacyPolicy   `json:"privacy_policy,omitempty"`
 	RootID          string                    `json:"root_id,omitempty"`
 	CreatedAt       time.Time                 `json:"created_at"`
 	Manifest        protocol.TransferManifest `json:"manifest"`
+}
+
+type stagedFileProof struct {
+	Version   int                    `json:"version"`
+	SessionID string                 `json:"session_id"`
+	Files     []stagedFileProofEntry `json:"files,omitempty"`
+}
+
+type stagedFileProofEntry struct {
+	Path   string `json:"path"`
+	Size   int64  `json:"size"`
+	Digest string `json:"digest"`
 }
 
 func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessionResponse, error) {
@@ -104,8 +135,10 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		ProtocolVersion: req.ProtocolVersion,
 		SessionID:       req.SessionID,
 		ProfileID:       req.ProfileID,
+		TargetID:        req.TargetID,
 		SourceDeviceID:  req.SourceDeviceID,
 		TargetDeviceID:  req.TargetDeviceID,
+		PrivacyPolicy:   req.PrivacyPolicy,
 		RootID:          req.RootID,
 		CreatedAt:       req.CreatedAt.UTC(),
 		Manifest:        req.Manifest,
@@ -136,6 +169,25 @@ func (s FileStore) Status(sessionID string) (protocol.SessionStatusResponse, err
 	defer unlock()
 
 	return s.statusLocked(sessionID)
+}
+
+func (s FileStore) SessionPrivacyPolicy(sessionID string) (transport.PrivacyPolicy, error) {
+	if err := s.validate(); err != nil {
+		return transport.PrivacyPolicy{}, err
+	}
+	if err := transaction.ValidateSessionID(sessionID); err != nil {
+		return transport.PrivacyPolicy{}, err
+	}
+	unlock, err := s.lockSession(sessionID)
+	if err != nil {
+		return transport.PrivacyPolicy{}, err
+	}
+	defer unlock()
+	meta, _, err := s.loadSession(sessionID)
+	if err != nil {
+		return transport.PrivacyPolicy{}, err
+	}
+	return meta.PrivacyPolicy, nil
 }
 
 func (s FileStore) statusLocked(sessionID string) (protocol.SessionStatusResponse, error) {
@@ -186,6 +238,9 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 	if entry.Kind != protocol.FileKindFile {
 		return protocol.ChunkUploadResponse{}, fmt.Errorf("%w: %q is not a file", ErrConflict, req.Path)
 	}
+	if err := validateChunkAgainstEntry(req, entry); err != nil {
+		return protocol.ChunkUploadResponse{}, err
+	}
 	if req.Offset+int64(len(req.Data)) > entry.Size {
 		return protocol.ChunkUploadResponse{}, fmt.Errorf("%w: chunk exceeds declared size for %q", ErrConflict, req.Path)
 	}
@@ -194,12 +249,21 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 	if err != nil {
 		return protocol.ChunkUploadResponse{}, err
 	}
-	size, err := fileSize(path)
+	size, exists, err := fileSizeState(path)
 	if err != nil {
 		return protocol.ChunkUploadResponse{}, err
 	}
 	chunkState := protocol.ChunkStateAccepted
 	switch {
+	case len(req.Data) == 0:
+		if exists {
+			if err := validateZeroByteStagedEvidence(path, size); err != nil {
+				return protocol.ChunkUploadResponse{}, err
+			}
+			chunkState = protocol.ChunkStateDuplicate
+		} else if err := createEmptyStagedFile(s.layout().StagingDir(req.SessionID), path); err != nil {
+			return protocol.ChunkUploadResponse{}, err
+		}
 	case req.Offset == size:
 		if err := appendAt(s.layout().StagingDir(req.SessionID), path, req.Data); err != nil {
 			return protocol.ChunkUploadResponse{}, err
@@ -229,6 +293,190 @@ func (s FileStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkU
 		ChunkState:    chunkState,
 		Complete:      complete,
 	}, nil
+}
+
+func (s FileStore) AppendChunkBatch(ctx context.Context, req protocol.ChunkBatchUploadRequest) (protocol.ChunkBatchUploadResponse, error) {
+	if err := req.Validate(); err != nil {
+		return protocol.ChunkBatchUploadResponse{}, err
+	}
+	if err := s.validate(); err != nil {
+		return protocol.ChunkBatchUploadResponse{}, err
+	}
+	for _, chunk := range req.Chunks {
+		if chunk.Digest != "" && chunk.Digest != sha256Digest(chunk.Data) {
+			return protocol.ChunkBatchUploadResponse{}, fmt.Errorf("%w: chunk digest mismatch for %q", ErrIntegrity, chunk.Path)
+		}
+	}
+
+	unlock, err := s.lockSession(req.SessionID)
+	if err != nil {
+		return protocol.ChunkBatchUploadResponse{}, err
+	}
+	defer unlock()
+
+	meta, record, err := s.loadSession(req.SessionID)
+	if err != nil {
+		return protocol.ChunkBatchUploadResponse{}, err
+	}
+	if record.State == transaction.StatePublished || record.State == transaction.StateRolledBack || record.State == transaction.StateNeedsRepair {
+		return protocol.ChunkBatchUploadResponse{}, fmt.Errorf("%w: session %q is terminal", ErrConflict, req.SessionID)
+	}
+
+	plans := make([]chunkAppendPlan, len(req.Chunks))
+	sizes := map[string]int64{}
+	for i, chunk := range req.Chunks {
+		plan, err := s.planChunkAppend(meta, chunk, sizes)
+		if err != nil {
+			return protocol.ChunkBatchUploadResponse{}, err
+		}
+		plans[i] = plan
+		sizes[chunk.Path] = plan.committedSize
+	}
+
+	resp := protocol.ChunkBatchUploadResponse{
+		SessionID: req.SessionID,
+		Chunks:    make([]protocol.ChunkUploadResponse, 0, len(plans)),
+	}
+	for _, plan := range plans {
+		if err := ctx.Err(); err != nil {
+			return protocol.ChunkBatchUploadResponse{}, err
+		}
+		if plan.appendData {
+			var err error
+			if len(plan.req.Data) == 0 {
+				err = createEmptyStagedFile(s.layout().StagingDir(req.SessionID), plan.path)
+			} else {
+				err = appendAt(s.layout().StagingDir(req.SessionID), plan.path, plan.req.Data)
+			}
+			if err != nil {
+				return protocol.ChunkBatchUploadResponse{}, err
+			}
+		}
+		resp.Chunks = append(resp.Chunks, plan.response())
+	}
+	return resp, nil
+}
+
+type chunkAppendPlan struct {
+	req           protocol.ChunkUploadRequest
+	path          string
+	committedSize int64
+	chunkState    protocol.ChunkState
+	complete      bool
+	appendData    bool
+}
+
+func (p chunkAppendPlan) response() protocol.ChunkUploadResponse {
+	return protocol.ChunkUploadResponse{
+		SessionID:     p.req.SessionID,
+		Path:          p.req.Path,
+		CommittedSize: p.committedSize,
+		ChunkState:    p.chunkState,
+		Complete:      p.complete,
+	}
+}
+
+func (s FileStore) planChunkAppend(meta sessionMeta, req protocol.ChunkUploadRequest, sizes map[string]int64) (chunkAppendPlan, error) {
+	entry, ok := findEntry(meta.Manifest, req.Path)
+	if !ok {
+		return chunkAppendPlan{}, fmt.Errorf("%w: manifest has no file %q", ErrConflict, req.Path)
+	}
+	if entry.Kind != protocol.FileKindFile {
+		return chunkAppendPlan{}, fmt.Errorf("%w: %q is not a file", ErrConflict, req.Path)
+	}
+	if err := validateChunkAgainstEntry(req, entry); err != nil {
+		return chunkAppendPlan{}, err
+	}
+	if req.Offset+int64(len(req.Data)) > entry.Size {
+		return chunkAppendPlan{}, fmt.Errorf("%w: chunk exceeds declared size for %q", ErrConflict, req.Path)
+	}
+
+	path, err := s.stageFilePath(req.SessionID, req.Path)
+	if err != nil {
+		return chunkAppendPlan{}, err
+	}
+	size, planned := sizes[req.Path]
+	exists := planned
+	if !planned {
+		size, exists, err = fileSizeState(path)
+		if err != nil {
+			return chunkAppendPlan{}, err
+		}
+	}
+	chunkState := protocol.ChunkStateAccepted
+	appendData := false
+	switch {
+	case len(req.Data) == 0:
+		if planned {
+			if err := validateZeroByteStagedEvidence(path, size); err != nil {
+				return chunkAppendPlan{}, err
+			}
+			chunkState = protocol.ChunkStateDuplicate
+		} else if exists {
+			if err := validateZeroByteStagedEvidence(path, size); err != nil {
+				return chunkAppendPlan{}, err
+			}
+			chunkState = protocol.ChunkStateDuplicate
+		} else {
+			appendData = true
+		}
+	case req.Offset == size:
+		appendData = true
+		size += int64(len(req.Data))
+	case req.Offset+int64(len(req.Data)) <= size:
+		matches, err := chunkMatches(path, req.Offset, req.Data)
+		if err != nil {
+			return chunkAppendPlan{}, err
+		}
+		if !matches {
+			return chunkAppendPlan{}, fmt.Errorf("%w: replayed chunk differs at %q offset %d", ErrConflict, req.Path, req.Offset)
+		}
+		chunkState = protocol.ChunkStateDuplicate
+	default:
+		return chunkAppendPlan{}, fmt.Errorf("%w: expected offset %d for %q", ErrConflict, size, req.Path)
+	}
+
+	complete := size == entry.Size
+	if req.Final && !complete {
+		return chunkAppendPlan{}, fmt.Errorf("%w: final chunk leaves %q incomplete", ErrConflict, req.Path)
+	}
+	return chunkAppendPlan{
+		req:           req,
+		path:          path,
+		committedSize: size,
+		chunkState:    chunkState,
+		complete:      complete,
+		appendData:    appendData,
+	}, nil
+}
+
+func validateChunkAgainstEntry(req protocol.ChunkUploadRequest, entry protocol.ManifestEntry) error {
+	if len(req.Data) == 0 {
+		if entry.Size != 0 {
+			return fmt.Errorf("%w: zero-byte completion for non-empty file %q", ErrConflict, req.Path)
+		}
+		if req.Offset != 0 {
+			return fmt.Errorf("%w: zero-byte completion offset = %d for %q, want 0", ErrConflict, req.Offset, req.Path)
+		}
+		if !req.Final {
+			return fmt.Errorf("%w: zero-byte completion for %q must be final", ErrConflict, req.Path)
+		}
+		if req.Digest != "" && req.Digest != protocol.EmptySHA256Digest {
+			return fmt.Errorf("%w: zero-byte completion digest = %s for %q, want %s", ErrIntegrity, req.Digest, req.Path, protocol.EmptySHA256Digest)
+		}
+		return nil
+	}
+	if entry.Size == 0 {
+		return fmt.Errorf("%w: data chunk for zero-byte file %q", ErrConflict, req.Path)
+	}
+	return nil
+}
+
+func validateZeroByteStagedEvidence(path string, size int64) error {
+	if size != 0 {
+		return fmt.Errorf("%w: staged zero-byte evidence %q has size %d", ErrIntegrity, path, size)
+	}
+	return nil
 }
 
 func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSessionResponse, error) {
@@ -272,6 +520,9 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 		if err := s.verifyFiles(meta); err != nil {
 			return protocol.CommitSessionResponse{}, s.markNeedsRepair(record, err)
 		}
+		if err := s.writeStagedFileProof(meta); err != nil {
+			return protocol.CommitSessionResponse{}, err
+		}
 		if err := s.reconcileStagedFiles(meta); err != nil {
 			return protocol.CommitSessionResponse{}, s.markNeedsRepair(record, err)
 		}
@@ -304,6 +555,184 @@ func (s FileStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSes
 		State:     protocol.SessionStatePublished,
 		ReceiptID: req.SessionID,
 	}, nil
+}
+
+func (s FileStore) WriteProfileSnapshot(req protocol.ProfileSnapshotArtifactRequest) (protocol.ArtifactWriteResponse, error) {
+	if err := req.Validate(); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if err := s.validate(); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	doc, err := control.Read[control.ProfileSnapshot](bytes.NewReader(req.Document))
+	if err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if doc.SessionID != req.SessionID {
+		return protocol.ArtifactWriteResponse{}, fmt.Errorf("%w: profile snapshot session_id %q does not match request session_id %q", ErrConflict, doc.SessionID, req.SessionID)
+	}
+	if doc.ID != "profile-"+req.SessionID {
+		return protocol.ArtifactWriteResponse{}, fmt.Errorf("%w: profile snapshot id %q does not match session %q", ErrConflict, doc.ID, req.SessionID)
+	}
+	if err := s.validateArtifactScope(req.SessionID, doc.ProfileID, ""); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	path, err := control.Path(s.TargetRoot, control.ArtifactProfileSnapshot, doc.ID)
+	if err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if err := control.WriteFile(path, doc); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	return protocol.ArtifactWriteResponse{SessionID: req.SessionID, Written: 1}, nil
+}
+
+func (s FileStore) WriteWarnings(req protocol.WarningArtifactRequest) (protocol.ArtifactWriteResponse, error) {
+	if err := req.Validate(); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if err := s.validate(); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if err := s.validateArtifactScope(req.SessionID, "", ""); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	for _, payload := range req.Documents {
+		doc, err := control.Read[control.Warning](bytes.NewReader(payload))
+		if err != nil {
+			return protocol.ArtifactWriteResponse{}, err
+		}
+		if doc.SessionID != req.SessionID {
+			return protocol.ArtifactWriteResponse{}, fmt.Errorf("%w: warning session_id %q does not match request session_id %q", ErrConflict, doc.SessionID, req.SessionID)
+		}
+		if !warningIDBelongsToSession(doc.ID, req.SessionID) {
+			return protocol.ArtifactWriteResponse{}, fmt.Errorf("%w: warning id %q does not belong to session %q", ErrConflict, doc.ID, req.SessionID)
+		}
+		path, err := control.Path(s.TargetRoot, control.ArtifactWarning, doc.ID)
+		if err != nil {
+			return protocol.ArtifactWriteResponse{}, err
+		}
+		if err := control.WriteFile(path, doc); err != nil {
+			return protocol.ArtifactWriteResponse{}, err
+		}
+	}
+	return protocol.ArtifactWriteResponse{SessionID: req.SessionID, Written: len(req.Documents)}, nil
+}
+
+func warningIDBelongsToSession(id string, sessionID string) bool {
+	return id == sessionID || strings.HasPrefix(id, sessionID+"-")
+}
+
+func (s FileStore) WriteNetworkTransfer(req protocol.NetworkTransferArtifactRequest) (protocol.ArtifactWriteResponse, error) {
+	if err := req.Validate(); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if err := s.validate(); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	doc, err := control.Read[control.NetworkTransfer](bytes.NewReader(req.Document))
+	if err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if doc.SessionID != req.SessionID {
+		return protocol.ArtifactWriteResponse{}, fmt.Errorf("%w: network transfer session_id %q does not match request session_id %q", ErrConflict, doc.SessionID, req.SessionID)
+	}
+	meta, err := s.readArtifactMeta(req.SessionID)
+	if err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if err := validateNetworkTransferArtifactMeta(meta, doc); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	path, err := control.Path(s.TargetRoot, control.ArtifactNetworkTransfer, doc.SessionID)
+	if err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	if err := control.WriteFile(path, doc); err != nil {
+		return protocol.ArtifactWriteResponse{}, err
+	}
+	return protocol.ArtifactWriteResponse{SessionID: req.SessionID, Written: 1}, nil
+}
+
+func (s FileStore) ReadNetworkTransfer(sessionID string) (control.NetworkTransfer, error) {
+	if err := s.validate(); err != nil {
+		return control.NetworkTransfer{}, err
+	}
+	if err := transaction.ValidateSessionID(sessionID); err != nil {
+		return control.NetworkTransfer{}, err
+	}
+	meta, err := readMeta(s.metaPath(sessionID))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrSessionNotFound) {
+			return control.NetworkTransfer{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
+		}
+		return control.NetworkTransfer{}, err
+	}
+	path, err := control.Path(s.TargetRoot, control.ArtifactNetworkTransfer, sessionID)
+	if err != nil {
+		return control.NetworkTransfer{}, err
+	}
+	doc, err := control.ReadFileNoSymlinkUnderRoot[control.NetworkTransfer](s.TargetRoot, path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return control.NetworkTransfer{}, fmt.Errorf("%w: network transfer artifact for %s", ErrSessionNotFound, sessionID)
+		}
+		return control.NetworkTransfer{}, err
+	}
+	if doc.SessionID != sessionID {
+		return control.NetworkTransfer{}, fmt.Errorf("%w: network transfer session_id %q does not match %q", ErrConflict, doc.SessionID, sessionID)
+	}
+	if err := validateNetworkTransferArtifactMeta(meta, doc); err != nil {
+		return control.NetworkTransfer{}, err
+	}
+	return doc, nil
+}
+
+func (s FileStore) readArtifactMeta(sessionID string) (sessionMeta, error) {
+	meta, err := readMeta(s.metaPath(sessionID))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrSessionNotFound) {
+			return sessionMeta{}, fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
+		}
+		return sessionMeta{}, err
+	}
+	return meta, nil
+}
+
+func validateNetworkTransferArtifactMeta(meta sessionMeta, doc control.NetworkTransfer) error {
+	if strings.TrimSpace(doc.ProfileID) != "" && doc.ProfileID != meta.ProfileID {
+		return fmt.Errorf("%w: artifact profile_id %q does not match session profile_id %q", ErrConflict, doc.ProfileID, meta.ProfileID)
+	}
+	if strings.TrimSpace(doc.TargetID) != "" && doc.TargetID != meta.TargetID {
+		return fmt.Errorf("%w: artifact target_id %q does not match session target_id %q", ErrConflict, doc.TargetID, meta.TargetID)
+	}
+	if strings.TrimSpace(doc.SourceDeviceID) != "" && doc.SourceDeviceID != meta.SourceDeviceID {
+		return fmt.Errorf("%w: network transfer source_device_id %q does not match session source_device_id %q", ErrConflict, doc.SourceDeviceID, meta.SourceDeviceID)
+	}
+	if strings.TrimSpace(doc.TargetDeviceID) != "" && doc.TargetDeviceID != meta.TargetDeviceID {
+		return fmt.Errorf("%w: network transfer target_device_id %q does not match session target_device_id %q", ErrConflict, doc.TargetDeviceID, meta.TargetDeviceID)
+	}
+	if !reflect.DeepEqual(doc.PrivacyPolicy, meta.PrivacyPolicy) {
+		return fmt.Errorf("%w: network transfer privacy_policy does not match session privacy_policy", ErrConflict)
+	}
+	return nil
+}
+
+func (s FileStore) validateArtifactScope(sessionID string, profileID string, targetID string) error {
+	meta, err := readMeta(s.metaPath(sessionID))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, ErrSessionNotFound) {
+			return fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
+		}
+		return err
+	}
+	if strings.TrimSpace(profileID) != "" && profileID != meta.ProfileID {
+		return fmt.Errorf("%w: artifact profile_id %q does not match session profile_id %q", ErrConflict, profileID, meta.ProfileID)
+	}
+	if strings.TrimSpace(targetID) != "" && targetID != meta.TargetID {
+		return fmt.Errorf("%w: artifact target_id %q does not match session target_id %q", ErrConflict, targetID, meta.TargetID)
+	}
+	return nil
 }
 
 func (s FileStore) markNeedsRepair(record transaction.SessionRecord, cause error) error {
@@ -375,6 +804,10 @@ func (s FileStore) lockSession(sessionID string) (func(), error) {
 
 func (s FileStore) metaPath(sessionID string) string {
 	return filepath.Join(s.layout().SessionDir(sessionID), "network-session.json")
+}
+
+func (s FileStore) stagedFileProofPath(sessionID string) string {
+	return filepath.Join(s.layout().SessionDir(sessionID), "staged-proof.json")
 }
 
 func (s FileStore) stageFilePath(sessionID, rel string) (string, error) {
@@ -478,8 +911,10 @@ func beginRequestFromMeta(meta sessionMeta) protocol.BeginSessionRequest {
 		ProtocolVersion: meta.ProtocolVersion,
 		SessionID:       meta.SessionID,
 		ProfileID:       meta.ProfileID,
+		TargetID:        meta.TargetID,
 		SourceDeviceID:  meta.SourceDeviceID,
 		TargetDeviceID:  meta.TargetDeviceID,
+		PrivacyPolicy:   meta.PrivacyPolicy,
 		RootID:          meta.RootID,
 		CreatedAt:       meta.CreatedAt,
 		Manifest:        meta.Manifest,
@@ -496,7 +931,7 @@ func (s FileStore) fileStatuses(meta sessionMeta) ([]protocol.FileStatus, error)
 		if err != nil {
 			return nil, err
 		}
-		size, err := fileSize(path)
+		size, exists, err := fileSizeState(path)
 		if err != nil {
 			return nil, err
 		}
@@ -505,7 +940,7 @@ func (s FileStore) fileStatuses(meta sessionMeta) ([]protocol.FileStatus, error)
 			ExpectedSize:   entry.Size,
 			CommittedSize:  size,
 			ExpectedDigest: entry.Digest,
-			Complete:       size == entry.Size,
+			Complete:       exists && size == entry.Size,
 		})
 	}
 	sort.Slice(files, func(i, j int) bool {
@@ -539,9 +974,12 @@ func (s FileStore) verifyFiles(meta sessionMeta) error {
 		if err != nil {
 			return err
 		}
-		size, err := fileSize(path)
+		size, exists, err := fileSizeState(path)
 		if err != nil {
 			return err
+		}
+		if !exists {
+			return fmt.Errorf("%w: %q missing staged file evidence", ErrIntegrity, entry.Path)
 		}
 		if size != entry.Size {
 			return fmt.Errorf("%w: %q size = %d, want %d", ErrIntegrity, entry.Path, size, entry.Size)
@@ -553,6 +991,80 @@ func (s FileStore) verifyFiles(meta sessionMeta) error {
 		if got != entry.Digest {
 			return fmt.Errorf("%w: %q digest = %s, want %s", ErrIntegrity, entry.Path, got, entry.Digest)
 		}
+	}
+	return nil
+}
+
+func (s FileStore) writeStagedFileProof(meta sessionMeta) error {
+	proof := stagedFileProof{
+		Version:   1,
+		SessionID: meta.SessionID,
+		Files:     make([]stagedFileProofEntry, 0),
+	}
+	for _, entry := range meta.Manifest.Entries {
+		if entry.Kind != protocol.FileKindFile {
+			continue
+		}
+		proof.Files = append(proof.Files, stagedFileProofEntry{
+			Path:   entry.Path,
+			Size:   entry.Size,
+			Digest: entry.Digest,
+		})
+	}
+	return writeJSONAtomic(s.stagedFileProofPath(meta.SessionID), proof)
+}
+
+func (s FileStore) requireStagedFileProof(meta sessionMeta, entry protocol.ManifestEntry) error {
+	proof, err := readStagedFileProof(s.stagedFileProofPath(meta.SessionID))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: %q missing staged file evidence proof", ErrIntegrity, entry.Path)
+		}
+		return err
+	}
+	if proof.Version != 1 {
+		return fmt.Errorf("%w: staged file evidence proof version = %d", ErrIntegrity, proof.Version)
+	}
+	if proof.SessionID != meta.SessionID {
+		return fmt.Errorf("%w: staged file evidence proof session_id = %q, want %q", ErrIntegrity, proof.SessionID, meta.SessionID)
+	}
+	for _, got := range proof.Files {
+		if got.Path != entry.Path {
+			continue
+		}
+		if got.Size != entry.Size || got.Digest != entry.Digest {
+			return fmt.Errorf("%w: staged file evidence proof for %q does not match manifest", ErrIntegrity, entry.Path)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: %q missing staged file evidence proof entry", ErrIntegrity, entry.Path)
+}
+
+func readStagedFileProof(path string) (stagedFileProof, error) {
+	file, err := openPlainReadFile(path)
+	if err != nil {
+		return stagedFileProof{}, err
+	}
+	defer file.Close()
+	var proof stagedFileProof
+	decoder := json.NewDecoder(file)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&proof); err != nil {
+		return stagedFileProof{}, fmt.Errorf("%w: decode staged file evidence proof: %v", ErrIntegrity, err)
+	}
+	if err := requireStagedFileProofJSONEOF(decoder); err != nil {
+		return stagedFileProof{}, fmt.Errorf("%w: decode staged file evidence proof: %v", ErrIntegrity, err)
+	}
+	return proof, nil
+}
+
+func requireStagedFileProofJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("unexpected trailing JSON document")
+		}
+		return err
 	}
 	return nil
 }
@@ -654,6 +1166,11 @@ func (s FileStore) reconcileStagedFile(meta sessionMeta, entry protocol.Manifest
 	}
 	if exists {
 		if same {
+			if entry.Size == 0 {
+				if err := s.requireZeroBytePublishedEvidence(meta, entry); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 		return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
@@ -662,9 +1179,12 @@ func (s FileStore) reconcileStagedFile(meta sessionMeta, entry protocol.Manifest
 	if err != nil {
 		return err
 	}
-	size, err := fileSize(stage)
+	size, exists, err := fileSizeState(stage)
 	if err != nil {
 		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: %q missing staged file evidence", ErrIntegrity, entry.Path)
 	}
 	if size != entry.Size {
 		return fmt.Errorf("%w: %q size = %d, want %d", ErrIntegrity, entry.Path, size, entry.Size)
@@ -724,6 +1244,31 @@ func (s FileStore) publish(meta sessionMeta) error {
 		}
 	}
 	return nil
+}
+
+func (s FileStore) requireZeroBytePublishedEvidence(meta sessionMeta, entry protocol.ManifestEntry) error {
+	stage, err := s.stageFilePath(meta.SessionID, entry.Path)
+	if err != nil {
+		return err
+	}
+	size, exists, err := fileSizeState(stage)
+	if err != nil {
+		return err
+	}
+	if exists {
+		if err := validateZeroByteStagedEvidence(stage, size); err != nil {
+			return err
+		}
+		got, err := fileDigest(stage)
+		if err != nil {
+			return err
+		}
+		if got != entry.Digest {
+			return fmt.Errorf("%w: %q digest = %s, want %s", ErrIntegrity, entry.Path, got, entry.Digest)
+		}
+		return nil
+	}
+	return s.requireStagedFileProof(meta, entry)
 }
 
 func applyReceiverFileMetadata(path string, entry protocol.ManifestEntry) error {
@@ -888,8 +1433,8 @@ func (s FileStore) ensurePublishedArtifacts(meta sessionMeta) error {
 	if receipt.Status != string(protocol.SessionStatePublished) {
 		return fmt.Errorf("%w: published session %q receipt status = %q", ErrConflict, meta.SessionID, receipt.Status)
 	}
-	if receipt.ProfileID != meta.ProfileID || receipt.TargetID != meta.TargetDeviceID {
-		return fmt.Errorf("%w: published session %q receipt scope = %q/%q, want %q/%q", ErrConflict, meta.SessionID, receipt.ProfileID, receipt.TargetID, meta.ProfileID, meta.TargetDeviceID)
+	if receipt.ProfileID != meta.ProfileID || receipt.TargetID != meta.TargetID {
+		return fmt.Errorf("%w: published session %q receipt scope = %q/%q, want %q/%q", ErrConflict, meta.SessionID, receipt.ProfileID, receipt.TargetID, meta.ProfileID, meta.TargetID)
 	}
 	if receipt.StartedAt != meta.CreatedAt.UTC().Format(time.RFC3339) {
 		return fmt.Errorf("%w: published session %q receipt started_at = %q, want %q", ErrConflict, meta.SessionID, receipt.StartedAt, meta.CreatedAt.UTC().Format(time.RFC3339))
@@ -964,7 +1509,7 @@ func (s FileStore) writeReceipt(meta sessionMeta, endedAt time.Time) error {
 		Version:   control.CurrentVersion,
 		ID:        meta.SessionID,
 		ProfileID: meta.ProfileID,
-		TargetID:  meta.TargetDeviceID,
+		TargetID:  meta.TargetID,
 		StartedAt: meta.CreatedAt.UTC().Format(time.RFC3339),
 		EndedAt:   endedAt.UTC().Format(time.RFC3339),
 		Status:    string(protocol.SessionStatePublished),
@@ -1062,6 +1607,41 @@ func appendAt(root, path string, data []byte) error {
 	return file.Sync()
 }
 
+func createEmptyStagedFile(root, path string) error {
+	if err := makeDirectoryInside(root, filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return protocolPathError(fmt.Errorf("%w: staged file %q is a symlink", pathguard.ErrUnsafePath, path))
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: staged file %q is not regular", ErrConflict, path)
+		}
+		if info.Size() != 0 {
+			return validateZeroByteStagedEvidence(path, info.Size())
+		}
+		return nil
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return createEmptyStagedFile(root, path)
+		}
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return durable.SyncDirBestEffort(filepath.Dir(path))
+}
+
 func makeDirectoryInside(root, dir string, mode os.FileMode) error {
 	rootAbs, err := filepath.Abs(root)
 	if err != nil {
@@ -1115,10 +1695,7 @@ func makeDirectoryInside(root, dir string, mode os.FileMode) error {
 }
 
 func chunkMatches(path string, offset int64, data []byte) (bool, error) {
-	if err := ensurePlainFile(path); err != nil {
-		return false, err
-	}
-	file, err := os.Open(path)
+	file, err := openPlainReadFile(path)
 	if err != nil {
 		return false, err
 	}
@@ -1131,28 +1708,25 @@ func chunkMatches(path string, offset int64, data []byte) (bool, error) {
 	return n == len(data) && string(buf) == string(data), nil
 }
 
-func fileSize(path string) (int64, error) {
+func fileSizeState(path string) (int64, bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return 0, nil
+			return 0, false, nil
 		}
-		return 0, err
+		return 0, false, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		return 0, protocolPathError(fmt.Errorf("%w: staged file %q is a symlink", pathguard.ErrUnsafePath, path))
+		return 0, true, protocolPathError(fmt.Errorf("%w: staged file %q is a symlink", pathguard.ErrUnsafePath, path))
 	}
 	if !info.Mode().IsRegular() {
-		return 0, fmt.Errorf("%w: staged path %q is not a regular file", ErrConflict, path)
+		return 0, true, fmt.Errorf("%w: staged path %q is not a regular file", ErrConflict, path)
 	}
-	return info.Size(), nil
+	return info.Size(), true, nil
 }
 
 func fileDigest(path string) (string, error) {
-	if err := ensurePlainFile(path); err != nil {
-		return "", err
-	}
-	file, err := os.Open(path)
+	file, err := openPlainReadFile(path)
 	if err != nil {
 		return "", err
 	}
@@ -1162,6 +1736,13 @@ func fileDigest(path string) (string, error) {
 		return "", err
 	}
 	return "sha256:" + hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func openPlainReadFile(path string) (*os.File, error) {
+	if err := ensurePlainFile(path); err != nil {
+		return nil, err
+	}
+	return os.Open(path)
 }
 
 func ensurePlainFile(path string) error {
@@ -1196,10 +1777,11 @@ func sameManifest(meta sessionMeta, req protocol.BeginSessionRequest) bool {
 	return meta.ProtocolVersion == req.ProtocolVersion &&
 		meta.SessionID == req.SessionID &&
 		meta.ProfileID == req.ProfileID &&
+		meta.TargetID == req.TargetID &&
 		meta.SourceDeviceID == req.SourceDeviceID &&
 		meta.TargetDeviceID == req.TargetDeviceID &&
+		reflect.DeepEqual(meta.PrivacyPolicy, req.PrivacyPolicy) &&
 		meta.RootID == req.RootID &&
-		meta.CreatedAt.Equal(req.CreatedAt) &&
 		reflect.DeepEqual(meta.Manifest, req.Manifest)
 }
 

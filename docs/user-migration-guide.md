@@ -2,7 +2,8 @@
 
 This guide describes the current local push vertical slice. It is written for a
 trusted target directory on the same machine or mounted filesystem. Network
-serve/discover/pair transfer is planned, but not required for this workflow.
+serve/discover/pair and non-dry-run `push --network` are wired separately, but
+they are not required for the local workflow.
 
 ## Guarantees And Boundaries
 
@@ -16,12 +17,14 @@ serve/discover/pair transfer is planned, but not required for this workflow.
   written to `.supermover/warnings/*.json` when a published run can continue
   but leaves a reviewable gap.
 - Source deletions are recorded before any physical prune. Physical pruning must
-  require explicit review and a profile policy that permits it.
+  require explicit review, durable approval evidence, target-state checks, a
+  durable prune receipt, and a profile policy that permits it. Source absence
+  alone never authorizes deletion.
 - Operator summaries are derived from the profile SSOT and target
   control-plane artifacts. Command stdout is useful for triage, but the durable
   evidence lives under `.supermover`.
-- LAN discovery is address discovery only. A discovered endpoint is not trusted
-  until pairing verifies and pins device identity.
+- Discovery is address discovery only. A discovered endpoint is not trusted
+  until pairing verifies and pins device identity. LAN browsing remains planned.
 
 ## Current Commands
 
@@ -36,8 +39,32 @@ go run ./cmd/supermover push --profile ./supermover.profile.json --session sessi
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
+go run ./cmd/supermover drift list --profile ./supermover.profile.json
+go run ./cmd/supermover drift record --profile ./supermover.profile.json
+go run ./cmd/supermover drift resolve --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<target restored reason>"
+go run ./cmd/supermover reconcile plan --profile ./supermover.profile.json --id <persisted-drift-id>
 go run ./cmd/supermover report --profile ./supermover.profile.json
+go run ./cmd/supermover status --profile ./supermover.profile.json
 go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
+go run ./cmd/supermover prune --help
+go run ./cmd/supermover prune --profile ./supermover.profile.json --dry-run
+go run ./cmd/supermover prune review --profile ./supermover.profile.json
+go run ./cmd/supermover prune --profile ./supermover.profile.json --apply --approval <approval-id>
+```
+
+Use `drift acknowledge` only after refused-push review output or
+`drift record` has created a persisted drift ID and an operator has reviewed
+it:
+
+```bash
+go run ./cmd/supermover drift acknowledge --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<operator review reason>"
+```
+
+Use `drift resolve` only after the target has been restored so a fresh live
+detector no longer reports the same persisted path and expected baseline:
+
+```bash
+go run ./cmd/supermover drift resolve --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<target restored reason>"
 ```
 
 `push --dry-run` scans and reports counts without writing target files or
@@ -45,6 +72,11 @@ control-plane artifacts. Warning output at this stage is mainly the count; full
 warning JSON is written only after a published run can continue. The target
 path comes from the profile. A non-dry-run local push copies supported regular
 files, records manifests and warnings, and writes session control artifacts.
+`prune --dry-run` validates the profile prune policy, reads published
+soft-delete records, and emits review-only candidates, refusals, and artifact
+problems without writing approvals or receipts, applying approvals, or deleting
+files. Records still inside `delete_policy.retention_days` remain visible as
+`retention_window_active` refusals instead of prune candidates.
 Source scanner `scan_error` findings block push before publish instead of being
 published as warning records.
 
@@ -57,13 +89,82 @@ error findings, warning findings, artifact problems, or a missing manifest.
 `deleted list` shows reviewable source-side deletions. `health` is read-only:
 it reports incomplete or invalid session records and missing/corrupt published
 artifacts under the target `.supermover` directory and does not repair them.
-This feature adds `report` as a read-only aggregation command over the same
-evidence. `report` summarizes warnings, profile suggestions, soft-delete
-records, health/recovery issues, artifact problems, and published-manifest
-verification state at report time. It is not a long-running daemon, LAN agent,
-or network transport status. It exits non-zero when the report requires
-operator review, even when text or JSON output was produced successfully.
-`recover` performs the conservative mutating recovery subset.
+`drift list` is a read-only live detector over published manifest evidence and
+the profile-selected target. `drift record` runs the same live detector and
+persists current findings as durable `.supermover/drift/*.json` review records;
+it does not acknowledge, repair, prune, suppress later detector findings, run
+background scans, or broadly reconcile. `drift acknowledge` and `drift resolve`
+are narrow persisted-record review commands:
+
+```bash
+go run ./cmd/supermover drift record --profile ./supermover.profile.json --format json
+go run ./cmd/supermover drift acknowledge --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<operator review reason>" --format json
+go run ./cmd/supermover drift resolve --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<target restored reason>" --format json
+```
+
+Use IDs from persisted `target_drifts` in `verify --format json` or
+`report --format json`, or IDs returned by `drift record`. Live-only IDs from
+`drift list` or `report.live_target_drift` must be recorded before they can be
+acknowledged or resolved. Acknowledgement writes review metadata only and keeps
+the persisted record review-required. Resolve writes review metadata only after
+a fresh live detector no longer reports the same path and expected baseline.
+Neither command repairs target files, suppresses live detector output,
+authorizes prune, performs broad reconcile, or edits manifests. Valid resolved
+persisted records no longer make status/report/health/verify review-required,
+but current live detector drift remains review-required.
+
+Use `reconcile plan/apply` only for the narrow persisted-drift repair slice:
+
+```bash
+go run ./cmd/supermover reconcile plan --profile ./supermover.profile.json --id <persisted-drift-id> --format json
+go run ./cmd/supermover reconcile apply --profile ./supermover.profile.json --id <persisted-drift-id> --apply --reason "<operator repair reason>" --format json
+```
+
+`plan` is non-mutating. `apply` requires one or more selected persisted drift
+IDs, explicit `--apply`, and `--reason`; source and target paths still come
+from the profile SSOT, with no `--target` or `--state-dir` override. Current
+repair support is limited to missing regular-file restores when published
+manifest evidence and the current source file match, plus resolve-noop when the
+target already matches expected evidence or an expected-absent target path is
+already absent. It does not consume live-only drift, run broad automatic
+reconcile, write durable repair receipts, rewrite manifests, retry in the
+background, or participate in daemon/ongoing sync.
+
+`report` is a read-only aggregation command over the same evidence. It
+summarizes warnings, profile suggestions, soft-delete records, persisted target
+drift, prune candidates, prune refusals, current-scope prune approval evidence,
+existing prune receipts, receipt issues, health/recovery issues, artifact
+problems, pairing evidence state, and published-manifest verification state at
+report time. It also runs the live target drift detector and reports
+review-required drift separately from persisted `.supermover/drift/*.json`
+records. `status` narrows prune approval evidence to counts and source
+breakdown. Prune report/status state is evidence-only; report/status do not
+author approval artifacts, supersede approvals, apply prune decisions, write
+receipts, delete files or symlinks, repair/reconcile drift, make the target
+clean, automatically release a migration, or close v1. Use
+`prune approve` for durable approval authoring and
+`prune --apply --approval <id>` for physical prune. Pairing state is evidence-only;
+examples include `unpaired`, `paired_receipt_valid`,
+`profile_invalid`, `paired_target_missing`, and
+`paired_receipt_mismatch`/`paired_receipt_missing`/`paired_receipt_invalid`.
+It is not live transport or daemon readiness, and it does not start or prove
+network readiness by itself. It may surface persisted network-transfer evidence
+after a non-dry-run network attempt reaches receiver begin and writes artifacts,
+but pre-begin failures and dry runs can leave no network-transfer artifact. It
+exits non-zero when the report requires operator review, including live target
+drift, even when text or JSON output was produced successfully. Live report
+drift is read-only evidence; use `drift record` to persist current findings
+before persisted-record review. Report does not persist, acknowledge, resolve,
+repair, reconcile, or prune drift. `recover` performs the conservative mutating
+recovery subset.
+
+`status` is wired as
+`supermover status --profile <path> [--format text|json]`. It is a current
+profile/target view over profile SSOT, target `.supermover` evidence, and
+target files needed for verification/live drift detection, with no `--session`
+flag and no repair, recover, prune, profile-update, background-scan, daemon,
+LAN, encrypted transport, or long-running sync semantics. Use
+`report --profile ... --session ...` for historical session-scoped evidence.
 
 ## Prepare A Profile
 
@@ -97,10 +198,22 @@ operator review, even when text or JSON output was produced successfully.
      include-all policy only; custom rules fail fast until rule evaluation is
      implemented.
    - `delete_policy.mode`: v1 defaults to recording deletes with review.
-   - `delete_policy.require_review`: must be true before prune behavior.
+   - `delete_policy.require_review`: must be true when `mode` is `prune`.
+   - `delete_policy.allow_physical_prune`: must be true when `mode` is
+     `prune`, and is invalid outside `mode: prune`.
    - `privacy_policy.allow_plaintext_restore`: confirms the target may receive
      plaintext files.
+   - `privacy_policy.padding_bucket_bytes`, `batch_max_bytes`,
+     `batch_max_count`, and `jitter_budget_millis`: required for traffic
+     level 2.
    - `privacy_policy.discovery_low_info`: required for traffic level 2.
+   - `traffic_level: 2`: a profile/schema declaration. Local push does not
+     apply traffic shaping. Current operator `push --network` supports only
+     traffic level 2 and applies bounded padding, batching, and timing jitter
+     through the protocol client when supplied a level 2 policy. Levels 1 and 3
+     remain schema/planning values for this network path. Level 2 only reduces
+     some record-size, batch, and timing signals; it will not hide total bytes,
+     transfer duration, peer IP addresses, LAN presence, or Supermover use.
    - `target.target_id`: the expected target identity, not a local path or
      transient discovery label.
    - `target.local_path`: trusted local restore directory for the local push
@@ -195,6 +308,14 @@ Required evidence for the local push slice:
 The profile snapshot is the audit anchor. If the operator cannot answer "which
 profile produced this target state" from `.supermover/profiles/`, the run is not
 acceptable.
+`report` also decodes the embedded snapshot privacy policy so operators can see
+the exact traffic-level bounds recorded for each session. For the current local
+push slice, overhead is reported as `not_applied`; the fields are durable policy
+evidence, not proof that padding, batching, or jitter changed local file copy
+traffic.
+Custom level-2 bounds can be valid profile declarations while still reporting
+`local_push=unsupported_privacy_policy`, because current local push only accepts
+the default plaintext/local privacy contract and does not apply traffic shaping.
 
 Use the read-only operator summaries after checking the artifact inventory:
 
@@ -204,11 +325,27 @@ go run ./cmd/supermover report --profile ./supermover.profile.json
 
 `report` is the review surface for combining warning records, profile
 suggestions, soft-delete records, health/recovery issues, artifact problems,
-and published-manifest verification state into one audit-oriented view. Treat
-the command as a view over the profile and `.supermover` evidence, not as a
-substitute for preserving the artifacts. In scripts, capture the output before
-acting on a non-zero exit; non-zero means review is required unless stderr says
-the report could not be generated.
+prune candidates, prune refusals, existing prune receipts, receipt issues,
+pairing evidence state, published-manifest verification state, and live target
+drift into one audit-oriented view. Pairing state should be read as
+target-identity evidence:
+`unpaired` means no complete profile pins and receipt were found,
+`paired_receipt_valid` means profile pins match the pairing receipt, and
+receipt mismatch/missing/invalid states mean the target must not be treated as
+trusted until reviewed. Pairing evidence alone is not a transfer attempt;
+non-dry-run `push --network` still validates the pinned TLS peer and records
+receiver-side network transfer evidence after receiver begin stores a session.
+Pre-begin failures can leave no network-transfer artifact. Treat `report` as a
+view over the profile and `.supermover` evidence plus the live detector, not as
+a substitute for preserving the artifacts. JSON reports expose live drift as
+`live_target_drift`, with counters such as `live_target_drifts` and
+`live_target_drift_artifact_problems`; persisted `.supermover/drift/*.json`
+records remain the separate `target_drifts` evidence. Use `drift record` when
+current live findings should become durable review records; use `drift resolve`
+only for existing persisted records after a fresh detector no longer reports
+drift for the same path and expected baseline. In scripts, capture
+the output before acting on a non-zero exit; non-zero means review is required
+unless stderr says the report could not be generated.
 
 `verify` and `deleted list` use published receipts as the review boundary. If a
 session has a manifest or soft-delete artifact but no `published` receipt, those
@@ -238,8 +375,15 @@ suggestions, but the warning JSON remains the durable decision artifact.
 
 The v1 policy is conservative: source-side deletion must become a reviewable
 record before physical deletion from the target. The profile field
-`delete_policy.require_review` is the safety gate. `delete_policy.mode: prune`
-without review is invalid.
+`delete_policy.require_review` is one safety gate. Current profile validation
+requires `delete_policy.mode: prune`, `delete_policy.require_review: true`, and
+`delete_policy.allow_physical_prune: true` to appear together. The
+`prune --dry-run` command validates that profile policy, reads published
+soft-delete records, and emits review-only candidates, refusals, and artifact
+problems. Soft-delete records are candidates only after
+`detected_at + retention_days * 24h`; while the window is active, dry-run emits
+`retention_window_active` refusal evidence. It does not write approval records,
+apply physical deletion, or write prune receipts.
 
 After a second or later push, source files that disappeared since the latest
 published manifest for the same `profile_id`, `target_id`, and root are written
@@ -249,25 +393,73 @@ them before any manual cleanup:
 
 ```bash
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
+go run ./cmd/supermover prune --profile ./supermover.profile.json --dry-run
 go run ./cmd/supermover report --profile ./supermover.profile.json
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 ```
 
 `report` surfaces soft-delete records alongside published-manifest
 verification state and health/recovery issues. `deleted list` remains the
-itemized review command for source paths that disappeared.
+itemized review command for source paths that disappeared. `prune --dry-run`
+turns those records into non-mutating review evidence with previous manifest
+evidence, current target state, and refusal reasons. Active retention windows
+are refusal reasons and keep the record inspectable without making it
+approvable.
 
-Physical prune and approval commands are intentionally not implemented in the
-current local push slice. Do not manually remove target files as a substitute
-for reviewed pruning unless the manual action is tracked outside Supermover.
+Author approval artifacts from fresh dry-run evidence before physical deletion:
+
+```bash
+go run ./cmd/supermover prune approve --profile ./supermover.profile.json --id <approval-id> --soft-delete <soft-delete-id> --reason "<review reason>" --reviewer <reviewer-id>
+```
+
+`--approved-by` is an alias for `--reviewer`, `--expires-at <RFC3339>` can set
+an expiry, and `--format text|json` controls output. Approval authoring writes
+`.supermover/prune/approvals/<id>.json` plus profile snapshot evidence; it does
+not delete target files or write prune receipts. The command only writes an
+approval when the fresh dry-run has no refusals or artifact problems, and
+selected IDs must be current dry-run candidates.
+
+After authoring, `report` exposes current profile/target approval evidence from
+`.supermover/prune/approvals/*.json`, while `status` exposes the related counts
+and source breakdown. This helps release review distinguish
+authored-but-unapplied approvals from applied receipts, but it is not deletion
+authorization or automatic release evidence by itself.
+Use `prune review --profile ./supermover.profile.json` for the focused
+read-only prune release-review view; it reads candidates, approvals, and
+receipts without writing approvals, receipts, or deleting target files.
+
+Physical deletion is wired only through reviewed prune approval artifacts. When
+an approval artifact exists at `.supermover/prune/approvals/<id>.json`, run:
+
+```bash
+go run ./cmd/supermover prune --profile ./supermover.profile.json --apply --approval <id>
+```
+
+The command writes `.supermover/prune/receipts/<id>.json`, records a started
+receipt before target mutation, rechecks current target evidence, deletes only
+approved file/symlink targets, and finalizes each item as `pruned`, `refused`,
+or `failed`. Approval evidence must bind the profile, target, root,
+profile-snapshot digest, soft-delete record, previous manifest evidence, target
+path, reviewed policy, operator, timestamp, and decision. Receipts record the
+approval, target-state check, outcome, and any refusal reason.
+
+Current prune apply refuses when policy does not permit physical prune, approval
+evidence is missing or invalid, target identity or path safety checks fail,
+soft-delete or manifest evidence is missing, target state has drifted from the
+reviewed evidence, the current prune plan reports an active retention window,
+approval was superseded or expired, or the operator refuses. Manual target
+deletion remains outside Supermover audit and must be tracked separately.
 
 ## LAN Discovery And Trust
 
-Discovery advertisements are intentionally low information: service type,
-protocol, nonce, and minimal capability flags. They must not include usernames,
-hostnames, profile labels, paths, inventory sizes, or friendly names.
+Current `discover` uses explicit address hints and does not browse LAN
+services. Discovery advertisements are intentionally low information: service
+type, protocol, nonce, and minimal capability flags. They must not include
+usernames, hostnames, profile labels, paths, inventory sizes, or friendly names.
 
 Discovery answers only "where might a target be reachable?" Trust requires
 pairing, explicit verification, a pairing receipt, and pinned device identity in
 the profile/control plane. Never treat a discovered address as proof that the
-target is the intended restore destination.
+target is the intended restore destination. Non-dry-run `push --network` is the
+current profile-backed encrypted transfer command; `push --network --dry-run`
+is preflight-only and writes no target artifacts.

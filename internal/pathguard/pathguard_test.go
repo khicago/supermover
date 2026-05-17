@@ -30,7 +30,7 @@ func TestSafeJoinRejectsEscapes(t *testing.T) {
 	}{
 		{name: "parent traversal", rel: "../a.txt"},
 		{name: "absolute path", rel: "/tmp/a.txt"},
-		{name: "windows absolute volume", rel: "C:/tmp/a.txt"},
+		{name: "windows absolute volume", rel: "C:/windows-temp/a.txt"},
 		{name: "windows drive relative", rel: "C:tmp/a.txt"},
 		{name: "windows unc", rel: "//server/share"},
 		{name: "backslash path", rel: `docs\a.txt`},
@@ -116,7 +116,7 @@ func TestValidateRelativeSymlinkTargetRejectsUnsafeValues(t *testing.T) {
 		{name: "interior traversal", target: "a/../b"},
 		{name: "dot segment", target: "./file"},
 		{name: "empty segment", target: "a//b"},
-		{name: "windows absolute volume", target: "C:/Users/example"},
+		{name: "windows absolute volume", target: "C:/home/example"},
 		{name: "windows drive relative", target: "c:relative"},
 		{name: "windows unc", target: "//server/share"},
 		{name: "reserved control dir", target: ".supermover/receipt.json"},

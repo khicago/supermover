@@ -1,8 +1,9 @@
 # Security Policy
 
-Supermover is currently a local migration tool with a planned secure network
-transport. Do not expose the receiver protocol directly on a network until an
-authenticated encrypted transport is implemented and documented.
+Supermover's safe operator network path is profile-backed pinned TLS 1.3 mTLS
+for `serve` and non-dry-run `push --network`. Lower-level receiver and protocol
+handlers are internal foundations and must not be exposed directly as public,
+unauthenticated network services.
 
 ## Supported Versions
 
@@ -26,11 +27,15 @@ Please include:
 ## Current Security Boundaries
 
 - Local push assumes a trusted local or mounted target path.
+- Network push assumes a paired profile with `network.receiver_url`,
+  `network.local_tls_identity`, and pinned peer identity evidence. The profile
+  remains the SSOT for operator network material.
 - Existing target files are not overwritten unless content already matches.
-- Source-side deletions are recorded as soft-delete evidence and are not
-  physically pruned by current commands.
-- Network receiver packages are protocol foundations, not a safe public
-  listener without a future authenticated encrypted transport.
+- Source-side deletions are recorded as soft-delete evidence. Physical prune is
+  wired only through reviewed `prune --apply --approval <id>` over existing
+  durable approval artifacts; approval-authoring UX remains planned.
+- Network receiver packages are protocol foundations. Safe exposure is the
+  profile-backed pinned mTLS `serve` path, not unauthenticated public handlers.
 
 ## Security Checks
 

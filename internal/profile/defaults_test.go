@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"bytes"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,6 +39,13 @@ func TestNewDefaultBuildsValidProfile(t *testing.T) {
 	}
 	if got.PrivacyPolicy.TrafficLevel != 2 || !got.PrivacyPolicy.DiscoveryLowInfo {
 		t.Errorf("NewDefault() privacy traffic = (%d, %t), want level 2 low-info discovery", got.PrivacyPolicy.TrafficLevel, got.PrivacyPolicy.DiscoveryLowInfo)
+	}
+	var encoded bytes.Buffer
+	if err := Write(&encoded, got); err != nil {
+		t.Fatalf("Write(NewDefault()) error = %v, want nil", err)
+	}
+	if strings.Contains(encoded.String(), `"network"`) {
+		t.Fatalf("Write(NewDefault()) = %s, want no empty optional network object", encoded.String())
 	}
 }
 

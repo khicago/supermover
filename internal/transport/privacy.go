@@ -44,6 +44,9 @@ func (p PrivacyPolicy) Validate() error {
 	if p.DisableBatching || p.BatchMaxBytes == 0 || p.BatchMaxCount == 0 {
 		return fmt.Errorf("%w: level 2 requires batching", ErrInvalidPrivacyPolicy)
 	}
+	if p.JitterBudget == 0 {
+		return fmt.Errorf("%w: level 2 requires timing jitter budget", ErrInvalidPrivacyPolicy)
+	}
 	if !p.DiscoveryLowInfo {
 		return fmt.Errorf("%w: level 2 requires low-information discovery", ErrInvalidPrivacyPolicy)
 	}

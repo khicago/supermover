@@ -12,13 +12,13 @@ optimization.
 - Deletion: source deletions become soft-delete records first; physical pruning
   is separate.
 - Consistency: `live`, `strict`, and `snapshot` are explicit modes.
-- Planned discovery: LAN discovery returns address hints only. Planned pairing
-  and pinned device identity establish trust.
+- Discovery: current discovery supports explicit address hints only and does not
+  browse LAN. Pairing and pinned device identity establish trust.
 
 ## Control Plane
 
-The target-side `.supermover` area is a first-class artifact surface. The
-current local slice writes:
+The target-side `.supermover` area is a first-class artifact surface. Current
+wired command surfaces write:
 
 - profile snapshots
 - session receipts
@@ -26,17 +26,20 @@ current local slice writes:
 - audit warnings
 - soft-delete records
 - transaction recovery state
+- target-drift records from refused managed updates or `drift record`
+- pairing receipts from verified local pairing
+- network transfer outcome artifacts from non-dry-run profile-backed network
+  attempts that reach receiver begin
 
-The schema and path foundation also covers planned history, network, and drift
-artifact surfaces:
+The schema and path foundation also covers planned history surfaces:
 
 - history indexes
-- pairing receipts
-- target-drift records
 
 The control plane must be machine-readable and stable enough for current
-`verify`, `deleted list`, `health`, `report`, and `recover` commands plus
-planned prune, status, drift, and agent-facing reporting commands.
+`verify`, `deleted list`, `prune`, `health`, `drift list`, `drift record`,
+`drift acknowledge`, `drift resolve`, `report`, `status`, and `recover`
+commands plus planned broad drift reconcile/repair and agent-facing reporting
+commands.
 
 ## Implementation Boundary
 

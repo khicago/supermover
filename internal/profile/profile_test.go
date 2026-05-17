@@ -8,6 +8,19 @@ import (
 	"testing"
 )
 
+func sampleAbsolutePath(parts ...string) string {
+	all := append([]string{string(filepath.Separator), "opt", "sample"}, parts...)
+	return filepath.Join(all...)
+}
+
+func sampleTargetPath() string {
+	return filepath.Join(string(filepath.Separator), "var", "tmp", "sample-target")
+}
+
+func sampleRootPath() string {
+	return filepath.Join(string(filepath.Separator), "workspace", "sample-root")
+}
+
 func TestValidateRejectsInvalidProfiles(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -95,6 +108,11 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			wantErr: "discovery_low_info must be true",
 		},
 		{
+			name:    "level 2 without jitter bound",
+			mutate:  func(p *Profile) { p.PrivacyPolicy.JitterBudgetMillis = 0 },
+			wantErr: "jitter_budget_millis is required",
+		},
+		{
 			name:    "negative padding",
 			mutate:  func(p *Profile) { p.PrivacyPolicy.PaddingBucketBytes = -1 },
 			wantErr: "privacy_policy.padding_bucket_bytes cannot be negative",
@@ -120,25 +138,183 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			wantErr: "require_review must be true",
 		},
 		{
+			name: "prune without physical opt in",
+			mutate: func(p *Profile) {
+				p.DeletePolicy.Mode = DeleteModePrune
+				p.DeletePolicy.RequireReview = true
+				p.DeletePolicy.AllowPhysicalPrune = false
+			},
+			wantErr: "allow_physical_prune must be true",
+		},
+		{
+			name:    "physical opt in without prune mode",
+			mutate:  func(p *Profile) { p.DeletePolicy.Mode = DeleteModeRecord; p.DeletePolicy.AllowPhysicalPrune = true },
+			wantErr: "allow_physical_prune requires delete_policy.mode prune",
+		},
+		{
 			name:    "missing target id",
 			mutate:  func(p *Profile) { p.Target.TargetID = "" },
 			wantErr: "target.target_id is required",
 		},
 		{
+			name:    "invalid target device key",
+			mutate:  func(p *Profile) { p.Target.DevicePublicKey = "friendly-laptop" },
+			wantErr: "target.device_public_key is invalid",
+		},
+		{
+			name:    "unsafe pairing receipt id",
+			mutate:  func(p *Profile) { p.Target.PairingReceiptID = "../pairing" },
+			wantErr: "target.pairing_receipt_id is unsafe",
+		},
+		{
+			name:    "invalid paired time",
+			mutate:  func(p *Profile) { p.Target.PairedAt = "soon" },
+			wantErr: "target.paired_at must be RFC3339",
+		},
+		{
+			name:    "pairing receipt without device key",
+			mutate:  func(p *Profile) { p.Target.DevicePublicKey = ""; p.Target.PairedAt = "2026-05-16T00:00:00Z" },
+			wantErr: "target.device_public_key is required when pairing_receipt_id or paired_at is set",
+		},
+		{
+			name:    "device key without pairing receipt",
+			mutate:  func(p *Profile) { p.Target.PairingReceiptID = ""; p.Target.PairedAt = "2026-05-16T00:00:00Z" },
+			wantErr: "target.pairing_receipt_id is required when device_public_key or paired_at is set",
+		},
+		{
+			name:    "device key without paired time",
+			mutate:  func(p *Profile) { p.Target.PairedAt = "" },
+			wantErr: "target.paired_at is required when device_public_key or pairing_receipt_id is set",
+		},
+		{
 			name: "target id equals local path",
 			mutate: func(p *Profile) {
-				p.Target.LocalPath = "/tmp/target"
-				p.Target.TargetID = "/tmp/target"
+				p.Target.LocalPath = sampleTargetPath()
+				p.Target.TargetID = sampleTargetPath()
 			},
 			wantErr: "target.target_id must not equal target.local_path",
 		},
 		{
 			name: "target id equals local path after clean",
 			mutate: func(p *Profile) {
-				p.Target.LocalPath = "/tmp/target"
-				p.Target.TargetID = "/tmp/target/"
+				p.Target.LocalPath = sampleTargetPath()
+				p.Target.TargetID = sampleTargetPath() + string(filepath.Separator)
 			},
 			wantErr: "target.target_id must not equal target.local_path",
+		},
+		{
+			name:    "network receiver url must use https",
+			mutate:  func(p *Profile) { p.Network.ReceiverURL = "http://127.0.0.1:9443" },
+			wantErr: "network.receiver_url is invalid: scheme must be https",
+		},
+		{
+			name:    "network receiver url requires explicit port",
+			mutate:  func(p *Profile) { p.Network.ReceiverURL = "https://127.0.0.1" },
+			wantErr: "network.receiver_url is invalid: explicit port is required",
+		},
+		{
+			name:    "network receiver url rejects nonnumeric ports",
+			mutate:  func(p *Profile) { p.Network.ReceiverURL = "https://127.0.0.1:https" },
+			wantErr: "network.receiver_url is invalid: parse",
+		},
+		{
+			name:    "network receiver url rejects out of range ports",
+			mutate:  func(p *Profile) { p.Network.ReceiverURL = "https://127.0.0.1:65536" },
+			wantErr: "network.receiver_url is invalid: port must be between 1 and 65535",
+		},
+		{
+			name:    "network receiver url rejects hostnames",
+			mutate:  func(p *Profile) { p.Network.ReceiverURL = "https://target.local:9443" },
+			wantErr: "network.receiver_url is invalid: host must be an IP address",
+		},
+		{
+			name:    "network receiver url rejects paths",
+			mutate:  func(p *Profile) { p.Network.ReceiverURL = "https://127.0.0.1:9443/v1" },
+			wantErr: "network.receiver_url is invalid: path must be empty or /",
+		},
+		{
+			name: "network tls certificate requires key",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity.CertificatePath = sampleAbsolutePath(".config", "supermover", "source.crt")
+			},
+			wantErr: "network.local_tls_identity.private_key_path is required",
+		},
+		{
+			name: "network tls key requires certificate",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity.PrivateKeyPath = sampleAbsolutePath(".config", "supermover", "source.key")
+			},
+			wantErr: "network.local_tls_identity.certificate_path is required",
+		},
+		{
+			name: "network tls identity rejects reserved control path",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity = TLSIdentityRef{
+					CertificatePath: sampleAbsolutePath(".supermover", "source.crt"),
+					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+				}
+			},
+			wantErr: "must not be stored under reserved .supermover control space",
+		},
+		{
+			name: "network tls identity rejects parent traversal",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity = TLSIdentityRef{
+					CertificatePath: sampleAbsolutePath(".config", "supermover", "source.crt"),
+					PrivateKeyPath:  sampleAbsolutePath(".config", "..", "source.key"),
+				}
+			},
+			wantErr: "must not contain parent traversal",
+		},
+		{
+			name: "network tls identity rejects relative paths",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity = TLSIdentityRef{
+					CertificatePath: "source.crt",
+					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+				}
+			},
+			wantErr: "must be absolute",
+		},
+		{
+			name: "network tls identity rejects filesystem roots",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity = TLSIdentityRef{
+					CertificatePath: "/",
+					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+				}
+			},
+			wantErr: "must name a file",
+		},
+		{
+			name: "network tls identity rejects trailing slash directories",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity = TLSIdentityRef{
+					CertificatePath: sampleAbsolutePath(".config", "supermover", "source.crt") + string(filepath.Separator),
+					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+				}
+			},
+			wantErr: "must name a file",
+		},
+		{
+			name: "network tls identity rejects cleaned parent traversal",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity = TLSIdentityRef{
+					CertificatePath: sampleAbsolutePath(".config", "supermover", "..", "source.crt"),
+					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+				}
+			},
+			wantErr: "must not contain parent traversal",
+		},
+		{
+			name: "network tls identity rejects backslash separators",
+			mutate: func(p *Profile) {
+				p.Network.LocalTLSIdentity = TLSIdentityRef{
+					CertificatePath: `C:\Users\example\source.crt`,
+					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+				}
+			},
+			wantErr: "must not contain backslash path separators",
 		},
 		{
 			name:    "missing knowledge category name",
@@ -150,6 +326,7 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := validProfile()
+			p.Network = &NetworkConfig{}
 			tt.mutate(&p)
 
 			err := p.Validate()
@@ -178,6 +355,7 @@ func TestValidateCollectsMultipleProfileErrors(t *testing.T) {
 	for _, want := range []string{
 		"profile_id is required",
 		"delete_policy.require_review must be true",
+		"delete_policy.allow_physical_prune must be true",
 		"privacy_policy.padding_bucket_bytes is required",
 		"target.target_id is required",
 	} {
@@ -251,9 +429,69 @@ func TestValidateAcceptsPrivacyTrafficLevelsWithRequiredFields(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsNetworkSSOTMaterial(t *testing.T) {
+	p := validProfile()
+	p.Network = &NetworkConfig{
+		ReceiverURL: "https://127.0.0.1:9443",
+		LocalTLSIdentity: TLSIdentityRef{
+			CertificatePath: sampleAbsolutePath(".config", "supermover", "source.crt"),
+			PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+		},
+	}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate(network material) error = %v, want nil", err)
+	}
+	if err := p.ValidateNetworkClientMaterial(); err != nil {
+		t.Fatalf("ValidateNetworkClientMaterial() error = %v, want nil", err)
+	}
+	if err := p.ValidateNetworkServerMaterial(); err != nil {
+		t.Fatalf("ValidateNetworkServerMaterial() error = %v, want nil", err)
+	}
+}
+
+func TestNetworkMaterialHelpersFailClosed(t *testing.T) {
+	p := validProfile()
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+	if err := p.ValidateNetworkClientMaterial(); err == nil || !strings.Contains(err.Error(), "network.receiver_url is required") {
+		t.Fatalf("ValidateNetworkClientMaterial() error = %v, want missing receiver URL", err)
+	}
+	if err := p.ValidateNetworkServerMaterial(); err == nil || !strings.Contains(err.Error(), "network.receiver_url is required") {
+		t.Fatalf("ValidateNetworkServerMaterial() error = %v, want missing receiver URL", err)
+	}
+
+	p.Network = &NetworkConfig{ReceiverURL: "https://127.0.0.1:9443"}
+	if err := p.ValidateNetworkClientMaterial(); err == nil || !strings.Contains(err.Error(), "network.local_tls_identity is required") {
+		t.Fatalf("ValidateNetworkClientMaterial(receiver only) error = %v, want missing TLS identity", err)
+	}
+	if err := p.ValidateNetworkServerMaterial(); err == nil || !strings.Contains(err.Error(), "network.local_tls_identity is required") {
+		t.Fatalf("ValidateNetworkServerMaterial(receiver only) error = %v, want missing TLS identity", err)
+	}
+
+	p.Network = &NetworkConfig{
+		LocalTLSIdentity: TLSIdentityRef{
+			CertificatePath: sampleAbsolutePath(".config", "supermover", "source.crt"),
+			PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+		},
+	}
+	if err := p.ValidateNetworkServerMaterial(); err == nil || !strings.Contains(err.Error(), "network.receiver_url is required") {
+		t.Fatalf("ValidateNetworkServerMaterial(tls only) error = %v, want missing receiver URL", err)
+	}
+}
+
 func TestWriteReadRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	want := validProfile()
+	want.Network = &NetworkConfig{
+		ReceiverURL: "https://127.0.0.1:9443",
+		LocalTLSIdentity: TLSIdentityRef{
+			CertificatePath: sampleAbsolutePath(".config", "supermover", "source.crt"),
+			PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
+		},
+	}
 
 	if err := Write(&buf, want); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -271,6 +509,12 @@ func TestWriteReadRoundTrip(t *testing.T) {
 	}
 	if got.Roots[0].Path != want.Roots[0].Path {
 		t.Fatalf("Read() roots[0].path = %q, want %q", got.Roots[0].Path, want.Roots[0].Path)
+	}
+	if got.Network == nil ||
+		got.Network.ReceiverURL != want.Network.ReceiverURL ||
+		got.Network.LocalTLSIdentity.CertificatePath != want.Network.LocalTLSIdentity.CertificatePath ||
+		got.Network.LocalTLSIdentity.PrivateKeyPath != want.Network.LocalTLSIdentity.PrivateKeyPath {
+		t.Fatalf("Read() network = %#v, want %#v", got.Network, want.Network)
 	}
 }
 
@@ -333,7 +577,7 @@ func TestReadFilePropagatesOpenError(t *testing.T) {
 }
 
 func TestReadRejectsUnknownFields(t *testing.T) {
-	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"target"},"agent_knowledge":{},"extra":true}`
+	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/workspace/sample-root"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"target"},"agent_knowledge":{},"extra":true}`
 
 	_, err := Read(strings.NewReader(input))
 	if err == nil {
@@ -377,7 +621,7 @@ func TestReadRejectsMalformedTrailingJSON(t *testing.T) {
 }
 
 func TestReadForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
-	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}`
+	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/workspace/sample-root"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/var/tmp/sample-target","local_path":"/var/tmp/sample-target"},"agent_knowledge":{}}`
 
 	if _, err := Read(strings.NewReader(input)); err == nil {
 		t.Fatalf("Read(legacy path identity) error = nil, want strict validation error")
@@ -386,14 +630,14 @@ func TestReadForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadForTargetRepair(legacy path identity) error = %v, want nil", err)
 	}
-	if got.Target.TargetID != "/tmp/target" || got.Target.LocalPath != "/tmp/target" {
+	if got.Target.TargetID != "/var/tmp/sample-target" || got.Target.LocalPath != "/var/tmp/sample-target" {
 		t.Fatalf("ReadForTargetRepair target = %#v, want legacy target loaded", got.Target)
 	}
 }
 
 func TestReadFileForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "profile.json")
-	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}`
+	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/workspace/sample-root"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/var/tmp/sample-target","local_path":"/var/tmp/sample-target"},"agent_knowledge":{}}`
 	if err := os.WriteFile(path, []byte(input), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
 	}
@@ -408,7 +652,7 @@ func TestReadFileForTargetRepairAllowsLegacyPathIdentity(t *testing.T) {
 }
 
 func TestReadForTargetRepairRejectsTrailingJSONDocument(t *testing.T) {
-	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/home/me"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/tmp/target","local_path":"/tmp/target"},"agent_knowledge":{}}
+	input := `{"version":1,"profile_id":"p","name":"n","roots":[{"id":"home","path":"/workspace/sample-root"}],"consistency":"strict","delete_policy":{"mode":"record","require_review":true},"metadata_policy":{"mode":"basic"},"privacy_policy":{"mode":"plaintext","traffic_level":1,"allow_plaintext_restore":true},"target":{"target_id":"/var/tmp/sample-target","local_path":"/var/tmp/sample-target"},"agent_knowledge":{}}
 {"ignored":true}`
 
 	_, err := ReadForTargetRepair(strings.NewReader(input))
@@ -426,7 +670,7 @@ func validProfile() Profile {
 		ProfileID: "profile-local",
 		Name:      "Local profile",
 		Roots: []Root{
-			{ID: "home", Path: "/Users/example"},
+			{ID: "home", Path: sampleRootPath()},
 		},
 		Include:     []Rule{{Pattern: "**"}},
 		Exclude:     []Rule{{Pattern: ".git/**"}},
@@ -454,8 +698,9 @@ func validProfile() Profile {
 		Target: TargetIdentity{
 			TargetID:         "target-local",
 			Name:             "Target",
-			DevicePublicKey:  "ed25519:example",
+			DevicePublicKey:  "sha256:0123456789abcdef",
 			PairingReceiptID: "pairing-1",
+			PairedAt:         "2026-05-16T00:00:00Z",
 		},
 		AgentKnowledge: AgentKnowledge{
 			Categories: []KnowledgeCategory{

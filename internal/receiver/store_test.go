@@ -1,6 +1,7 @@
 package receiver
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/protocol"
 	"github.com/khicago/supermover/internal/transaction"
+	"github.com/khicago/supermover/internal/transport"
 )
 
 func TestFileStoreBeginStatusChunkCommit(t *testing.T) {
@@ -187,6 +189,27 @@ func TestFileStoreBeginReplaySameMetadataReturnsResumeState(t *testing.T) {
 	}
 }
 
+func TestFileStoreBeginReplayIgnoresRetryCreatedAt(t *testing.T) {
+	store := FileStore{TargetRoot: t.TempDir()}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	replay := req
+	replay.CreatedAt = req.CreatedAt.Add(5 * time.Minute)
+
+	if _, err := store.Begin(replay); err != nil {
+		t.Fatalf("FileStore.Begin(replay later created_at) error = %v, want nil", err)
+	}
+	meta, err := readMeta(store.metaPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("readMeta(%q) error = %v, want nil", store.metaPath(req.SessionID), err)
+	}
+	if !meta.CreatedAt.Equal(req.CreatedAt) {
+		t.Fatalf("stored created_at = %s, want original %s", meta.CreatedAt, req.CreatedAt)
+	}
+}
+
 func TestFileStoreBeginReplayDifferentMetadataConflicts(t *testing.T) {
 	store := FileStore{TargetRoot: t.TempDir()}
 	req := validBeginRequest([]byte("hello"))
@@ -267,6 +290,173 @@ func TestFileStoreStatusReturnsResumeOffset(t *testing.T) {
 	}
 	if len(status.Files) != 1 || status.Files[0].CommittedSize != 5 || status.Files[0].Complete {
 		t.Errorf("FileStore.Status(%q).Files = %+v, want committed size 5 and incomplete", req.SessionID, status.Files)
+	}
+}
+
+func TestFileStoreZeroByteFileRequiresExplicitCompletionEvidence(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	status, err := store.Status(req.SessionID)
+	if err != nil {
+		t.Fatalf("FileStore.Status(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if len(status.Files) != 1 || status.Files[0].CommittedSize != 0 || status.Files[0].Complete {
+		t.Fatalf("FileStore.Status(%q).Files = %+v, want zero committed and incomplete without staged evidence", req.SessionID, status.Files)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want ErrIntegrity", commitReq, err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if record.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after missing zero-byte evidence = %q, want %q", record.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStoreZeroByteCommitDoesNotInferCompletionFromExistingTarget(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), nil, 0o600); err != nil {
+		t.Fatalf("os.WriteFile(existing empty target) error = %v, want nil", err)
+	}
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("FileStore.Commit(existing target without zero-byte evidence) error = %v, want ErrIntegrity", err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if record.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after inferred zero-byte completion = %q, want %q", record.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStoreZeroByteCompletionCreatesDurableEvidenceAndReplays(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte{}, Digest: protocol.EmptySHA256Digest, Final: true}
+
+	resp, err := store.AppendChunk(chunk)
+	if err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	if !resp.Complete || resp.CommittedSize != 0 || resp.ChunkState != protocol.ChunkStateAccepted {
+		t.Fatalf("FileStore.AppendChunk(%+v) = %+v, want accepted complete zero-byte evidence", chunk, resp)
+	}
+	stagePath := filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "stage", "docs", "a.txt")
+	info, err := os.Lstat(stagePath)
+	if err != nil {
+		t.Fatalf("os.Lstat(%q) error = %v, want durable staged evidence", stagePath, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != 0 {
+		t.Fatalf("staged evidence mode=%v size=%d, want regular zero-byte file", info.Mode(), info.Size())
+	}
+
+	replay, err := store.AppendChunk(chunk)
+	if err != nil {
+		t.Fatalf("FileStore.AppendChunk(replay %+v) error = %v, want nil", chunk, err)
+	}
+	if replay.ChunkState != protocol.ChunkStateDuplicate || !replay.Complete || replay.CommittedSize != 0 {
+		t.Fatalf("FileStore.AppendChunk(replay %+v) = %+v, want duplicate complete zero-byte response", chunk, replay)
+	}
+	status, err := store.Status(req.SessionID)
+	if err != nil {
+		t.Fatalf("FileStore.Status(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if len(status.Files) != 1 || status.Files[0].CommittedSize != 0 || !status.Files[0].Complete {
+		t.Fatalf("FileStore.Status(%q).Files = %+v, want explicit zero-byte completion", req.SessionID, status.Files)
+	}
+}
+
+func TestFileStoreZeroByteCompletionRejectsCorruptStagedEvidence(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	stagePath := filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "stage", "docs", "a.txt")
+	if err := os.MkdirAll(filepath.Dir(stagePath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(stage parent) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(stagePath, []byte("corrupt"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(corrupt staged evidence) error = %v, want nil", err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte{}, Digest: protocol.EmptySHA256Digest, Final: true}
+
+	if _, err := store.AppendChunk(chunk); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("FileStore.AppendChunk(corrupt staged evidence) error = %v, want ErrIntegrity", err)
+	}
+	got, err := os.ReadFile(stagePath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(corrupt staged evidence) error = %v, want nil", err)
+	}
+	if string(got) != "corrupt" {
+		t.Fatalf("corrupt staged evidence after rejected zero-byte completion = %q, want unchanged", string(got))
+	}
+}
+
+func TestFileStoreZeroByteCompletionPublishesEmptyFile(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte{}, Digest: protocol.EmptySHA256Digest, Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(%+v) error = %v, want nil", commitReq, err)
+	}
+	commitReplay, err := store.Commit(commitReq)
+	if err != nil {
+		t.Fatalf("FileStore.Commit(replay %+v) error = %v, want nil", commitReq, err)
+	}
+	if commitReplay.State != protocol.SessionStatePublished || commitReplay.ReceiptID != req.SessionID {
+		t.Fatalf("FileStore.Commit(replay %+v) = %+v, want published receipt %q", commitReq, commitReplay, req.SessionID)
+	}
+	info, err := os.Stat(filepath.Join(root, "docs", "a.txt"))
+	if err != nil {
+		t.Fatalf("os.Stat(published empty file) error = %v, want nil", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != 0 {
+		t.Fatalf("published empty file mode=%v size=%d, want regular zero-byte file", info.Mode(), info.Size())
+	}
+	proof, err := readStagedFileProof(store.stagedFileProofPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("readStagedFileProof(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if proof.SessionID != req.SessionID || len(proof.Files) != 1 {
+		t.Fatalf("staged proof = %+v, want one entry for %q", proof, req.SessionID)
+	}
+	if proof.Files[0].Path != "docs/a.txt" || proof.Files[0].Size != 0 || proof.Files[0].Digest != protocol.EmptySHA256Digest {
+		t.Fatalf("staged proof file = %+v, want docs/a.txt zero-byte empty digest", proof.Files[0])
 	}
 }
 
@@ -460,6 +650,79 @@ func TestFileStoreAppendChunkClassifiesDuplicateAndRejectsOverlap(t *testing.T) 
 	partialOverlap := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 3, Data: []byte("lo w")}
 	if _, err := store.AppendChunk(partialOverlap); !errors.Is(err, ErrConflict) {
 		t.Fatalf("FileStore.AppendChunk(partial overlap %+v) error = %v, want ErrConflict", partialOverlap, err)
+	}
+}
+
+func TestFileStoreAppendChunkRejectsZeroByteCompletionForNonEmptyFile(t *testing.T) {
+	store := FileStore{TargetRoot: t.TempDir()}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte{}, Digest: protocol.EmptySHA256Digest, Final: true}
+
+	if _, err := store.AppendChunk(chunk); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.AppendChunk(non-empty zero completion %+v) error = %v, want ErrConflict", chunk, err)
+	}
+	status, err := store.Status(req.SessionID)
+	if err != nil {
+		t.Fatalf("FileStore.Status(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if len(status.Files) != 1 || status.Files[0].CommittedSize != 0 || status.Files[0].Complete {
+		t.Fatalf("FileStore.Status(%q).Files = %+v, want non-empty file still incomplete", req.SessionID, status.Files)
+	}
+}
+
+func TestFileStoreAppendChunkBatchPreflightsBeforeMutation(t *testing.T) {
+	store := FileStore{TargetRoot: t.TempDir()}
+	req := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	batch := protocol.ChunkBatchUploadRequest{
+		SessionID: req.SessionID,
+		Chunks: []protocol.ChunkUploadRequest{
+			{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("he")},
+			{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 3, Data: []byte("lo"), Final: true},
+		},
+	}
+
+	if _, err := store.AppendChunkBatch(context.Background(), batch); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.AppendChunkBatch(gap) error = %v, want ErrConflict", err)
+	}
+	status, err := store.Status(req.SessionID)
+	if err != nil {
+		t.Fatalf("FileStore.Status(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if len(status.Files) != 1 || status.Files[0].CommittedSize != 0 {
+		t.Fatalf("FileStore.Status(%q).Files = %+v, want no committed prefix after failed batch preflight", req.SessionID, status.Files)
+	}
+}
+
+func TestFileStoreAppendChunkBatchZeroByteCompletionIsIdempotent(t *testing.T) {
+	store := FileStore{TargetRoot: t.TempDir()}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte{}, Digest: protocol.EmptySHA256Digest, Final: true}
+	batch := protocol.ChunkBatchUploadRequest{
+		SessionID: req.SessionID,
+		Chunks:    []protocol.ChunkUploadRequest{chunk, chunk},
+	}
+
+	resp, err := store.AppendChunkBatch(context.Background(), batch)
+	if err != nil {
+		t.Fatalf("FileStore.AppendChunkBatch(%+v) error = %v, want nil", batch, err)
+	}
+	if len(resp.Chunks) != 2 {
+		t.Fatalf("FileStore.AppendChunkBatch(%+v).Chunks = %d, want 2", batch, len(resp.Chunks))
+	}
+	if resp.Chunks[0].ChunkState != protocol.ChunkStateAccepted || !resp.Chunks[0].Complete || resp.Chunks[0].CommittedSize != 0 {
+		t.Fatalf("first zero-byte batch response = %+v, want accepted complete", resp.Chunks[0])
+	}
+	if resp.Chunks[1].ChunkState != protocol.ChunkStateDuplicate || !resp.Chunks[1].Complete || resp.Chunks[1].CommittedSize != 0 {
+		t.Fatalf("second zero-byte batch response = %+v, want duplicate complete", resp.Chunks[1])
 	}
 }
 
@@ -743,6 +1006,142 @@ func TestFileStoreCommitRecoversAfterPublishBeforeReceipt(t *testing.T) {
 	}
 }
 
+func TestFileStoreZeroByteStagedRecoveryRequiresPriorEvidenceProof(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	staged, err := record.WithState(transaction.StateStaged, time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(staged) error = %v, want nil", err)
+	}
+	if err := store.layout().WriteSessionRecord(staged); err != nil {
+		t.Fatalf("Layout.WriteSessionRecord(staged) error = %v, want nil", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(final parent) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), nil, 0o600); err != nil {
+		t.Fatalf("os.WriteFile(final empty target) error = %v, want nil", err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 2, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("FileStore.Commit(staged zero-byte without proof) error = %v, want ErrIntegrity", err)
+	}
+	finalRecord, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(final) error = %v, want nil", err)
+	}
+	if finalRecord.State != transaction.StateNeedsRepair {
+		t.Fatalf("session state after staged zero-byte without proof = %q, want %q", finalRecord.State, transaction.StateNeedsRepair)
+	}
+}
+
+func TestFileStoreZeroByteStagedRecoveryAcceptsCurrentStagedEvidence(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte{}, Digest: protocol.EmptySHA256Digest, Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	staged, err := record.WithState(transaction.StateStaged, time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(staged) error = %v, want nil", err)
+	}
+	if err := store.layout().WriteSessionRecord(staged); err != nil {
+		t.Fatalf("Layout.WriteSessionRecord(staged) error = %v, want nil", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(final parent) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), nil, 0o600); err != nil {
+		t.Fatalf("os.WriteFile(final empty target) error = %v, want nil", err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 2, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(staged zero-byte with current evidence) error = %v, want nil", err)
+	}
+	finalRecord, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(final) error = %v, want nil", err)
+	}
+	if finalRecord.State != transaction.StatePublished {
+		t.Fatalf("session state after staged zero-byte with current evidence = %q, want %q", finalRecord.State, transaction.StatePublished)
+	}
+}
+
+func TestFileStoreZeroByteCommitRecoversAfterPublishBeforeReceipt(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte{})
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte{}, Digest: protocol.EmptySHA256Digest, Final: true}
+	if _, err := store.AppendChunk(chunk); err != nil {
+		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	meta, _, err := store.loadSession(req.SessionID)
+	if err != nil {
+		t.Fatalf("FileStore.loadSession(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if err := store.writeStagedFileProof(meta); err != nil {
+		t.Fatalf("FileStore.writeStagedFileProof(%q) error = %v, want nil", req.SessionID, err)
+	}
+	record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(%q) error = %v, want nil", req.SessionID, err)
+	}
+	staged, err := record.WithState(transaction.StateStaged, time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(staged) error = %v, want nil", err)
+	}
+	if err := store.layout().WriteSessionRecord(staged); err != nil {
+		t.Fatalf("Layout.WriteSessionRecord(staged) error = %v, want nil", err)
+	}
+	if err := store.publish(meta); err != nil {
+		t.Fatalf("FileStore.publish(%q) error = %v, want nil", req.SessionID, err)
+	}
+	if _, err := os.Lstat(filepath.Join(control.ControlDir(root), "sessions", req.SessionID, "stage", "docs", "a.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Lstat(staged file after simulated publish) error = %v, want os.ErrNotExist", err)
+	}
+
+	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 2, 0, 0, time.UTC)}
+	if _, err := store.Commit(commitReq); err != nil {
+		t.Fatalf("FileStore.Commit(recover zero-byte after publish before receipt) error = %v, want nil", err)
+	}
+	info, err := os.Stat(filepath.Join(root, "docs", "a.txt"))
+	if err != nil {
+		t.Fatalf("os.Stat(published empty file) error = %v, want nil", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != 0 {
+		t.Fatalf("published empty file mode=%v size=%d, want regular zero-byte file", info.Mode(), info.Size())
+	}
+	finalRecord, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(root)).RecordPath(req.SessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(final) error = %v, want nil", err)
+	}
+	if finalRecord.State != transaction.StatePublished {
+		t.Fatalf("session state after recovered zero-byte commit = %q, want published", finalRecord.State)
+	}
+}
+
 func TestFileStoreCommitMarksStagedReconcileFailureNeedsRepair(t *testing.T) {
 	root := t.TempDir()
 	store := FileStore{TargetRoot: root}
@@ -862,6 +1261,9 @@ func TestFileStorePublishedSessionRequiresReceiptScope(t *testing.T) {
 	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
 	if err != nil {
 		t.Fatalf("control.ReadFile(receipt) error = %v, want nil", err)
+	}
+	if receipt.TargetID != req.TargetID {
+		t.Fatalf("receipt target_id = %q, want profile target_id %q, not target device id %q", receipt.TargetID, req.TargetID, req.TargetDeviceID)
 	}
 	receipt.ProfileID = "profile.other"
 	if err := control.WriteFile(receiptPath, receipt); err != nil {
@@ -989,6 +1391,67 @@ func TestFileStorePublishedSessionReplayIsIdempotentAndRejectsChunks(t *testing.
 	got, err := os.ReadFile(filepath.Join(root, "docs", "a.txt"))
 	if err != nil || string(got) != "hello" {
 		t.Fatalf("published file after replay = (%q, %v), want hello", string(got), err)
+	}
+}
+
+func TestFileStoreWriteNetworkTransferRejectsSessionMetadataMismatch(t *testing.T) {
+	root := t.TempDir()
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+	req.PrivacyPolicy = transport.DefaultPrivacyPolicy(transport.PrivacyLevel2)
+	if _, err := store.Begin(req); err != nil {
+		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	valid := validNetworkTransferForBegin(req)
+
+	tests := []struct {
+		name string
+		edit func(*control.NetworkTransfer)
+	}{
+		{
+			name: "source device mismatch",
+			edit: func(doc *control.NetworkTransfer) {
+				doc.SourceDeviceID = "sha256:1111111111111111"
+			},
+		},
+		{
+			name: "target device mismatch",
+			edit: func(doc *control.NetworkTransfer) {
+				doc.TargetDeviceID = "sha256:2222222222222222"
+			},
+		},
+		{
+			name: "privacy policy mismatch",
+			edit: func(doc *control.NetworkTransfer) {
+				doc.PrivacyPolicy.BatchMaxCount++
+			},
+		},
+		{
+			name: "privacy policy missing",
+			edit: func(doc *control.NetworkTransfer) {
+				doc.PrivacyPolicy = transport.PrivacyPolicy{}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			doc := valid
+			tt.edit(&doc)
+			if _, err := store.WriteNetworkTransfer(protocol.NetworkTransferArtifactRequest{
+				SessionID: req.SessionID,
+				Document:  marshalControlDoc(t, doc),
+			}); !errors.Is(err, ErrConflict) {
+				t.Fatalf("FileStore.WriteNetworkTransfer(%s) error = %v, want ErrConflict", tt.name, err)
+			}
+			path, err := control.Path(root, control.ArtifactNetworkTransfer, req.SessionID)
+			if err != nil {
+				t.Fatalf("control.Path(network transfer) error = %v, want nil", err)
+			}
+			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("network transfer artifact after rejected %s stat error = %v, want absent", tt.name, err)
+			}
+		})
 	}
 }
 
@@ -1356,6 +1819,7 @@ func validBeginRequest(data []byte) protocol.BeginSessionRequest {
 		ProtocolVersion: protocol.Version,
 		SessionID:       "session-1",
 		ProfileID:       "profile.default",
+		TargetID:        "local:profile.default",
 		SourceDeviceID:  "sha256:abcdef0123456789",
 		TargetDeviceID:  "sha256:0123456789abcdef",
 		RootID:          "root1",
@@ -1367,6 +1831,29 @@ func validBeginRequest(data []byte) protocol.BeginSessionRequest {
 				{Path: "docs/a.txt", Kind: protocol.FileKindFile, Mode: 0o600, Size: int64(len(data)), Digest: digest(data), ModTime: now},
 			},
 		},
+	}
+}
+
+func validNetworkTransferForBegin(req protocol.BeginSessionRequest) control.NetworkTransfer {
+	return control.NetworkTransfer{
+		Version:         control.CurrentVersion,
+		SessionID:       req.SessionID,
+		ProfileID:       req.ProfileID,
+		TargetID:        req.TargetID,
+		SourceDeviceID:  req.SourceDeviceID,
+		TargetDeviceID:  req.TargetDeviceID,
+		ProtocolVersion: protocol.Version,
+		PrivacyPolicy:   req.PrivacyPolicy,
+		Status:          control.NetworkTransferStarted,
+		Stage:           "begin",
+		StartedAt:       "2026-05-16T08:00:00Z",
+		UpdatedAt:       "2026-05-16T08:00:00Z",
+		Attempts: []control.NetworkTransferAttempt{{
+			AttemptID: "attempt-1",
+			StartedAt: "2026-05-16T08:00:00Z",
+			Stage:     "begin",
+			Status:    control.NetworkTransferStarted,
+		}},
 	}
 }
 

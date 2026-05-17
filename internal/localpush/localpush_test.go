@@ -104,6 +104,18 @@ func TestRunCopiesFilesAndWritesControlArtifacts(t *testing.T) {
 	if snapshot.ProfileID != p.ProfileID {
 		t.Errorf("profile snapshot id = %q, want %q", snapshot.ProfileID, p.ProfileID)
 	}
+	var snapshotProfile profile.Profile
+	if err := json.Unmarshal(snapshot.Profile, &snapshotProfile); err != nil {
+		t.Fatalf("json.Unmarshal(profile snapshot) error = %v, want nil", err)
+	}
+	if snapshotProfile.PrivacyPolicy.TrafficLevel != 2 ||
+		snapshotProfile.PrivacyPolicy.PaddingBucketBytes != p.PrivacyPolicy.PaddingBucketBytes ||
+		snapshotProfile.PrivacyPolicy.BatchMaxBytes != p.PrivacyPolicy.BatchMaxBytes ||
+		snapshotProfile.PrivacyPolicy.BatchMaxCount != p.PrivacyPolicy.BatchMaxCount ||
+		snapshotProfile.PrivacyPolicy.JitterBudgetMillis != p.PrivacyPolicy.JitterBudgetMillis ||
+		!snapshotProfile.PrivacyPolicy.DiscoveryLowInfo {
+		t.Fatalf("profile snapshot privacy policy = %+v, want level 2 bounds from profile %+v", snapshotProfile.PrivacyPolicy, p.PrivacyPolicy)
+	}
 	record, err := transaction.ReadSessionRecord(filepath.Join(target, control.DirName, "sessions", "session-test", "session.json"))
 	if err != nil {
 		t.Fatalf("transaction.ReadSessionRecord() error = %v, want nil", err)
@@ -1233,6 +1245,10 @@ func TestRunRefusesToOverwriteDifferentTargetFile(t *testing.T) {
 	if !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("Run(existing divergent target) error = %q, want refusing to overwrite", err.Error())
 	}
+	var drift targetDriftCause
+	if errors.As(err, &drift) {
+		t.Fatalf("Run(existing divergent target) error = %v, want ordinary overwrite refusal without target drift cause", err)
+	}
 	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "target" {
 		t.Fatalf("target file after failed Run = (%q, %v), want unchanged target", string(got), err)
 	}
@@ -1755,6 +1771,13 @@ func TestPreflightAndRunRefuseChangedManagedFileAfterTargetDrift(t *testing.T) {
 				if err == nil || !strings.Contains(err.Error(), "refusing") {
 					t.Fatalf("%s(changed source with target drift %s) error = %v, want refusal", push.name, drift.name, err)
 				}
+				var cause targetDriftCause
+				if !errors.As(err, &cause) {
+					t.Fatalf("%s(changed source with target drift %s) error = %v, want target drift cause", push.name, drift.name, err)
+				}
+				if cause.TargetPath != "file.txt" || cause.Expected.Path != "file.txt" || cause.Observed.Path != "file.txt" {
+					t.Fatalf("%s(changed source with target drift %s) cause = %#v, want target-relative drift paths", push.name, drift.name, cause)
+				}
 				got, err := os.ReadFile(filepath.Join(target, "file.txt"))
 				if drift.want == "" {
 					if !errors.Is(err, os.ErrNotExist) {
@@ -1766,8 +1789,136 @@ func TestPreflightAndRunRefuseChangedManagedFileAfterTargetDrift(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "session-two", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("os.Stat(receipt after failed %s/%s) error = %v, want os.ErrNotExist", drift.name, push.name, err)
 				}
+				driftArtifacts := readTargetDriftArtifacts(t, target)
+				if push.name == "run" {
+					if len(driftArtifacts) != 1 {
+						t.Fatalf("target drift artifacts after failed %s/%s = %#v, want one durable drift record", drift.name, push.name, driftArtifacts)
+					}
+					if driftArtifacts[0].SessionID != "session-two" || driftArtifacts[0].Path != "file.txt" || driftArtifacts[0].DetectedAt == "" {
+						t.Fatalf("target drift artifact after failed %s/%s = %#v, want session path and timestamp", drift.name, push.name, driftArtifacts[0])
+					}
+					if len(driftArtifacts[0].Evidence) == 0 {
+						t.Fatalf("target drift artifact after failed %s/%s = %#v, want review evidence", drift.name, push.name, driftArtifacts[0])
+					}
+					if driftArtifacts[0].ReviewState != "needs_review" ||
+						driftArtifacts[0].Expected.SessionID != "session-one" ||
+						driftArtifacts[0].Expected.ManifestID != "manifest-session-one" ||
+						driftArtifacts[0].Expected.Path != "file.txt" ||
+						driftArtifacts[0].Observed.Path != "file.txt" {
+						t.Fatalf("target drift artifact after failed %s/%s = %#v, want structured expected/observed needs-review evidence", drift.name, push.name, driftArtifacts[0])
+					}
+					switch drift.name {
+					case "delete":
+						if driftArtifacts[0].Observed.Present == nil || *driftArtifacts[0].Observed.Present || driftArtifacts[0].Observed.Kind != "missing" {
+							t.Fatalf("target drift artifact after failed %s/%s observed=%#v, want missing target state", drift.name, push.name, driftArtifacts[0].Observed)
+						}
+					default:
+						if driftArtifacts[0].Observed.Present == nil || !*driftArtifacts[0].Observed.Present || driftArtifacts[0].Observed.Kind != "file" {
+							t.Fatalf("target drift artifact after failed %s/%s observed=%#v, want present file target state", drift.name, push.name, driftArtifacts[0].Observed)
+						}
+					}
+				} else if len(driftArtifacts) != 0 {
+					t.Fatalf("target drift artifacts after dry-run %s/%s = %#v, want no target mutation from preflight", drift.name, push.name, driftArtifacts)
+				}
 			})
 		}
+	}
+}
+
+func TestRunReusesAcknowledgedTargetDriftArtifactForSameLogicalFinding(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(target, "file.txt"), "manual target edit", 0o644)
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new source", 0o644)
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("Run(changed source with target drift) error = %v, want refusal", err)
+	}
+	driftArtifacts := readTargetDriftArtifacts(t, target)
+	if len(driftArtifacts) != 1 {
+		t.Fatalf("target drift artifacts after first failed run = %#v, want one durable drift record", driftArtifacts)
+	}
+	acknowledged := driftArtifacts[0]
+	acknowledged.ReviewState = "acknowledged"
+	acknowledged.ReviewAction = "acknowledge"
+	acknowledged.ReviewedAt = "2026-05-20T02:00:00Z"
+	acknowledged.ReviewedBy = "ops"
+	acknowledged.ReviewReason = "operator accepted target-local edit"
+	writeTargetDriftArtifact(t, target, acknowledged)
+	removeLocalSessionState(t, target, "session-two")
+
+	_, err = Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC)})
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("Run(repeated target drift) error = %v, want refusal with reused drift artifact", err)
+	}
+	driftArtifacts = readTargetDriftArtifacts(t, target)
+	if len(driftArtifacts) != 1 {
+		t.Fatalf("target drift artifacts after repeated failed run = %#v, want existing artifact reused", driftArtifacts)
+	}
+	if driftArtifacts[0].ID != acknowledged.ID ||
+		driftArtifacts[0].ReviewState != "acknowledged" ||
+		driftArtifacts[0].ReviewAction != "acknowledge" ||
+		driftArtifacts[0].ReviewedAt != "2026-05-20T02:00:00Z" ||
+		driftArtifacts[0].ReviewedBy != "ops" ||
+		driftArtifacts[0].ReviewReason != "operator accepted target-local edit" {
+		t.Fatalf("target drift artifact after repeated failed run = %#v, want acknowledged review metadata preserved", driftArtifacts[0])
+	}
+}
+
+func TestRunWritesDistinctTargetDriftArtifactsForSameSessionPathWithDifferentObservation(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new source", 0o644)
+	mustReplaceFile(t, filepath.Join(target, "file.txt"), "manual target edit one", 0o644)
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("Run(first target drift) error = %v, want refusal", err)
+	}
+	firstArtifacts := readTargetDriftArtifacts(t, target)
+	if len(firstArtifacts) != 1 {
+		t.Fatalf("target drift artifacts after first failed run = %#v, want one durable drift record", firstArtifacts)
+	}
+	first := firstArtifacts[0]
+	removeLocalSessionState(t, target, "session-two")
+
+	mustReplaceFile(t, filepath.Join(target, "file.txt"), "manual target edit two with different length", 0o644)
+	_, err = Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 3, 0, 0, 0, time.UTC)})
+	if err == nil || !strings.Contains(err.Error(), "refusing") {
+		t.Fatalf("Run(second target drift) error = %v, want refusal with another durable drift artifact", err)
+	}
+	driftArtifacts := readTargetDriftArtifacts(t, target)
+	if len(driftArtifacts) != 2 {
+		t.Fatalf("target drift artifacts after second failed run = %#v, want two durable drift records for distinct observations", driftArtifacts)
+	}
+	var second control.TargetDrift
+	for _, artifact := range driftArtifacts {
+		if artifact.ID != first.ID {
+			second = artifact
+			break
+		}
+	}
+	if second.ID == "" {
+		t.Fatalf("target drift artifacts after second failed run = %#v, want a new artifact id distinct from %q", driftArtifacts, first.ID)
+	}
+	if second.SessionID != first.SessionID || second.Path != first.Path || second.Change != first.Change {
+		t.Fatalf("second target drift artifact = %#v, want same session/path/change as first %#v", second, first)
+	}
+	if second.Observed.Digest == first.Observed.Digest || second.Observed.Size == first.Observed.Size || second.Observed.Digest != testDigest("manual target edit two with different length") || len(second.Evidence) == 0 {
+		t.Fatalf("second target drift artifact = %#v, want distinct current observed state from first %#v", second, first)
 	}
 }
 
@@ -3054,6 +3205,49 @@ func readControlDoc[T control.Document](t *testing.T, target string, artifact co
 		t.Fatalf("control.ReadFile(%q) error = %v, want nil", path, err)
 	}
 	return doc
+}
+
+func readTargetDriftArtifacts(t *testing.T, target string) []control.TargetDrift {
+	t.Helper()
+	dir := filepath.Join(target, control.DirName, "drift")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("os.ReadDir(%q) error = %v, want nil", dir, err)
+	}
+	var out []control.TargetDrift
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		doc, err := control.ReadFile[control.TargetDrift](filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("control.ReadFile(target drift %q) error = %v, want nil", entry.Name(), err)
+		}
+		out = append(out, doc)
+	}
+	return out
+}
+
+func writeTargetDriftArtifact(t *testing.T, target string, drift control.TargetDrift) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactTargetDrift, drift.ID)
+	if err != nil {
+		t.Fatalf("control.Path(target drift %q) error = %v, want nil", drift.ID, err)
+	}
+	if err := control.WriteFile(path, drift); err != nil {
+		t.Fatalf("control.WriteFile(target drift %q) error = %v, want nil", drift.ID, err)
+	}
+}
+
+func removeLocalSessionState(t *testing.T, target string, sessionID string) {
+	t.Helper()
+	path := transaction.NewLayout(control.ControlDir(target)).SessionDir(sessionID)
+	if err := os.RemoveAll(path); err != nil {
+		t.Fatalf("os.RemoveAll(%q) error = %v, want nil", path, err)
+	}
 }
 
 func manifestContainsDigest(manifest control.Manifest, path string) bool {

@@ -71,6 +71,7 @@ func TestPrivacyPolicyValidate(t *testing.T) {
 		{name: "level 2 no batch bytes", policy: PrivacyPolicy{Level: PrivacyLevel2, PaddingBucket: 1, BatchMaxCount: 1, DiscoveryLowInfo: true}, wantErr: true},
 		{name: "level 2 batching disabled", policy: PrivacyPolicy{Level: PrivacyLevel2, PaddingBucket: 1, BatchMaxBytes: 1, BatchMaxCount: 1, DiscoveryLowInfo: true, DisableBatching: true}, wantErr: true},
 		{name: "level 2 high info discovery", policy: PrivacyPolicy{Level: PrivacyLevel2, PaddingBucket: 1, BatchMaxBytes: 1, BatchMaxCount: 1}, wantErr: true},
+		{name: "level 2 no jitter budget", policy: PrivacyPolicy{Level: PrivacyLevel2, PaddingBucket: 1, BatchMaxBytes: 1, BatchMaxCount: 1, DiscoveryLowInfo: true}, wantErr: true},
 		{name: "unsupported level", policy: PrivacyPolicy{Level: 9}, wantErr: true},
 		{name: "level 1 accepts disabled protections", policy: PrivacyPolicy{Level: PrivacyLevel1}, wantErr: false},
 	}

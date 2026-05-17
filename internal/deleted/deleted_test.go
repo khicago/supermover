@@ -11,6 +11,8 @@ import (
 	"github.com/khicago/supermover/internal/scan"
 )
 
+const testDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 func TestGenerateSoftDeleteRecords(t *testing.T) {
 	now := time.Date(2026, 5, 16, 1, 2, 3, 4, time.UTC)
 	previous := control.Manifest{
@@ -20,7 +22,7 @@ func TestGenerateSoftDeleteRecords(t *testing.T) {
 		CreatedAt: "2026-05-15T00:00:00Z",
 		Entries: []control.ManifestEntry{
 			{Path: "keep.txt", Kind: "file", TargetPath: "keep.txt"},
-			{Path: "deleted.txt", Kind: "file", TargetPath: "deleted.txt", Size: 7, Digest: "sha256:abcdef"},
+			{Path: "deleted.txt", Kind: "file", TargetPath: "deleted.txt", Size: 7, Digest: testDigest},
 			{Path: "deleted-link", Kind: "symlink", TargetPath: "deleted-link", SymlinkTarget: "deleted.txt"},
 			{Path: "empty-dir", Kind: "dir", TargetPath: "empty-dir"},
 		},
@@ -76,8 +78,11 @@ func TestGenerateSoftDeleteRecords(t *testing.T) {
 			t.Errorf("Generate(%#v) record reason = empty, want explanation", previous)
 		}
 	}
-	if got.Records[1].Kind != "file" || got.Records[1].Size != 7 || got.Records[1].Digest != "sha256:abcdef" {
-		t.Errorf("Generate(%#v).Records[1] evidence = (%q, %d, %q), want file/7/sha256:abcdef", previous, got.Records[1].Kind, got.Records[1].Size, got.Records[1].Digest)
+	if got.Records[1].Kind != "file" || got.Records[1].Size != 7 || got.Records[1].Digest != testDigest {
+		t.Errorf("Generate(%#v).Records[1] evidence = (%q, %d, %q), want file/7/%s", previous, got.Records[1].Kind, got.Records[1].Size, got.Records[1].Digest, testDigest)
+	}
+	if got.Records[0].Kind != "symlink" || got.Records[0].SymlinkTarget != "deleted.txt" {
+		t.Errorf("Generate(%#v).Records[0] symlink evidence = (%q, %q), want symlink/deleted.txt", previous, got.Records[0].Kind, got.Records[0].SymlinkTarget)
 	}
 }
 
@@ -119,7 +124,7 @@ func TestGenerateRecordsKindChangeAsSoftDelete(t *testing.T) {
 		SessionID: "session-one",
 		RootID:    "root",
 		CreatedAt: "2026-05-15T00:00:00Z",
-		Entries:   []control.ManifestEntry{{Path: "item", Kind: "file", TargetPath: "item", Size: 3, Digest: "sha256:old"}},
+		Entries:   []control.ManifestEntry{{Path: "item", Kind: "file", TargetPath: "item", Size: 3, Digest: testDigest}},
 	}
 	current := scan.Result{Entries: []scan.Entry{{Path: ".", Kind: scan.KindDir}, {Path: "item", Kind: scan.KindSymlink, SymlinkTarget: "real-target"}}}
 

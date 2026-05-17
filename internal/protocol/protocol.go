@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -8,11 +9,15 @@ import (
 	"time"
 
 	"github.com/khicago/supermover/internal/pathguard"
+	"github.com/khicago/supermover/internal/privacy/padding"
+	"github.com/khicago/supermover/internal/transaction"
 	"github.com/khicago/supermover/internal/transport"
 )
 
 const (
 	Version = "supermover/1"
+
+	EmptySHA256Digest = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 	MaxSessionIDLen = 128
 	MaxRootIDLen    = 128
@@ -20,10 +25,24 @@ const (
 	MaxDigestLen    = 128
 	MaxChunkBytes   = 4 * 1024 * 1024
 
-	MaxManifestEntries          = 100_000
-	MaxTotalDeclaredBytes       = 1 << 50
-	MaxSymlinkTargetLen         = pathguard.MaxSymlinkTargetLen
-	MaxFileMode           int64 = 0o777
+	MaxChunkRequestBodyBytes       = ((MaxChunkBytes + 2) / 3 * 4) + 256*1024
+	MaxPaddingBucketBytes          = 1024 * 1024
+	MaxPaddedChunkRequestBodyBytes = MaxChunkRequestBodyBytes + MaxPaddingBucketBytes + 1024
+	MaxBatchChunks                 = 1024
+	MaxBatchPlainBodyBytes         = MaxChunkRequestBodyBytes
+	MaxPaddedBatchRequestBodyBytes = MaxBatchPlainBodyBytes + MaxPaddingBucketBytes + 1024
+
+	MaxManifestEntries             = 100_000
+	MaxTotalDeclaredBytes          = 1 << 50
+	MaxArtifactDocumentBytes       = 1024 * 1024
+	MaxSymlinkTargetLen            = pathguard.MaxSymlinkTargetLen
+	MaxFileMode              int64 = 0o777
+)
+
+const (
+	FrameEncodingHeader    = "X-Supermover-Frame-Encoding"
+	FrameEncodingPaddingV1 = "padding-v1"
+	FrameSessionIDHeader   = "X-Supermover-Frame-Session-ID"
 )
 
 type FileKind string
@@ -57,6 +76,7 @@ type ErrorCode string
 const (
 	ErrorCodeBadRequest ErrorCode = "bad_request"
 	ErrorCodeConflict   ErrorCode = "conflict"
+	ErrorCodeForbidden  ErrorCode = "forbidden"
 	ErrorCodeNotFound   ErrorCode = "not_found"
 	ErrorCodeIO         ErrorCode = "io_error"
 	ErrorCodeIntegrity  ErrorCode = "integrity_failure"
@@ -65,14 +85,16 @@ const (
 var ErrValidation = errors.New("protocol validation failed")
 
 type BeginSessionRequest struct {
-	ProtocolVersion string           `json:"protocol_version"`
-	SessionID       string           `json:"session_id"`
-	ProfileID       string           `json:"profile_id"`
-	SourceDeviceID  string           `json:"source_device_id"`
-	TargetDeviceID  string           `json:"target_device_id"`
-	RootID          string           `json:"root_id,omitempty"`
-	CreatedAt       time.Time        `json:"created_at"`
-	Manifest        TransferManifest `json:"manifest"`
+	ProtocolVersion string                  `json:"protocol_version"`
+	SessionID       string                  `json:"session_id"`
+	ProfileID       string                  `json:"profile_id"`
+	TargetID        string                  `json:"target_id"`
+	SourceDeviceID  string                  `json:"source_device_id"`
+	TargetDeviceID  string                  `json:"target_device_id"`
+	PrivacyPolicy   transport.PrivacyPolicy `json:"privacy_policy,omitempty"`
+	RootID          string                  `json:"root_id,omitempty"`
+	CreatedAt       time.Time               `json:"created_at"`
+	Manifest        TransferManifest        `json:"manifest"`
 }
 
 type BeginSessionResponse struct {
@@ -106,12 +128,22 @@ type ChunkUploadRequest struct {
 	Final     bool   `json:"final,omitempty"`
 }
 
+type ChunkBatchUploadRequest struct {
+	SessionID string               `json:"session_id"`
+	Chunks    []ChunkUploadRequest `json:"chunks"`
+}
+
 type ChunkUploadResponse struct {
 	SessionID     string     `json:"session_id"`
 	Path          string     `json:"path"`
 	CommittedSize int64      `json:"committed_size"`
 	ChunkState    ChunkState `json:"chunk_state"`
 	Complete      bool       `json:"complete"`
+}
+
+type ChunkBatchUploadResponse struct {
+	SessionID string                `json:"session_id"`
+	Chunks    []ChunkUploadResponse `json:"chunks"`
 }
 
 type CommitSessionRequest struct {
@@ -123,6 +155,26 @@ type CommitSessionResponse struct {
 	SessionID string       `json:"session_id"`
 	State     SessionState `json:"state"`
 	ReceiptID string       `json:"receipt_id"`
+}
+
+type ProfileSnapshotArtifactRequest struct {
+	SessionID string `json:"session_id"`
+	Document  []byte `json:"document"`
+}
+
+type WarningArtifactRequest struct {
+	SessionID string   `json:"session_id"`
+	Documents [][]byte `json:"documents"`
+}
+
+type NetworkTransferArtifactRequest struct {
+	SessionID string `json:"session_id"`
+	Document  []byte `json:"document"`
+}
+
+type ArtifactWriteResponse struct {
+	SessionID string `json:"session_id"`
+	Written   int    `json:"written"`
 }
 
 type SessionStatusResponse struct {
@@ -149,9 +201,12 @@ func (r BeginSessionRequest) Validate() error {
 	if err := transport.ValidateProtocolVersion(r.ProtocolVersion); err != nil || r.ProtocolVersion != Version {
 		errs = append(errs, fmt.Errorf("protocol_version must be %q", Version))
 	}
-	validateToken("session_id", r.SessionID, MaxSessionIDLen, &errs)
+	validateSessionID("session_id", r.SessionID, &errs)
 	if err := transport.ValidateProfileID(r.ProfileID); err != nil {
 		errs = append(errs, fmt.Errorf("profile_id: %v", err))
+	}
+	if err := transport.ValidateProfileID(r.TargetID); err != nil {
+		errs = append(errs, fmt.Errorf("target_id: %v", err))
 	}
 	if err := transport.DeviceID(r.SourceDeviceID).Validate(); err != nil {
 		errs = append(errs, fmt.Errorf("source_device_id: %v", err))
@@ -162,6 +217,14 @@ func (r BeginSessionRequest) Validate() error {
 	if r.SourceDeviceID == r.TargetDeviceID {
 		errs = append(errs, errors.New("source_device_id and target_device_id must differ"))
 	}
+	if r.PrivacyPolicy.Level != 0 {
+		if err := r.PrivacyPolicy.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("privacy_policy: %w", err))
+		}
+		if err := r.validateProtocolPrivacyBounds(); err != nil {
+			errs = append(errs, fmt.Errorf("privacy_policy: %w", err))
+		}
+	}
 	if r.RootID != "" {
 		validateToken("root_id", r.RootID, MaxRootIDLen, &errs)
 	}
@@ -170,6 +233,32 @@ func (r BeginSessionRequest) Validate() error {
 	}
 	if err := r.Manifest.Validate(); err != nil {
 		errs = append(errs, err)
+	}
+	return joinValidation(errs)
+}
+
+func (r BeginSessionRequest) validateProtocolPrivacyBounds() error {
+	policy := r.PrivacyPolicy
+	if policy.Level != transport.PrivacyLevel2 {
+		return nil
+	}
+	var errs []error
+	if policy.PaddingBucket > MaxPaddingBucketBytes {
+		errs = append(errs, fmt.Errorf("padding_bucket_bytes %d exceeds maximum %d", policy.PaddingBucket, MaxPaddingBucketBytes))
+	}
+	if policy.BatchMaxBytes > MaxBatchPlainBodyBytes {
+		errs = append(errs, fmt.Errorf("batch_max_bytes %d exceeds maximum %d", policy.BatchMaxBytes, MaxBatchPlainBodyBytes))
+	}
+	if policy.BatchMaxCount > MaxBatchChunks {
+		errs = append(errs, fmt.Errorf("batch_max_count %d exceeds maximum %d", policy.BatchMaxCount, MaxBatchChunks))
+	}
+	if policy.PaddingBucket > 0 && policy.BatchMaxBytes > 0 {
+		if _, _, err := padding.PaddedLen(policy.BatchMaxBytes, padding.Config{
+			BucketBytes:   policy.PaddingBucket,
+			MaxFrameBytes: MaxPaddedBatchRequestBodyBytes,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("padded batch frame for batch_max_bytes %d: %w", policy.BatchMaxBytes, err))
+		}
 	}
 	return joinValidation(errs)
 }
@@ -267,6 +356,9 @@ func (e ManifestEntry) Validate() error {
 		}
 		validateMode("mode", e.Mode, &errs)
 		validateDigest("digest", e.Digest, true, &errs)
+		if e.Size == 0 && e.Digest != "" && e.Digest != EmptySHA256Digest {
+			errs = append(errs, fmt.Errorf("digest must be %s for zero-byte files", EmptySHA256Digest))
+		}
 	case FileKindDir:
 		if e.Size != 0 {
 			errs = append(errs, errors.New("directory size must be zero"))
@@ -285,13 +377,21 @@ func (e ManifestEntry) Validate() error {
 
 func (r ChunkUploadRequest) Validate() error {
 	var errs []error
-	validateToken("session_id", r.SessionID, MaxSessionIDLen, &errs)
+	validateSessionID("session_id", r.SessionID, &errs)
 	validateRelativePath("path", r.Path, &errs)
 	if r.Offset < 0 {
 		errs = append(errs, errors.New("offset cannot be negative"))
 	}
 	if len(r.Data) == 0 {
-		errs = append(errs, errors.New("data is required"))
+		if !r.Final {
+			errs = append(errs, errors.New("zero-byte completion must be final"))
+		}
+		if r.Offset != 0 {
+			errs = append(errs, errors.New("zero-byte completion offset must be zero"))
+		}
+		if r.Digest != "" && r.Digest != EmptySHA256Digest {
+			errs = append(errs, fmt.Errorf("zero-byte completion digest must be %s", EmptySHA256Digest))
+		}
 	}
 	if len(r.Data) > MaxChunkBytes {
 		errs = append(errs, fmt.Errorf("data exceeds maximum chunk size %d", MaxChunkBytes))
@@ -300,12 +400,62 @@ func (r ChunkUploadRequest) Validate() error {
 	return joinValidation(errs)
 }
 
+func (r ChunkBatchUploadRequest) Validate() error {
+	var errs []error
+	validateSessionID("session_id", r.SessionID, &errs)
+	if len(r.Chunks) == 0 {
+		errs = append(errs, errors.New("chunks must not be empty"))
+	}
+	if len(r.Chunks) > MaxBatchChunks {
+		errs = append(errs, fmt.Errorf("chunks exceeds maximum %d", MaxBatchChunks))
+	}
+	for i, chunk := range r.Chunks {
+		if err := chunk.Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("chunks[%d]: %w", i, err))
+			continue
+		}
+		if chunk.SessionID != r.SessionID {
+			errs = append(errs, fmt.Errorf("chunks[%d].session_id must match batch session_id", i))
+		}
+	}
+	return joinValidation(errs)
+}
+
 func (r CommitSessionRequest) Validate() error {
 	var errs []error
-	validateToken("session_id", r.SessionID, MaxSessionIDLen, &errs)
+	validateSessionID("session_id", r.SessionID, &errs)
 	if r.EndedAt.IsZero() {
 		errs = append(errs, errors.New("ended_at is required"))
 	}
+	return joinValidation(errs)
+}
+
+func (r ProfileSnapshotArtifactRequest) Validate() error {
+	var errs []error
+	validateSessionID("session_id", r.SessionID, &errs)
+	validateDocument("document", r.Document, &errs)
+	return joinValidation(errs)
+}
+
+func (r WarningArtifactRequest) Validate() error {
+	var errs []error
+	validateSessionID("session_id", r.SessionID, &errs)
+	if len(r.Documents) == 0 {
+		errs = append(errs, errors.New("documents must not be empty"))
+	}
+	if len(r.Documents) > MaxManifestEntries {
+		errs = append(errs, fmt.Errorf("documents exceeds maximum count %d", MaxManifestEntries))
+	}
+	for i, doc := range r.Documents {
+		validateDocument(fmt.Sprintf("documents[%d]", i), doc, &errs)
+	}
+	return joinValidation(errs)
+}
+
+func (r NetworkTransferArtifactRequest) Validate() error {
+	var errs []error
+	validateSessionID("session_id", r.SessionID, &errs)
+	validateDocument("document", r.Document, &errs)
 	return joinValidation(errs)
 }
 
@@ -332,6 +482,34 @@ func validateToken(field, value string, maxLen int, errs *[]error) {
 			*errs = append(*errs, fmt.Errorf("%s contains unsafe characters", field))
 			return
 		}
+	}
+}
+
+func validateSessionID(field, value string, errs *[]error) {
+	if strings.TrimSpace(value) == "" {
+		*errs = append(*errs, fmt.Errorf("%s is required", field))
+		return
+	}
+	if len(value) > MaxSessionIDLen {
+		*errs = append(*errs, fmt.Errorf("%s is too long", field))
+		return
+	}
+	if err := transaction.ValidateSessionID(value); err != nil {
+		*errs = append(*errs, fmt.Errorf("%s is unsafe: %v", field, err))
+	}
+}
+
+func validateDocument(field string, data []byte, errs *[]error) {
+	if len(data) == 0 {
+		*errs = append(*errs, fmt.Errorf("%s is required", field))
+		return
+	}
+	if len(data) > MaxArtifactDocumentBytes {
+		*errs = append(*errs, fmt.Errorf("%s exceeds maximum size %d", field, MaxArtifactDocumentBytes))
+		return
+	}
+	if !json.Valid(data) {
+		*errs = append(*errs, fmt.Errorf("%s must contain valid JSON", field))
 	}
 }
 

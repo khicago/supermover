@@ -3,6 +3,7 @@ package verify
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/pathguard"
+	"github.com/khicago/supermover/internal/transaction"
 )
 
 type Severity string
@@ -54,15 +56,16 @@ type Options struct {
 }
 
 type Report struct {
-	TargetRoot       string               `json:"target_root"`
-	SessionID        string               `json:"session_id,omitempty"`
-	Manifest         ManifestSummary      `json:"manifest"`
-	Summary          Summary              `json:"summary"`
-	Findings         []Finding            `json:"findings,omitempty"`
-	Warnings         []control.Warning    `json:"warnings,omitempty"`
-	SoftDeletes      []control.SoftDelete `json:"soft_deletes,omitempty"`
-	ArtifactProblems []ArtifactProblem    `json:"artifact_problems,omitempty"`
-	Manifests        []ManifestSummary    `json:"manifests,omitempty"`
+	TargetRoot       string                `json:"target_root"`
+	SessionID        string                `json:"session_id,omitempty"`
+	Manifest         ManifestSummary       `json:"manifest"`
+	Summary          Summary               `json:"summary"`
+	Findings         []Finding             `json:"findings,omitempty"`
+	Warnings         []control.Warning     `json:"warnings,omitempty"`
+	SoftDeletes      []control.SoftDelete  `json:"soft_deletes,omitempty"`
+	TargetDrifts     []control.TargetDrift `json:"target_drifts,omitempty"`
+	ArtifactProblems []ArtifactProblem     `json:"artifact_problems,omitempty"`
+	Manifests        []ManifestSummary     `json:"manifests,omitempty"`
 }
 
 type Summary struct {
@@ -72,6 +75,7 @@ type Summary struct {
 	FilesVerified    int `json:"files_verified"`
 	Warnings         int `json:"warnings"`
 	SoftDeletes      int `json:"soft_deletes"`
+	TargetDrifts     int `json:"target_drifts"`
 	ArtifactProblems int `json:"artifact_problems"`
 	ErrorFindings    int `json:"error_findings"`
 	WarningFindings  int `json:"warning_findings"`
@@ -115,6 +119,7 @@ type Artifacts struct {
 	Manifests         []control.Manifest
 	Warnings          []control.Warning
 	SoftDeletes       []control.SoftDelete
+	TargetDrifts      []control.TargetDrift
 	ArtifactProblems  []ArtifactProblem
 	KnownSessions     map[string]struct{}
 	PublishedSessions map[string]struct{}
@@ -147,6 +152,7 @@ func BuildReport(opts Options) (Report, error) {
 		SessionID:        opts.SessionID,
 		Warnings:         filterWarnings(artifacts.Warnings, opts.SessionID),
 		SoftDeletes:      filterSoftDeletes(artifacts.SoftDeletes, opts.SessionID),
+		TargetDrifts:     filterTargetDrifts(artifacts.TargetDrifts, opts.SessionID),
 		ArtifactProblems: filterArtifactProblems(artifacts.ArtifactProblems, opts.SessionID),
 	}
 	for _, manifest := range manifests {
@@ -155,6 +161,7 @@ func BuildReport(opts Options) (Report, error) {
 	report.Summary.ManifestCount = len(manifests)
 	report.Summary.Warnings = len(report.Warnings)
 	report.Summary.SoftDeletes = len(report.SoftDeletes)
+	report.Summary.TargetDrifts = len(report.TargetDrifts)
 	report.Summary.ArtifactProblems = len(report.ArtifactProblems)
 
 	if len(manifests) == 0 {
@@ -163,6 +170,9 @@ func BuildReport(opts Options) (Report, error) {
 				return report, err
 			}
 			if hasSessionArtifactProblem(report.ArtifactProblems, opts.SessionID) {
+				return report, nil
+			}
+			if len(report.TargetDrifts) > 0 {
 				return report, nil
 			}
 			return report, fmt.Errorf("manifest for session %q not found", opts.SessionID)
@@ -226,6 +236,14 @@ func LoadArtifacts(targetRoot string) (Artifacts, error) {
 	return loadArtifacts(targetRoot, identityScope{})
 }
 
+func LoadArtifactsForScope(targetRoot string, profileID string, targetID string) (Artifacts, error) {
+	return loadArtifacts(targetRoot, identityScope{ProfileID: profileID, TargetID: targetID})
+}
+
+func ValidateArtifactLoadBoundary(targetRoot string) error {
+	return control.ValidateArtifactLoadBoundary(targetRoot)
+}
+
 type identityScope struct {
 	ProfileID string
 	TargetID  string
@@ -247,18 +265,23 @@ func (s identityScope) matches(receipt control.SessionReceipt) bool {
 
 func loadArtifacts(targetRoot string, scope identityScope) (Artifacts, error) {
 	var artifacts Artifacts
+	if err := control.ValidateArtifactLoadBoundary(targetRoot); err != nil {
+		return artifacts, err
+	}
 	controlDir := control.ControlDir(targetRoot)
-	if _, err := os.Stat(controlDir); err != nil {
+	if _, err := os.Lstat(controlDir); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return artifacts, nil
 		}
-		return artifacts, fmt.Errorf("stat control directory: %w", err)
+		return artifacts, fmt.Errorf("inspect control directory: %w", err)
 	}
 
 	artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.PublishedReceipts, artifacts.ArtifactProblems = readSessionReceipts(controlDir, artifacts.ArtifactProblems, scope)
 	artifacts.Manifests, artifacts.ArtifactProblems = readManifests(controlDir, artifacts.PublishedSessions, artifacts.ArtifactProblems)
 	artifacts.Warnings, artifacts.ArtifactProblems = readPublishedDocuments[control.Warning](filepath.Join(controlDir, "warnings"), artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.ArtifactProblems)
-	artifacts.SoftDeletes, artifacts.ArtifactProblems = readSoftDeletes(filepath.Join(controlDir, "deleted"), artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.PublishedReceipts, manifestRootIDs(artifacts.Manifests), artifacts.ArtifactProblems)
+	manifestRoots := manifestRootIDs(artifacts.Manifests)
+	artifacts.SoftDeletes, artifacts.ArtifactProblems = readSoftDeletes(filepath.Join(controlDir, "deleted"), artifacts.KnownSessions, artifacts.PublishedSessions, artifacts.PublishedReceipts, manifestRoots, artifacts.ArtifactProblems)
+	artifacts.TargetDrifts, artifacts.ArtifactProblems = readTargetDrifts(filepath.Join(controlDir, "drift"), scope, manifestRoots, artifacts.ArtifactProblems)
 
 	sort.Slice(artifacts.Manifests, func(i, j int) bool {
 		left := manifestCreatedAt(artifacts.Manifests[i])
@@ -270,6 +293,7 @@ func loadArtifacts(targetRoot string, scope identityScope) (Artifacts, error) {
 	})
 	sort.Slice(artifacts.Warnings, func(i, j int) bool { return artifacts.Warnings[i].ID < artifacts.Warnings[j].ID })
 	sort.Slice(artifacts.SoftDeletes, func(i, j int) bool { return artifacts.SoftDeletes[i].ID < artifacts.SoftDeletes[j].ID })
+	sort.Slice(artifacts.TargetDrifts, func(i, j int) bool { return artifacts.TargetDrifts[i].ID < artifacts.TargetDrifts[j].ID })
 	sort.Slice(artifacts.ArtifactProblems, func(i, j int) bool { return artifacts.ArtifactProblems[i].Path < artifacts.ArtifactProblems[j].Path })
 	return artifacts, nil
 }
@@ -443,6 +467,228 @@ func readSoftDeletes(dir string, known map[string]struct{}, published map[string
 		out = append(out, record)
 	}
 	return out, problems
+}
+
+func readTargetDrifts(dir string, scope identityScope, manifestRoots map[string]string, problems []ArtifactProblem) ([]control.TargetDrift, []ArtifactProblem) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, problems
+		}
+		return nil, appendProblem(problems, "", dir, err)
+	}
+	controlDir := filepath.Dir(dir)
+	var out []control.TargetDrift
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		doc, err := control.ReadFile[control.TargetDrift](path)
+		if err != nil {
+			scopeHint := readTargetDriftScopeHint(path)
+			if err := scopeHint.validate(); err != nil {
+				problems = appendProblem(problems, "", path, err)
+				continue
+			}
+			if !scope.empty() && !malformedTargetDriftMatchesScope(controlDir, scopeHint, scope) {
+				continue
+			}
+			problems = appendProblem(problems, scopeHint.SessionID, path, err)
+			continue
+		}
+		receipt, receiptOK, receiptErr := readPublishedReceiptForDrift(controlDir, doc.SessionID)
+		if receiptErr != nil {
+			problems = appendProblem(problems, doc.SessionID, path, receiptErr)
+			continue
+		}
+		if receiptOK {
+			if doc.ProfileID != receipt.ProfileID {
+				problems = appendProblem(problems, doc.SessionID, path, fmt.Errorf("target drift profile_id %q does not match session receipt profile_id %q", doc.ProfileID, receipt.ProfileID))
+				continue
+			}
+			if doc.TargetID != receipt.TargetID {
+				problems = appendProblem(problems, doc.SessionID, path, fmt.Errorf("target drift target_id %q does not match session receipt target_id %q", doc.TargetID, receipt.TargetID))
+				continue
+			}
+			if rootID := manifestRoots[doc.SessionID]; rootID != "" && doc.RootID != rootID {
+				problems = appendProblem(problems, doc.SessionID, path, fmt.Errorf("target drift root_id %q does not match session manifest root_id %q", doc.RootID, rootID))
+				continue
+			}
+		}
+		if !scope.empty() {
+			if doc.ProfileID != scope.ProfileID || doc.TargetID != scope.TargetID {
+				if receiptOK && scope.matches(receipt) {
+					problems = appendProblem(problems, doc.SessionID, path, fmt.Errorf("target drift scope (%q/%q) does not match scoped session receipt (%q/%q)", doc.ProfileID, doc.TargetID, receipt.ProfileID, receipt.TargetID))
+				}
+				continue
+			}
+			if receiptOK && !scope.matches(receipt) {
+				continue
+			}
+		}
+		if strings.TrimSpace(doc.ReviewState) == "" {
+			doc.ReviewState = "needs_review"
+		}
+		out = append(out, doc)
+	}
+	return out, problems
+}
+
+type targetDriftScopeHint struct {
+	SessionID string `json:"session_id"`
+	ProfileID string `json:"profile_id"`
+	TargetID  string `json:"target_id"`
+}
+
+func (h targetDriftScopeHint) empty() bool {
+	return h.SessionID == "" && h.ProfileID == "" && h.TargetID == ""
+}
+
+func (h targetDriftScopeHint) validate() error {
+	if h.SessionID == "" {
+		return nil
+	}
+	return transaction.ValidateSessionID(h.SessionID)
+}
+
+func (h targetDriftScopeHint) matches(scope identityScope) bool {
+	profileMatches := h.ProfileID == "" || h.ProfileID == scope.ProfileID
+	targetMatches := h.TargetID == "" || h.TargetID == scope.TargetID
+	return profileMatches && targetMatches
+}
+
+func malformedTargetDriftMatchesScope(controlDir string, hint targetDriftScopeHint, scope identityScope) bool {
+	if scope.empty() || hint.empty() {
+		return true
+	}
+	if hint.SessionID != "" {
+		receipt, ok, err := readSessionReceiptForDriftScope(controlDir, hint.SessionID)
+		if err == nil && ok {
+			return scope.matches(receipt)
+		}
+	}
+	return hint.matches(scope)
+}
+
+func readTargetDriftScopeHint(path string) targetDriftScopeHint {
+	file, err := os.Open(path)
+	if err != nil {
+		return targetDriftScopeHint{}
+	}
+	defer file.Close()
+
+	var hint targetDriftScopeHint
+	decoder := json.NewDecoder(file)
+	token, err := decoder.Token()
+	if err != nil {
+		return targetDriftScopeHint{}
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '{' {
+		return targetDriftScopeHint{}
+	}
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return hint
+		}
+		key, ok := token.(string)
+		if !ok {
+			return hint
+		}
+		value, ok, err := readJSONStringToken(decoder)
+		if err != nil {
+			return hint
+		}
+		if !ok {
+			continue
+		}
+		switch key {
+		case "session_id":
+			hint.SessionID = value
+		case "profile_id":
+			hint.ProfileID = value
+		case "target_id":
+			hint.TargetID = value
+		}
+	}
+	return hint
+}
+
+func readJSONStringToken(decoder *json.Decoder) (string, bool, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return "", false, err
+	}
+	if delim, ok := token.(json.Delim); ok {
+		if err := skipJSONDelimited(decoder, delim); err != nil {
+			return "", false, err
+		}
+		return "", false, nil
+	}
+	value, ok := token.(string)
+	return value, ok, nil
+}
+
+func skipJSONDelimited(decoder *json.Decoder, start json.Delim) error {
+	var end json.Delim
+	switch start {
+	case '{':
+		end = '}'
+	case '[':
+		end = ']'
+	default:
+		return nil
+	}
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		delim, ok := token.(json.Delim)
+		if !ok {
+			continue
+		}
+		if delim == end {
+			return nil
+		}
+		if delim == '{' || delim == '[' {
+			if err := skipJSONDelimited(decoder, delim); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func readPublishedReceiptForDrift(controlDir string, sessionID string) (control.SessionReceipt, bool, error) {
+	receiptPath := filepath.Join(controlDir, "sessions", sessionID, "receipt.json")
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return control.SessionReceipt{}, false, nil
+		}
+		return control.SessionReceipt{}, false, fmt.Errorf("read target drift session receipt: %w", err)
+	}
+	if receipt.Status != "published" {
+		return control.SessionReceipt{}, false, nil
+	}
+	return receipt, true, nil
+}
+
+func readSessionReceiptForDriftScope(controlDir string, sessionID string) (control.SessionReceipt, bool, error) {
+	receiptPath := filepath.Join(controlDir, "sessions", sessionID, "receipt.json")
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return control.SessionReceipt{}, false, nil
+		}
+		return control.SessionReceipt{}, false, fmt.Errorf("read target drift session receipt: %w", err)
+	}
+	if receipt.ID != sessionID {
+		return control.SessionReceipt{}, false, fmt.Errorf("receipt id %q does not match session directory %q", receipt.ID, sessionID)
+	}
+	return receipt, true, nil
 }
 
 func manifestRootIDs(manifests []control.Manifest) map[string]string {
@@ -766,6 +1012,10 @@ func sha256File(path string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
+	return sha256FileReader(file)
+}
+
+func sha256FileReader(file *os.File) (string, error) {
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, file); err != nil {
 		return "", err
@@ -805,6 +1055,29 @@ func filterSoftDeletes(records []control.SoftDelete, sessionID string) []control
 	}
 	var out []control.SoftDelete
 	for _, record := range records {
+		if record.SessionID == "" || record.SessionID == sessionID {
+			out = append(out, record)
+		}
+	}
+	return out
+}
+
+func filterTargetDrifts(records []control.TargetDrift, sessionID string) []control.TargetDrift {
+	if sessionID == "" {
+		out := make([]control.TargetDrift, 0, len(records))
+		for _, record := range records {
+			if strings.TrimSpace(record.ReviewState) == "resolved" {
+				continue
+			}
+			out = append(out, record)
+		}
+		return out
+	}
+	var out []control.TargetDrift
+	for _, record := range records {
+		if strings.TrimSpace(record.ReviewState) == "resolved" {
+			continue
+		}
 		if record.SessionID == "" || record.SessionID == sessionID {
 			out = append(out, record)
 		}
@@ -867,17 +1140,13 @@ func targetPath(entry control.ManifestEntry) string {
 }
 
 func safeTargetPath(root, rel string) (string, error) {
-	if filepath.IsAbs(rel) {
-		return "", fmt.Errorf("absolute target path %q", rel)
+	if err := pathguard.ValidateSlashRelativePath(rel, 0); err != nil {
+		return "", err
 	}
 	if pathguard.IsReservedControlPath(rel) {
 		return "", fmt.Errorf("reserved control-plane target path %q", rel)
 	}
-	clean := filepath.Clean(filepath.FromSlash(rel))
-	if clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
-		return "", fmt.Errorf("unsafe target path %q", rel)
-	}
-	return filepath.Join(root, clean), nil
+	return filepath.Join(root, filepath.FromSlash(rel)), nil
 }
 
 func appendProblem(problems []ArtifactProblem, sessionID string, path string, err error) []ArtifactProblem {

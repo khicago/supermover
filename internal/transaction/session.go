@@ -93,7 +93,7 @@ func ValidateSessionID(id string) error {
 	if id == "" {
 		return fmt.Errorf("%w: session id is required", ErrValidation)
 	}
-	if strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) || !sessionIDPattern.MatchString(id) {
+	if id == "." || strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) || !sessionIDPattern.MatchString(id) {
 		return fmt.Errorf("%w: unsafe session id %q", ErrValidation, id)
 	}
 	return nil

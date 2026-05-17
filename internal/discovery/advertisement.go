@@ -16,9 +16,15 @@ const (
 	MaxCapabilityLen      = 32
 )
 
+var allowedCapabilityFlags = map[string]struct{}{
+	"l2":   {},
+	"pair": {},
+}
+
 var (
 	ErrInvalidAdvertisement = errors.New("invalid discovery advertisement")
 	ErrForbiddenTXTField    = errors.New("forbidden unauthenticated txt field")
+	ErrStaleHint            = errors.New("stale discovery hint")
 )
 
 type Advertisement struct {
@@ -49,7 +55,7 @@ func (a Advertisement) Validate() error {
 		return fmt.Errorf("%w: invalid ephemeral nonce", ErrInvalidAdvertisement)
 	}
 	for _, flag := range a.CapabilityFlags {
-		if !validToken(flag, MaxCapabilityLen) {
+		if !validCapabilityFlag(flag) {
 			return fmt.Errorf("%w: invalid capability flag %q", ErrInvalidAdvertisement, flag)
 		}
 	}
@@ -92,7 +98,39 @@ func ValidateUnauthenticatedTXTField(key, value string) error {
 	if !validTXTValue(value) {
 		return fmt.Errorf("%w: invalid value for %q", ErrForbiddenTXTField, key)
 	}
+	if key == "caps" {
+		flags, err := parseStrictCaps(value)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrForbiddenTXTField, err)
+		}
+		for _, flag := range flags {
+			if !validCapabilityFlag(flag) {
+				return fmt.Errorf("%w: invalid capability flag %q", ErrForbiddenTXTField, flag)
+			}
+		}
+	}
 	return nil
+}
+
+func parseCaps(value string) []string {
+	caps, err := parseStrictCaps(value)
+	if err != nil {
+		return nil
+	}
+	sort.Strings(caps)
+	return caps
+}
+
+func parseStrictCaps(value string) ([]string, error) {
+	parts := strings.Split(value, ",")
+	caps := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" || strings.TrimSpace(part) != part {
+			return nil, errors.New("malformed caps value")
+		}
+		caps = append(caps, part)
+	}
+	return caps, nil
 }
 
 func containsForbiddenInformation(value string) bool {
@@ -118,6 +156,14 @@ func validNonce(value string) bool {
 		return false
 	}
 	return validToken(value, MaxNonceLen)
+}
+
+func validCapabilityFlag(value string) bool {
+	if !validToken(value, MaxCapabilityLen) || containsForbiddenInformation(value) {
+		return false
+	}
+	_, ok := allowedCapabilityFlags[value]
+	return ok
 }
 
 func validTXTValue(value string) bool {

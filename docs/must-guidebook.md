@@ -40,7 +40,9 @@ This guidebook is the reading map for the shared knowledge root.
 - `docs/recovery.md` — Recovery Foundation
 - `docs/release-audit.md` — Release Audit
 - `docs/runbook.md` — Operations Runbook
+- `docs/status.md` — Compact Local Status Contract
 - `docs/threat-model.md` — Threat Model
+- `docs/traffic-privacy-level-2-verification.md` — Traffic Privacy Level 2 Verification
 - `docs/transport.md` — Transport, Discovery, Pairing, and Privacy Schemas
 - `docs/troubleshooting.md` — Troubleshooting Matrix
 - `docs/user-migration-guide.md` — User Migration Guide

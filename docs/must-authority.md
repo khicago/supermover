@@ -12,12 +12,38 @@ Completion claims must be checked against all three:
 
 Do not treat a tested vertical slice as the completed minimum product. For this
 repository, the current local/mounted migration slice is implemented, including
-managed local regular-file updates from previous Supermover evidence. LAN agent,
-encrypted communication, traffic-shape protection, ongoing network sync, compact
-status UX, drift review, and physical prune remain planned or partially
-designed. The read-only local migration `report` command is wired, but it is not
-a substitute for LAN, transport, daemon status, ongoing sync, drift review, or
-prune support.
+managed local regular-file updates from previous Supermover evidence.
+`serve` is wired as a target listener with two profile-governed surfaces: a
+low-information pairing listener for help, usage validation, target
+profile/root validation, discovery, target-console verification code, and
+verified pairing bootstrap; plus an authenticated receiver listener only when
+the profile is already paired and has complete profile-selected network
+material. `pair` is wired to require that verification code, write a durable
+local pairing receipt, update profile target pins, and record a profile
+snapshot. `discover` is wired for low-information explicit address hints only;
+`--address` is operator-provided hint material and still leaks peer address
+metadata. It does not browse LAN services or establish trust by itself.
+Source-side non-dry-run `push --network` is wired for paired profile-backed
+pinned TLS 1.3 mTLS transfer through the receiver protocol, and the current
+operator path supports traffic privacy level 2 only. Its dry-run mode is still
+preflight-only: it validates profile, pairing, network material, local TLS
+identity, source scan, and manifest shape without contacting the receiver or
+writing target artifacts. Operational LAN agent browsing, daemon behavior,
+ongoing network sync, and broad operator resume/recovery acceptance remain
+planned or partially designed. `drift record` is wired to persist current live
+detector findings as durable `.supermover/drift/<id>.json` review records.
+`drift acknowledge` is wired for existing persisted drift records, including
+records created by `drift record`, surfaced as `target_drifts`; `drift
+resolve` is wired for existing persisted drift records after a fresh detector
+no longer reports the same path and expected baseline. Broad drift
+reconcile/repair, drift-to-prune integration, background scans, and broader
+prune release workflow surfaces remain planned or partially designed.
+The read-only local migration `report` command, read-only `drift list`
+detector, compact local `status` command, `drift record`, `drift resolve`,
+`prune --dry-run`, focused read-only `prune review`, `prune approve`, and
+`prune --apply --approval <id>` are wired, but they are not substitutes for LAN,
+daemon status, ongoing sync, broad drift reconciliation, drift repair,
+background scans, drift-to-prune integration, or broader release automation.
 
 ## Primary Status Sources
 
@@ -73,24 +99,30 @@ The original broad feature tracker topic began as a full v1 plan and is now
 archived as historical evidence. Active remaining work is split into narrower
 features:
 
-- `f-223nw49qj`: migration audit report UX; `report` is implemented and
-  compact `status` remains planned
+- `f-223nw49qj`: migration audit report UX; `report` is implemented
 - `f-224nw98v7`: reviewed physical prune flow
 - `f-225nwsa3h`: changed-file incremental local sync; implemented and archived
 - `f-226nwy2vy`: LAN agent discovery and pairing
 - `f-227nw2p2n`: secure resumable transport integration
 - `f-228nws66k`: traffic privacy level 2 implementation
 - `f-229nwwybc`: failure injection and release hardening
-- `f-22bnwggww`: compact local status UX
+- `f-22bnwggww`: compact local status UX; `status` is wired as a read-only
+  local profile/target evidence command
 - `f-22anw4myc`: target drift review UX
+- `f-22mnwgg64`: durable live detector drift recording; `drift record` is
+  wired as evidence persistence only
+- `f-22qnwk3b3`: persisted drift resolve; `drift resolve` closes existing
+  persisted drift records only after a fresh detector no longer reports the
+  same path and expected baseline
 
 Dependency notes:
 
 - secure resumable transport depends on pairing identity from
   `f-226nwy2vy`
 - traffic privacy level 2 depends on secure transport from `f-227nw2p2n`
-- release hardening must close the current local-slice gates and leave explicit
-  future gates for LAN, transport, and privacy slices
+- release hardening must close the current local and profile-backed network
+  gates and leave explicit future gates for LAN browsing, daemon behavior,
+  ongoing sync, and broader operator recovery/privacy release acceptance
 
 Before implementation, assign the selected feature to `current_tree` or a
 worktree and start the first task through feature-tracker commands when local

@@ -68,6 +68,7 @@ func Generate(opts Options) (Result, error) {
 			Kind:               entry.Kind,
 			Size:               entry.Size,
 			Digest:             entry.Digest,
+			SymlinkTarget:      entry.SymlinkTarget,
 			DetectedAt:         detectedAt.UTC().Format(time.RFC3339Nano),
 			Reason:             softDeleteReason(entry.Kind, current[sourcePath]),
 		}

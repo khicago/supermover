@@ -1,6 +1,9 @@
 package discovery
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 func TestAdvertisementValidate(t *testing.T) {
 	valid := NewLowInfoAdvertisement("_supermover._tcp", "supermover/1", "abcdef0123456789", []string{"pair", "l2"})
@@ -14,8 +17,10 @@ func TestAdvertisementValidate(t *testing.T) {
 		{name: "bad protocol", ad: withProtocol(valid, "one"), wantErr: true},
 		{name: "short nonce", ad: withNonce(valid, "abc"), wantErr: true},
 		{name: "bad capability", ad: withCapabilities(valid, []string{"pair now"}), wantErr: true},
+		{name: "unknown capability", ad: withCapabilities(valid, []string{"receiver"}), wantErr: true},
+		{name: "high info capability", ad: withCapabilities(valid, []string{"host-alice"}), wantErr: true},
 		{name: "username txt", ad: withTXT(valid, map[string]string{"username": "alice"}), wantErr: true},
-		{name: "path txt", ad: withTXT(valid, map[string]string{"path": "/Users/alice"}), wantErr: true},
+		{name: "path txt", ad: withTXT(valid, map[string]string{"path": filepath.ToSlash(filepath.Join("home", "sample-user"))}), wantErr: true},
 		{name: "hostname txt", ad: withTXT(valid, map[string]string{"hostname": "alice-mbp.local"}), wantErr: true},
 		{name: "profile label txt", ad: withTXT(valid, map[string]string{"profile_label": "work"}), wantErr: true},
 		{name: "file count txt", ad: withTXT(valid, map[string]string{"file_count": "100"}), wantErr: true},
@@ -57,7 +62,7 @@ func TestAdvertisementTXTDoesNotAllowCanonicalOverride(t *testing.T) {
 		"svc":   "_other._tcp",
 		"proto": "supermover/2",
 		"nonce": "differentnonce",
-		"caps":  "other",
+		"caps":  "l2",
 	}
 
 	got, err := ad.TXT()

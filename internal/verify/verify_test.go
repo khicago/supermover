@@ -3,6 +3,7 @@ package verify
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,9 @@ func TestBuildReportVerifiesLatestManifest(t *testing.T) {
 	if got.Summary.SoftDeletes != 2 {
 		t.Errorf("BuildReport(%q).Summary.SoftDeletes = %d, want 2", target, got.Summary.SoftDeletes)
 	}
+	if got.Summary.TargetDrifts != 0 {
+		t.Errorf("BuildReport(%q).Summary.TargetDrifts = %d, want 0", target, got.Summary.TargetDrifts)
+	}
 	if !hasFinding(got.Findings, FindingMissingFile, "missing.txt") {
 		t.Errorf("BuildReport(%q).Findings missing %s for missing.txt: %#v", target, FindingMissingFile, got.Findings)
 	}
@@ -119,6 +123,330 @@ func TestBuildReportVerifiesLatestManifest(t *testing.T) {
 	}
 	if !hasFinding(got.Findings, FindingDigestMissing, "nodigest.txt") {
 		t.Errorf("BuildReport(%q).Findings missing %s for nodigest.txt: %#v", target, FindingDigestMissing, got.Findings)
+	}
+}
+
+func TestBuildReportSurfacesTargetDriftArtifacts(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+	})
+	writePublishedReceipt(t, target, "session")
+	writeTargetDrift(t, target, control.TargetDrift{
+		Version:    control.CurrentVersion,
+		ID:         "session-drift_file",
+		SessionID:  "session",
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+		RootID:     "root",
+		Path:       "file.txt",
+		DetectedAt: "2026-05-16T00:01:00Z",
+		Change:     "content_mismatch",
+		Evidence:   []string{"target content differs from staged manifest"},
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "session"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, session) error = %v, want nil", target, err)
+	}
+	if got.Summary.TargetDrifts != 1 || len(got.TargetDrifts) != 1 {
+		t.Fatalf("BuildReport(%q).TargetDrifts = %#v summary=%+v, want one drift artifact", target, got.TargetDrifts, got.Summary)
+	}
+	if got.TargetDrifts[0].Path != "file.txt" || got.TargetDrifts[0].Change != "content_mismatch" || got.TargetDrifts[0].ReviewState != "needs_review" {
+		t.Fatalf("BuildReport(%q).TargetDrifts[0] = %#v, want target path, change, and normalized review state", target, got.TargetDrifts[0])
+	}
+}
+
+func TestBuildReportIgnoresResolvedTargetDriftArtifacts(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+	})
+	writePublishedReceipt(t, target, "session")
+	writeTargetDrift(t, target, control.TargetDrift{
+		Version:      control.CurrentVersion,
+		ID:           "session-drift-resolved",
+		SessionID:    "session",
+		ProfileID:    "profile-local",
+		TargetID:     "target-local",
+		RootID:       "root",
+		Path:         "file.txt",
+		DetectedAt:   "2026-05-16T00:01:00Z",
+		Change:       "content_mismatch",
+		ReviewState:  "resolved",
+		ReviewAction: "resolve",
+		ReviewedAt:   "2026-05-20T00:00:00Z",
+		ReviewReason: "target restored to expected manifest evidence",
+		Evidence:     []string{"target content differed from staged manifest"},
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "session"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, session) error = %v, want nil", target, err)
+	}
+	if got.Summary.TargetDrifts != 0 || len(got.TargetDrifts) != 0 {
+		t.Fatalf("BuildReport(%q).TargetDrifts = %#v summary=%+v, want resolved drift excluded from review count", target, got.TargetDrifts, got.Summary)
+	}
+}
+
+func TestBuildReportReportsBareResolvedTargetDriftAsArtifactProblem(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+	})
+	writePublishedReceipt(t, target, "session")
+	writeRawArtifact(t, target, "drift", "bare-resolved.json", `{"version":1,"id":"bare-resolved","session_id":"session","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"file.txt","detected_at":"2026-05-16T00:01:00Z","change":"content_mismatch","review_state":"resolved"}`)
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "session"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, session) error = %v, want nil", target, err)
+	}
+	if got.Summary.TargetDrifts != 0 || len(got.TargetDrifts) != 0 {
+		t.Fatalf("BuildReport(%q).TargetDrifts = %#v summary=%+v, want invalid bare resolved drift excluded from review list", target, got.TargetDrifts, got.Summary)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 || !strings.Contains(got.ArtifactProblems[0].Err, `review_action "resolve" is required`) {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want bare resolved review-action problem", target, got.ArtifactProblems, got.Summary)
+	}
+}
+
+func TestBuildReportFiltersTargetDriftsByProfileScope(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+	})
+	writePublishedReceipt(t, target, "session")
+	writeTargetDrift(t, target, control.TargetDrift{
+		Version:    control.CurrentVersion,
+		ID:         "foreign-drift",
+		SessionID:  "foreign-session",
+		ProfileID:  "foreign-profile",
+		TargetID:   "foreign-target",
+		RootID:     "root",
+		Path:       "file.txt",
+		DetectedAt: "2026-05-16T00:01:00Z",
+		Change:     "content_mismatch",
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.TargetDrifts != 0 || len(got.TargetDrifts) != 0 {
+		t.Fatalf("BuildReport(%q).TargetDrifts = %#v summary=%+v, want foreign drift filtered", target, got.TargetDrifts, got.Summary)
+	}
+}
+
+func TestBuildReportRecordsInvalidTargetDriftArtifact(t *testing.T) {
+	target := t.TempDir()
+	writeRawArtifact(t, target, "drift", "bad.json", `{"version":1,"id":"bad","path":"file.txt","detected_at":"2026-05-16T00:00:00Z","change":"content_mismatch"}`)
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.TargetDrifts != 0 || len(got.TargetDrifts) != 0 {
+		t.Fatalf("BuildReport(%q).TargetDrifts = %#v summary=%+v, want invalid drift excluded", target, got.TargetDrifts, got.Summary)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 || !strings.Contains(got.ArtifactProblems[0].Err, "session_id") {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want missing session_id problem", target, got.ArtifactProblems, got.Summary)
+	}
+}
+
+func TestBuildReportSessionTargetDriftArtifactProblemReturnsStructuredReport(t *testing.T) {
+	target := t.TempDir()
+	writeRawArtifact(t, target, "drift", "bad-drift.json", `{"version":1,"id":"bad-drift","session_id":"bad-drift","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"../file.txt","detected_at":"2026-05-16T00:00:00Z","change":"content_mismatch"}`)
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "bad-drift"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, bad-drift) error = %v, want structured report", target, err)
+	}
+	if got.Summary.ManifestCount != 0 || got.Summary.ArtifactProblems != 1 {
+		t.Fatalf("BuildReport(%q, bad-drift) summary=%+v, want no manifest and one artifact problem", target, got.Summary)
+	}
+	if len(got.ArtifactProblems) != 1 || got.ArtifactProblems[0].SessionID != "bad-drift" || !strings.Contains(got.ArtifactProblems[0].Err, "path is unsafe") {
+		t.Fatalf("BuildReport(%q, bad-drift).ArtifactProblems = %#v, want bad-drift unsafe-path problem", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportSessionTruncatedTargetDriftArtifactProblemReturnsStructuredReport(t *testing.T) {
+	target := t.TempDir()
+	writeRawArtifact(t, target, "drift", "bad-drift.json", `{"version":1,"id":"bad-drift","session_id":"bad-drift","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"file.txt",`)
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "bad-drift"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, bad-drift) error = %v, want structured report", target, err)
+	}
+	if got.Summary.ManifestCount != 0 || got.Summary.ArtifactProblems != 1 {
+		t.Fatalf("BuildReport(%q, bad-drift) summary=%+v, want no manifest and one artifact problem", target, got.Summary)
+	}
+	if len(got.ArtifactProblems) != 1 || got.ArtifactProblems[0].SessionID != "bad-drift" {
+		t.Fatalf("BuildReport(%q, bad-drift).ArtifactProblems = %#v, want bad-drift problem", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportScopeIgnoresMalformedForeignTargetDriftArtifact(t *testing.T) {
+	target := t.TempDir()
+	writeRawArtifact(t, target, "drift", "foreign-drift.json", `{"version":1,"id":"foreign-drift","session_id":"foreign-session","profile_id":"foreign-profile","target_id":"foreign-target","root_id":"root","path":"../file.txt","detected_at":"2026-05-16T00:00:00Z","change":"content_mismatch"}`)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ArtifactProblems != 0 || len(got.ArtifactProblems) != 0 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want foreign malformed drift filtered", target, got.ArtifactProblems, got.Summary)
+	}
+}
+
+func TestBuildReportScopeIgnoresTruncatedForeignTargetDriftArtifactByReceipt(t *testing.T) {
+	target := t.TempDir()
+	writePublishedReceiptForScope(t, target, "foreign-session", "foreign-profile", "foreign-target")
+	writeRawArtifact(t, target, "drift", "foreign-drift.json", `{"version":1,"id":"foreign-drift","session_id":"foreign-session","root_id":"root","path":"file.txt",`)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ArtifactProblems != 0 || len(got.ArtifactProblems) != 0 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want foreign truncated drift filtered by receipt", target, got.ArtifactProblems, got.Summary)
+	}
+}
+
+func TestBuildReportScopeIgnoresMisleadingTruncatedTargetDriftArtifactByReceipt(t *testing.T) {
+	target := t.TempDir()
+	writePublishedReceiptForScope(t, target, "foreign-session", "foreign-profile", "foreign-target")
+	writeRawArtifact(t, target, "drift", "foreign-drift.json", `{"version":1,"id":"foreign-drift","session_id":"foreign-session","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"file.txt",`)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ArtifactProblems != 0 || len(got.ArtifactProblems) != 0 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want misleading foreign drift filtered by receipt", target, got.ArtifactProblems, got.Summary)
+	}
+}
+
+func TestBuildReportUnsafeTargetDriftSessionHintDoesNotReadReceiptPath(t *testing.T) {
+	target := t.TempDir()
+	writeRawArtifact(t, target, "drift", "unsafe-drift.json", `{"version":1,"id":"unsafe-drift","session_id":"../sessions/local-session","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"file.txt",`)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want unsafe session hint artifact problem", target, got.ArtifactProblems, got.Summary)
+	}
+	if got.ArtifactProblems[0].SessionID != "" {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want unsafe session hint not trusted as session id", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportNestedTargetDriftSessionHintDoesNotReadReceiptPath(t *testing.T) {
+	target := t.TempDir()
+	writeRawArtifact(t, target, "drift", "nested-drift.json", `{"version":1,"id":"nested-drift","session_id":"a/b","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"file.txt",`)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want nested session hint artifact problem", target, got.ArtifactProblems, got.Summary)
+	}
+	if got.ArtifactProblems[0].SessionID != "" {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want nested session hint not trusted as session id", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportDotTargetDriftSessionHintDoesNotReadReceiptPath(t *testing.T) {
+	target := t.TempDir()
+	writeRawArtifact(t, target, "drift", "dot-drift.json", `{"version":1,"id":"dot-drift","session_id":".","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"file.txt",`)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want dot session hint artifact problem", target, got.ArtifactProblems, got.Summary)
+	}
+	if got.ArtifactProblems[0].SessionID != "" {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want dot session hint not trusted as session id", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportScopeKeepsTruncatedTargetDriftWhenReceiptIDMismatchesSession(t *testing.T) {
+	target := t.TempDir()
+	writeSessionReceiptFile(t, target, "local-session", control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        "other-session",
+		ProfileID: "foreign-profile",
+		TargetID:  "foreign-target",
+		StartedAt: "2026-05-16T00:00:00Z",
+		EndedAt:   "2026-05-16T00:01:00Z",
+		Status:    "published",
+	})
+	writeRawArtifact(t, target, "drift", "local-drift.json", `{"version":1,"id":"local-drift","session_id":"local-session","profile_id":"profile-local","target_id":"target-local","root_id":"root","path":"file.txt",`)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	foundDriftProblem := false
+	foundReceiptMismatch := false
+	for _, problem := range got.ArtifactProblems {
+		if problem.SessionID == "local-session" && strings.Contains(problem.Path, filepath.Join(control.DirName, "drift")) {
+			foundDriftProblem = true
+		}
+		if problem.SessionID == "local-session" && strings.Contains(problem.Err, `receipt id "other-session" does not match session directory "local-session"`) {
+			foundReceiptMismatch = true
+		}
+	}
+	if !foundDriftProblem || !foundReceiptMismatch {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want local drift problem and receipt mismatch evidence", target, got.ArtifactProblems, got.Summary)
+	}
+}
+
+func TestBuildReportRecordsScopedSessionTargetDriftMismatch(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+	})
+	writePublishedReceipt(t, target, "session")
+	writeTargetDrift(t, target, control.TargetDrift{
+		Version:    control.CurrentVersion,
+		ID:         "session-drift-bad-scope",
+		SessionID:  "session",
+		ProfileID:  "profile-other",
+		TargetID:   "target-other",
+		RootID:     "root",
+		Path:       "file.txt",
+		DetectedAt: "2026-05-16T00:01:00Z",
+		Change:     "content_mismatch",
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.TargetDrifts != 0 || len(got.TargetDrifts) != 0 {
+		t.Fatalf("BuildReport(%q).TargetDrifts = %#v summary=%+v, want mismatched drift excluded", target, got.TargetDrifts, got.Summary)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 || !strings.Contains(got.ArtifactProblems[0].Err, "profile_id") {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v summary=%+v, want drift scope mismatch problem", target, got.ArtifactProblems, got.Summary)
 	}
 }
 
@@ -445,6 +773,32 @@ func TestBuildReportRejectsNormalizedReservedControlPlaneTargetPath(t *testing.T
 	}
 }
 
+func TestBuildReportRejectsWindowsShapedTargetPath(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-one",
+		SessionID: "one",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "drive.txt", Kind: "file", Size: 1, Digest: digest([]byte("x")), TargetPath: "C:/windows-temp/drive.txt"},
+			{Path: "backslash.txt", Kind: "file", Size: 1, Digest: digest([]byte("x")), TargetPath: `dir\backslash.txt`},
+		},
+	})
+	writePublishedReceipt(t, target, "one")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !hasFinding(got.Findings, FindingUnsafeTargetPath, "drive.txt") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want unsafe Windows drive path finding", target, got.Findings)
+	}
+	if !hasFinding(got.Findings, FindingUnsafeTargetPath, "backslash.txt") {
+		t.Fatalf("BuildReport(%q).Findings = %#v, want unsafe backslash path finding", target, got.Findings)
+	}
+}
+
 func TestBuildReportRejectsSymlinkParentTargetPath(t *testing.T) {
 	target := t.TempDir()
 	outside := t.TempDir()
@@ -644,6 +998,86 @@ func TestLoadArtifactsRecordsBadJSON(t *testing.T) {
 	}
 }
 
+func TestLoadArtifactsRejectsUnsafeControlArtifactBoundary(t *testing.T) {
+	tests := []struct {
+		name    string
+		linkRel string
+	}{
+		{name: "target root", linkRel: ""},
+		{name: "control directory", linkRel: control.DirName},
+		{name: "sessions directory", linkRel: filepath.Join(control.DirName, "sessions")},
+		{name: "session directory", linkRel: filepath.Join(control.DirName, "sessions", "session")},
+		{name: "receipt file", linkRel: filepath.Join(control.DirName, "sessions", "session", "receipt.json")},
+		{name: "manifest file", linkRel: filepath.Join(control.DirName, "sessions", "session", "manifest.json")},
+		{name: "session record file", linkRel: filepath.Join(control.DirName, "sessions", "session", "session.json")},
+		{name: "network transfer file", linkRel: filepath.Join(control.DirName, "sessions", "session", "network-transfer.json")},
+		{name: "profiles directory", linkRel: filepath.Join(control.DirName, "profiles")},
+		{name: "profile snapshot file", linkRel: filepath.Join(control.DirName, "profiles", "profile-session.json")},
+		{name: "pairings directory", linkRel: filepath.Join(control.DirName, "pairings")},
+		{name: "pairing receipt file", linkRel: filepath.Join(control.DirName, "pairings", "pairing.json")},
+		{name: "warnings file", linkRel: filepath.Join(control.DirName, "warnings", "warning.json")},
+		{name: "deleted file", linkRel: filepath.Join(control.DirName, "deleted", "deleted.json")},
+		{name: "drift file", linkRel: filepath.Join(control.DirName, "drift", "drift.json")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parent := t.TempDir()
+			target := filepath.Join(parent, "target")
+			outside := filepath.Join(parent, "outside")
+			if err := os.MkdirAll(outside, 0o755); err != nil {
+				t.Fatalf("MkdirAll(outside) error = %v, want nil", err)
+			}
+			if tt.linkRel == "" {
+				if err := os.Symlink(outside, target); err != nil {
+					t.Skipf("Symlink(target root) unavailable: %v", err)
+				}
+			} else {
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					t.Fatalf("MkdirAll(target) error = %v, want nil", err)
+				}
+				linkPath := filepath.Join(target, tt.linkRel)
+				if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+					t.Fatalf("MkdirAll(link parent) error = %v, want nil", err)
+				}
+				if err := os.Symlink(outside, linkPath); err != nil {
+					t.Skipf("Symlink(%s) unavailable: %v", tt.linkRel, err)
+				}
+			}
+
+			got, err := LoadArtifacts(target)
+			if err == nil {
+				t.Fatalf("LoadArtifacts(%q) = %+v, nil; want unsafe boundary error", target, got)
+			}
+			if !strings.Contains(err.Error(), "symlink") {
+				t.Fatalf("LoadArtifacts(%q) error = %q, want symlink boundary error", target, err.Error())
+			}
+			if _, err := os.Stat(filepath.Join(outside, "sessions")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("Stat(outside sessions) error = %v, want os.ErrNotExist", err)
+			}
+		})
+	}
+}
+
+func TestLoadArtifactsAllowsStagingSymlinkOutsideReadArtifactFiles(t *testing.T) {
+	target := t.TempDir()
+	outside := t.TempDir()
+	stagePath := filepath.Join(target, control.DirName, "sessions", "session", "stage", "link")
+	if err := os.MkdirAll(filepath.Dir(stagePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(stage parent) error = %v, want nil", err)
+	}
+	if err := os.Symlink(outside, stagePath); err != nil {
+		t.Skipf("Symlink(stage link) unavailable: %v", err)
+	}
+
+	got, err := LoadArtifacts(target)
+	if err != nil {
+		t.Fatalf("LoadArtifacts(%q) error = %v, want nil for staging symlink outside read artifact files", target, err)
+	}
+	if len(got.ArtifactProblems) != 0 {
+		t.Fatalf("LoadArtifacts(%q).ArtifactProblems = %#v, want none for staging symlink outside read artifact files", target, got.ArtifactProblems)
+	}
+}
+
 func TestBuildReportReadsLegacySymlinkManifest(t *testing.T) {
 	target := t.TempDir()
 	path, err := control.Path(target, control.ArtifactManifest, "legacy")
@@ -817,18 +1251,27 @@ func writeManifest(t *testing.T, target string, manifest control.Manifest) {
 
 func writePublishedReceipt(t *testing.T, target string, sessionID string) {
 	t.Helper()
-	path, err := control.Path(target, control.ArtifactSessionReceipt, sessionID)
-	if err != nil {
-		t.Fatalf("Path(%q, receipt, %q) error = %v", target, sessionID, err)
-	}
-	receipt := control.SessionReceipt{
+	writePublishedReceiptForScope(t, target, sessionID, "profile-local", "target-local")
+}
+
+func writePublishedReceiptForScope(t *testing.T, target string, sessionID string, profileID string, targetID string) {
+	t.Helper()
+	writeSessionReceiptFile(t, target, sessionID, control.SessionReceipt{
 		Version:   control.CurrentVersion,
 		ID:        sessionID,
-		ProfileID: "profile-local",
-		TargetID:  "target-local",
+		ProfileID: profileID,
+		TargetID:  targetID,
 		StartedAt: "2026-05-16T00:00:00Z",
 		EndedAt:   "2026-05-16T00:01:00Z",
 		Status:    "published",
+	})
+}
+
+func writeSessionReceiptFile(t *testing.T, target string, sessionID string, receipt control.SessionReceipt) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		t.Fatalf("Path(%q, receipt, %q) error = %v", target, sessionID, err)
 	}
 	if err := control.WriteFile(path, receipt); err != nil {
 		t.Fatalf("WriteFile(%q, receipt) error = %v", path, err)
@@ -854,6 +1297,17 @@ func writeSoftDelete(t *testing.T, target string, softDelete control.SoftDelete)
 	}
 	if err := control.WriteFile(path, softDelete); err != nil {
 		t.Fatalf("WriteFile(%q, softDelete) error = %v", path, err)
+	}
+}
+
+func writeTargetDrift(t *testing.T, target string, drift control.TargetDrift) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactTargetDrift, drift.ID)
+	if err != nil {
+		t.Fatalf("Path(%q, target_drift, %q) error = %v", target, drift.ID, err)
+	}
+	if err := control.WriteFile(path, drift); err != nil {
+		t.Fatalf("WriteFile(%q, targetDrift) error = %v", path, err)
 	}
 }
 

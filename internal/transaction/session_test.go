@@ -65,7 +65,7 @@ func TestSessionRecordRoundTrip(t *testing.T) {
 }
 
 func TestValidateSessionIDRejectsUnsafeValues(t *testing.T) {
-	tests := []string{"", "../x", "a/b", `a\b`, "bad id"}
+	tests := []string{"", ".", "../x", "a/b", `a\b`, "bad id"}
 	for _, id := range tests {
 		t.Run(id, func(t *testing.T) {
 			err := ValidateSessionID(id)
