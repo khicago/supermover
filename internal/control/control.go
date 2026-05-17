@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/khicago/supermover/internal/durable"
@@ -382,6 +383,11 @@ func (d Manifest) validateWithOptions(opts manifestValidationOptions) error {
 	require("id", d.ID, &errs)
 	require("session_id", d.SessionID, &errs)
 	require("created_at", d.CreatedAt, &errs)
+	if strings.TrimSpace(d.CreatedAt) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, d.CreatedAt); err != nil {
+			errs = append(errs, fmt.Errorf("created_at must be RFC3339 timestamp: %w", err))
+		}
+	}
 	for i, entry := range d.Entries {
 		if strings.TrimSpace(entry.Path) == "" {
 			errs = append(errs, fmt.Errorf("entries[%d].path is required", i))

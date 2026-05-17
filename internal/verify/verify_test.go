@@ -216,6 +216,127 @@ func TestBuildReportFiltersSession(t *testing.T) {
 	}
 }
 
+func TestBuildReportSessionManifestArtifactProblemReturnsStructuredReport(t *testing.T) {
+	target := t.TempDir()
+	writePublishedReceipt(t, target, "bad")
+	path, err := control.Path(target, control.ArtifactManifest, "bad")
+	if err != nil {
+		t.Fatalf("Path(%q, manifest, bad) error = %v", target, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("{"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "bad"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, bad) error = %v, want structured report", target, err)
+	}
+	if got.Summary.ManifestCount != 0 || got.Summary.ArtifactProblems != 1 {
+		t.Fatalf("BuildReport(%q, bad) summary=%+v, want no manifest and one artifact problem", target, got.Summary)
+	}
+	if len(got.ArtifactProblems) != 1 || got.ArtifactProblems[0].SessionID != "bad" {
+		t.Fatalf("BuildReport(%q, bad).ArtifactProblems = %#v, want bad session problem", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportFlagsManifestInvalidCreatedAt(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "ok.txt", []byte("ok"))
+	writeRawArtifact(t, target, filepath.Join("sessions", "bad"), "manifest.json", `{"version":1,"id":"manifest-bad","session_id":"bad","created_at":"not-time","entries":[{"path":"ok.txt","kind":"file","size":2,"digest":"`+digest([]byte("ok"))+`","target_path":"ok.txt"}]}`)
+	writePublishedReceipt(t, target, "bad")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.ManifestCount != 0 || got.Summary.ArtifactProblems != 1 {
+		t.Fatalf("BuildReport(%q) summary=%+v, want malformed manifest as artifact problem", target, got.Summary)
+	}
+	if len(got.ArtifactProblems) != 1 || got.ArtifactProblems[0].SessionID != "bad" || !strings.Contains(got.ArtifactProblems[0].Err, "created_at") {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want created_at artifact problem", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportFlagsSoftDeleteScopeMismatch(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "ok.txt", []byte("ok"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "ok.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok")), TargetPath: "ok.txt"}},
+	})
+	writePublishedReceipt(t, target, "session")
+	writeSoftDelete(t, target, control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "session-del_bad",
+		SessionID:          "session",
+		ProfileID:          "other-profile",
+		TargetID:           "target-local",
+		RootID:             "root",
+		PreviousSessionID:  "previous",
+		PreviousManifestID: "manifest-previous",
+		SourcePath:         "gone.txt",
+		TargetPath:         "gone.txt",
+		Kind:               "file",
+		DetectedAt:         "2026-05-16T00:00:00Z",
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.SoftDeletes != 0 || len(got.SoftDeletes) != 0 {
+		t.Fatalf("BuildReport(%q).SoftDeletes = %#v summary=%+v, want mismatched record excluded", target, got.SoftDeletes, got.Summary)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 || !strings.Contains(got.ArtifactProblems[0].Err, "profile_id") {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want soft delete profile mismatch problem", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportFlagsSoftDeleteRootMismatch(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "ok.txt", []byte("ok"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		RootID:    "root",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "ok.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok")), TargetPath: "ok.txt"}},
+	})
+	writePublishedReceipt(t, target, "session")
+	writeSoftDelete(t, target, control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "session-del_bad_root",
+		SessionID:          "session",
+		ProfileID:          "profile-local",
+		TargetID:           "target-local",
+		RootID:             "wrong-root",
+		PreviousSessionID:  "previous",
+		PreviousManifestID: "manifest-previous",
+		SourcePath:         "gone.txt",
+		TargetPath:         "gone.txt",
+		Kind:               "file",
+		DetectedAt:         "2026-05-16T00:00:00Z",
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.SoftDeletes != 0 || len(got.SoftDeletes) != 0 {
+		t.Fatalf("BuildReport(%q).SoftDeletes = %#v summary=%+v, want root-mismatched record excluded", target, got.SoftDeletes, got.Summary)
+	}
+	if got.Summary.ArtifactProblems != 1 || len(got.ArtifactProblems) != 1 || !strings.Contains(got.ArtifactProblems[0].Err, "root_id") {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want soft delete root mismatch problem", target, got.ArtifactProblems)
+	}
+}
+
 func TestBuildReportRejectsUnsafeTargetPath(t *testing.T) {
 	target := t.TempDir()
 	writeManifest(t, target, control.Manifest{

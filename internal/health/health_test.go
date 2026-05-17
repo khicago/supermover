@@ -50,7 +50,7 @@ func TestBuildReportListsRecoveryItemsAndInvalidRecords(t *testing.T) {
 	if len(got.Items) != 1 || got.Items[0].SessionID != "session-recover" || got.Items[0].Action != string(transaction.ActionRecover) {
 		t.Fatalf("BuildReport(%q).Items = %#v, want session-recover recover item", target, got.Items)
 	}
-	if len(got.Invalid) != 1 || got.Invalid[0].Path != badPath {
+	if len(got.Invalid) != 1 || got.Invalid[0].Path != badPath || got.Invalid[0].SessionID != "bad" {
 		t.Fatalf("BuildReport(%q).Invalid = %#v, want bad record path %q", target, got.Invalid, badPath)
 	}
 }

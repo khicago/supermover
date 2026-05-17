@@ -40,8 +40,9 @@ type RecoveryItem struct {
 }
 
 type InvalidRecord struct {
-	Path  string `json:"path"`
-	Error string `json:"error"`
+	SessionID string `json:"session_id,omitempty"`
+	Path      string `json:"path"`
+	Error     string `json:"error"`
 }
 
 type ArtifactIssue struct {
@@ -80,8 +81,9 @@ func BuildReport(opts Options) (Report, error) {
 	}
 	for _, invalid := range scan.Invalid {
 		report.Invalid = append(report.Invalid, InvalidRecord{
-			Path:  invalid.Path,
-			Error: invalid.Err.Error(),
+			SessionID: invalid.SessionID,
+			Path:      invalid.Path,
+			Error:     invalid.Err.Error(),
 		})
 	}
 	artifactIssues, err := scanPublishedArtifacts(targetRoot)
@@ -93,7 +95,7 @@ func BuildReport(opts Options) (Report, error) {
 		return Report{}, err
 	}
 	for _, problem := range reviewArtifacts.ArtifactProblems {
-		artifactIssues = append(artifactIssues, ArtifactIssue{Path: problem.Path, Error: problem.Err})
+		artifactIssues = append(artifactIssues, ArtifactIssue{SessionID: problem.SessionID, Path: problem.Path, Error: problem.Err})
 	}
 	report.Artifacts = artifactIssues
 	report.Summary.IncompleteSessions = len(report.Items)

@@ -31,8 +31,9 @@ type RecoveryScan struct {
 }
 
 type RecoveryProblem struct {
-	Path string
-	Err  error
+	SessionID string
+	Path      string
+	Err       error
 }
 
 func ClassifyRecoveryAction(state State) (RecoveryAction, string) {
@@ -68,7 +69,7 @@ func ScanRecovery(layout Layout) (RecoveryScan, error) {
 		path := filepath.Join(sessionsDir, entry.Name(), "session.json")
 		record, err := ReadSessionRecord(path)
 		if err != nil {
-			scan.Invalid = append(scan.Invalid, RecoveryProblem{Path: path, Err: err})
+			scan.Invalid = append(scan.Invalid, RecoveryProblem{SessionID: entry.Name(), Path: path, Err: err})
 			continue
 		}
 		action, reason := ClassifyRecoveryAction(record.State)
