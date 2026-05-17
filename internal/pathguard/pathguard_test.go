@@ -24,14 +24,36 @@ func TestSafeJoinParentRejectsSymlinkParent(t *testing.T) {
 func TestSafeJoinRejectsEscapes(t *testing.T) {
 	root := t.TempDir()
 
-	tests := []string{"../a.txt", "/tmp/a.txt", "."}
-	for _, rel := range tests {
-		t.Run(rel, func(t *testing.T) {
-			_, err := SafeJoin(root, rel)
+	tests := []struct {
+		name string
+		rel  string
+	}{
+		{name: "parent traversal", rel: "../a.txt"},
+		{name: "absolute path", rel: "/tmp/a.txt"},
+		{name: "clean current directory", rel: "."},
+		{name: "nested traversal escapes", rel: "safe/../../a.txt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := SafeJoin(root, tt.rel)
 			if !errors.Is(err, ErrUnsafePath) {
-				t.Fatalf("SafeJoin(%q, %q) error = %v, want ErrUnsafePath", root, rel, err)
+				t.Fatalf("SafeJoin(%q, %q) error = %v, want ErrUnsafePath", root, tt.rel, err)
 			}
 		})
+	}
+}
+
+func TestSafeJoinAllowsHiddenDataBelowRoot(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.ToSlash(filepath.Join("docs", ".hidden", "file.txt"))
+
+	got, err := SafeJoin(root, rel)
+	if err != nil {
+		t.Fatalf("SafeJoin(%q, %q) error = %v, want nil", root, rel, err)
+	}
+	want := filepath.Join(root, "docs", ".hidden", "file.txt")
+	if got != want {
+		t.Fatalf("SafeJoin(%q, %q) = %q, want %q", root, rel, got, want)
 	}
 }
 
@@ -60,18 +82,52 @@ func TestIsReservedControlPath(t *testing.T) {
 }
 
 func TestValidateRelativeSymlinkTargetRejectsUnsafeValues(t *testing.T) {
-	for _, target := range []string{"", "/abs", `bad\path`, "../outside", "a/../b", "./file", "a//b", "C:/Users/example", "c:relative", "//server/share", ".supermover/receipt.json", ".Supermover/receipt.json"} {
-		t.Run(target, func(t *testing.T) {
-			if err := ValidateRelativeSymlinkTarget(target); !errors.Is(err, ErrUnsafePath) {
-				t.Fatalf("ValidateRelativeSymlinkTarget(%q) error = %v, want ErrUnsafePath", target, err)
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "empty", target: ""},
+		{name: "blank", target: " \t\n"},
+		{name: "absolute slash", target: "/abs"},
+		{name: "absolute backslash", target: `\abs`},
+		{name: "backslash component", target: `bad\path`},
+		{name: "parent traversal", target: "../outside"},
+		{name: "interior traversal", target: "a/../b"},
+		{name: "dot segment", target: "./file"},
+		{name: "empty segment", target: "a//b"},
+		{name: "windows absolute volume", target: "C:/Users/example"},
+		{name: "windows drive relative", target: "c:relative"},
+		{name: "windows unc", target: "//server/share"},
+		{name: "reserved control dir", target: ".supermover/receipt.json"},
+		{name: "reserved control dir case insensitive", target: ".Supermover/receipt.json"},
+		{name: "too long", target: strings.Repeat("a", MaxSymlinkTargetLen+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateRelativeSymlinkTarget(tt.target); !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("ValidateRelativeSymlinkTarget(%q) error = %v, want ErrUnsafePath", tt.target, err)
 			}
 		})
 	}
 }
 
-func TestValidateRelativeSymlinkTargetAcceptsSafeRelativeValue(t *testing.T) {
-	if err := ValidateRelativeSymlinkTarget("dir/file.txt"); err != nil {
-		t.Fatalf("ValidateRelativeSymlinkTarget(dir/file.txt) error = %v, want nil", err)
+func TestValidateRelativeSymlinkTargetAcceptsSafeRelativeValues(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "nested file", target: "dir/file.txt"},
+		{name: "hidden source data", target: "dir/.hidden/file.txt"},
+		{name: "control name below data dir", target: "docs/.supermover/file.txt"},
+		{name: "maximum length", target: strings.Repeat("a", MaxSymlinkTargetLen)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := ValidateRelativeSymlinkTarget(tt.target); err != nil {
+				t.Fatalf("ValidateRelativeSymlinkTarget(%q) error = %v, want nil", tt.target, err)
+			}
+		})
 	}
 }
 
@@ -91,6 +147,72 @@ func TestEnsurePlainDirectoryRejectsSymlinkComponent(t *testing.T) {
 	}
 }
 
+func TestEnsurePlainDirectoryCreatesPlainParents(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "sessions", "session-1", "stage")
+
+	if err := EnsurePlainDirectory(root, dir, 0o755); err != nil {
+		t.Fatalf("EnsurePlainDirectory(%q, %q) error = %v, want nil", root, dir, err)
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatalf("os.Lstat(%q) error = %v, want nil", dir, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("os.Lstat(%q) mode = %v, want plain directory", dir, info.Mode())
+	}
+}
+
+func TestEnsurePlainDirectoryRejectsUnsafeDirectories(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root string) (string, string)
+	}{
+		{
+			name: "path escapes root",
+			setup: func(t *testing.T, root string) (string, string) {
+				return root, filepath.Join(filepath.Dir(root), "outside")
+			},
+		},
+		{
+			name: "root is symlink",
+			setup: func(t *testing.T, root string) (string, string) {
+				realRoot := filepath.Join(filepath.Dir(root), "real-root")
+				if err := os.Mkdir(realRoot, 0o755); err != nil {
+					t.Fatalf("os.Mkdir(%q) error = %v, want nil", realRoot, err)
+				}
+				linkRoot := filepath.Join(filepath.Dir(root), "link-root")
+				if err := os.Symlink(realRoot, linkRoot); err != nil {
+					t.Skipf("os.Symlink() unavailable: %v", err)
+				}
+				return linkRoot, filepath.Join(linkRoot, "child")
+			},
+		},
+		{
+			name: "file component",
+			setup: func(t *testing.T, root string) (string, string) {
+				filePath := filepath.Join(root, "not-a-dir")
+				if err := os.WriteFile(filePath, []byte("file"), 0o644); err != nil {
+					t.Fatalf("os.WriteFile(%q) error = %v, want nil", filePath, err)
+				}
+				return root, filepath.Join(filePath, "child")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			root, dir := tt.setup(t, root)
+
+			err := EnsurePlainDirectory(root, dir, 0o755)
+			if !errors.Is(err, ErrUnsafePath) {
+				t.Fatalf("EnsurePlainDirectory(%q, %q) error = %v, want ErrUnsafePath", root, dir, err)
+			}
+		})
+	}
+}
+
 func TestEnsurePlainDirectoryRejectsSymlinkComponentWithExistingTargetSubtree(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -104,6 +226,53 @@ func TestEnsurePlainDirectoryRejectsSymlinkComponentWithExistingTargetSubtree(t 
 	err := EnsurePlainDirectory(root, filepath.Join(root, ReservedControlDir, "sessions", "session-1", "stage"), 0o755)
 	if !errors.Is(err, ErrUnsafePath) {
 		t.Fatalf("EnsurePlainDirectory(existing subtree below symlink) error = %v, want ErrUnsafePath", err)
+	}
+}
+
+func TestSafeJoinDirectoryChecksDirectoryAndRejectsEscapes(t *testing.T) {
+	root := t.TempDir()
+
+	tests := []struct {
+		name    string
+		rel     string
+		setup   func(t *testing.T, root string)
+		wantErr bool
+	}{
+		{
+			name: "existing nested directory",
+			rel:  "a/b",
+			setup: func(t *testing.T, root string) {
+				if err := os.MkdirAll(filepath.Join(root, "a", "b"), 0o755); err != nil {
+					t.Fatalf("os.MkdirAll(existing dir) error = %v, want nil", err)
+				}
+			},
+		},
+		{name: "reject traversal", rel: "../outside", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t, root)
+			}
+			got, err := SafeJoinDirectory(root, tt.rel)
+			if tt.wantErr {
+				if !errors.Is(err, ErrUnsafePath) {
+					t.Fatalf("SafeJoinDirectory(%q, %q) error = %v, want ErrUnsafePath", root, tt.rel, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SafeJoinDirectory(%q, %q) error = %v, want nil", root, tt.rel, err)
+			}
+			info, err := os.Lstat(got)
+			if err != nil {
+				t.Fatalf("os.Lstat(%q) error = %v, want nil", got, err)
+			}
+			if !info.IsDir() {
+				t.Fatalf("os.Lstat(%q).IsDir() = false, want true", got)
+			}
+		})
 	}
 }
 

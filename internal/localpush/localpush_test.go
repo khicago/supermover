@@ -342,6 +342,49 @@ func TestRunPreflightsAllTargetsBeforePublish(t *testing.T) {
 	}
 }
 
+func TestPreflightAndRunRefuseDivergentTargetFile(t *testing.T) {
+	tests := []struct {
+		name string
+		push func(Options) (Result, error)
+	}{
+		{name: "preflight", push: Preflight},
+		{name: "run", push: Run},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := filepath.Join(dir, "source")
+			target := filepath.Join(dir, "target")
+			mustWriteFile(t, filepath.Join(source, "file.txt"), "source", 0o644)
+			mustWriteFile(t, filepath.Join(target, "file.txt"), "target", 0o600)
+			p := profile.NewDefault("profile-local", "Local profile", source, target)
+
+			_, err := tt.push(Options{Profile: p, TargetDir: target, SessionID: "session-test"})
+			if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+				t.Fatalf("%s(divergent target) error = %v, want overwrite refusal", tt.name, err)
+			}
+			got, err := os.ReadFile(filepath.Join(target, "file.txt"))
+			if err != nil {
+				t.Fatalf("os.ReadFile(target after failed %s) error = %v, want nil", tt.name, err)
+			}
+			if string(got) != "target" {
+				t.Fatalf("target after failed %s = %q, want original target", tt.name, string(got))
+			}
+			info, err := os.Stat(filepath.Join(target, "file.txt"))
+			if err != nil {
+				t.Fatalf("os.Stat(target after failed %s) error = %v, want nil", tt.name, err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Fatalf("target mode after failed %s = %v, want original 0600", tt.name, info.Mode().Perm())
+			}
+			if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "session-test", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("os.Stat(receipt after failed %s) error = %v, want os.ErrNotExist", tt.name, err)
+			}
+		})
+	}
+}
+
 func TestRunRejectsNormalizedReservedControlPlaneTargetPathBeforePublish(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -631,6 +674,45 @@ func TestCopyRegularRejectsChangedSourceBeforePublish(t *testing.T) {
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "existing" {
 		t.Fatalf("target after failed copy = (%q, %v), want existing", string(got), err)
+	}
+}
+
+func TestCopyRegularToStageRejectsChangedSourceWithoutPublishingStage(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	stage := filepath.Join(dir, "stage", "file.txt")
+	stamp := time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)
+	mustWriteFile(t, source, "trusted", 0o640)
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", source, err)
+	}
+	entry := scan.Entry{
+		Path:    "file.txt",
+		Kind:    scan.KindRegular,
+		Size:    int64(len("trusted")),
+		Mode:    0o640,
+		ModTime: stamp,
+	}
+
+	_, err := copyRegularToStageWithPostCopy(source, stage, entry, func() error {
+		next := stamp.Add(time.Second)
+		if err := os.WriteFile(source, []byte("changed"), 0o640); err != nil {
+			return err
+		}
+		return os.Chtimes(source, next, next)
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed during copy") {
+		t.Fatalf("copyRegularToStageWithPostCopy(changed source) error = %v, want changed during copy", err)
+	}
+	if _, err := os.Stat(stage); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(staged payload after changed source) error = %v, want os.ErrNotExist", err)
+	}
+	temps, err := filepath.Glob(filepath.Join(filepath.Dir(stage), ".supermover-*.tmp"))
+	if err != nil {
+		t.Fatalf("filepath.Glob(stage temp files) error = %v, want nil", err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("stage temp files after changed source = %#v, want none", temps)
 	}
 }
 
