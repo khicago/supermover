@@ -996,6 +996,9 @@ func validateStagedManifestFile(layout transaction.Layout, sessionID string, ent
 	if strings.TrimSpace(entry.ModTime) == "" {
 		return fmt.Errorf("staged file %q is missing mod_time evidence", entry.Path)
 	}
+	if _, err := parseRequiredManifestModTime(entry.ModTime); err != nil {
+		return fmt.Errorf("staged file %q has invalid mod_time evidence: %w", entry.Path, err)
+	}
 	stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
 	if err != nil {
 		return err
@@ -1914,11 +1917,25 @@ func targetPath(entry control.ManifestEntry) string {
 }
 
 func parseManifestModTime(value string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, value)
+	t, err := parseRequiredManifestModTime(value)
 	if err != nil {
 		return time.Time{}
 	}
 	return t
+}
+
+func parseRequiredManifestModTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, fmt.Errorf("timestamp is required")
+	}
+	t, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if t.IsZero() {
+		return time.Time{}, fmt.Errorf("timestamp must not be zero")
+	}
+	return t, nil
 }
 
 func copyRegularToStageWithPostCopy(sourcePath, targetPath string, entry scan.Entry, postCopy func() error) (string, error) {

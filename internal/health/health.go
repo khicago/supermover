@@ -156,6 +156,12 @@ func scanSessionArtifactEvidence(targetRoot string, sessionID string, record tra
 			Path:      receiptPath,
 			Error:     fmt.Sprintf("receipt status %q disagrees with session state %q", receipt.Status, record.State),
 		})
+	} else if receiptErr == nil && record.State != transaction.StatePublished {
+		issues = append(issues, ArtifactIssue{
+			SessionID: sessionID,
+			Path:      receiptPath,
+			Error:     fmt.Sprintf("receipt status %q exists for non-published session state %q", receipt.Status, record.State),
+		})
 	} else if receiptErr != nil && !os.IsNotExist(receiptErr) && record.State != transaction.StatePublished {
 		issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: receiptErr.Error()})
 	}

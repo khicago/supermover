@@ -339,6 +339,39 @@ func TestRecoverRejectsStagedManifestWithoutMetadataEvidence(t *testing.T) {
 	}
 }
 
+func TestRecoverRejectsStagedManifestWithInvalidModTimeEvidence(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	entry := control.ManifestEntry{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: "not-a-timestamp", Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"}
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{entry})
+	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(invalid mod_time evidence) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 || got.Recovered != 0 {
+		t.Fatalf("Recover(invalid mod_time evidence) = %#v, want needs_repair", got)
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-recover"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(repair) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "invalid mod_time evidence") {
+		t.Fatalf("repair record = %#v, want needs_repair with invalid mod_time note", record)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target after invalid mod_time evidence) error = %v, want os.ErrNotExist", err)
+	}
+	if _, err := os.Stat(filepath.Join(control.ControlDir(target), "sessions", "session-recover", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(receipt after invalid mod_time evidence) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRecoverPublishesStagedSymlinkEntry(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

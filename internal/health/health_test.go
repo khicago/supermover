@@ -159,6 +159,30 @@ func TestBuildReportMarksPartialControlArtifactsUnhealthy(t *testing.T) {
 	}
 }
 
+func TestBuildReportMarksNonPublishedReceiptWithStagedSessionUnhealthy(t *testing.T) {
+	target := t.TempDir()
+	layout := transaction.NewLayout(control.ControlDir(target))
+	writeRecord(t, layout, "session-receipt", transaction.StateStaged)
+	writeReceipt(t, target, "session-receipt", "received")
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Healthy {
+		t.Fatalf("BuildReport(%q).Healthy = true, want false for non-published receipt on staged session", target)
+	}
+	found := false
+	for _, issue := range got.Artifacts {
+		if issue.SessionID == "session-receipt" && strings.Contains(issue.Error, `receipt status "received"`) && strings.Contains(issue.Error, "non-published session state") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("BuildReport(%q).Artifacts = %#v, want non-published receipt issue", target, got.Artifacts)
+	}
+}
+
 func TestBuildReportRejectsMissingTarget(t *testing.T) {
 	_, err := BuildReport(Options{TargetRoot: filepath.Join(t.TempDir(), "missing")})
 	if err == nil {

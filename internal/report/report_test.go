@@ -343,6 +343,29 @@ func TestBuildReportShowsPartialControlArtifact(t *testing.T) {
 	}
 }
 
+func TestBuildReportShowsNonPublishedReceiptArtifact(t *testing.T) {
+	target := t.TempDir()
+	writeSessionRecord(t, target, "session-receipt", transaction.StateStaged)
+	writeReceiptForStatus(t, target, "session-receipt", "received")
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Overall.Status != StatusUnhealthy {
+		t.Fatalf("BuildReport(%q).Overall.Status = %q, want %q", target, got.Overall.Status, StatusUnhealthy)
+	}
+	found := false
+	for _, problem := range got.ArtifactProblems {
+		if problem.Source == "health" && problem.SessionID == "session-receipt" && strings.Contains(problem.Error, `receipt status "received"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want non-published receipt artifact", target, got.ArtifactProblems)
+	}
+}
+
 func TestBuildReportDeduplicatesManifestArtifactProblems(t *testing.T) {
 	target := t.TempDir()
 	writePublishedReceipt(t, target, "session-missing-manifest")
@@ -582,11 +605,7 @@ func writePublishedReceipt(t *testing.T, target string, sessionID string) {
 
 func writePublishedReceiptForScope(t *testing.T, target string, sessionID string, profileID string, targetID string) {
 	t.Helper()
-	path, err := control.Path(target, control.ArtifactSessionReceipt, sessionID)
-	if err != nil {
-		t.Fatalf("control.Path(%q, receipt, %q) error = %v, want nil", target, sessionID, err)
-	}
-	receipt := control.SessionReceipt{
+	writeReceiptDocument(t, target, control.SessionReceipt{
 		Version:   control.CurrentVersion,
 		ID:        sessionID,
 		ProfileID: profileID,
@@ -594,6 +613,27 @@ func writePublishedReceiptForScope(t *testing.T, target string, sessionID string
 		StartedAt: "2026-05-16T00:00:00Z",
 		EndedAt:   "2026-05-16T00:01:00Z",
 		Status:    "published",
+	})
+}
+
+func writeReceiptForStatus(t *testing.T, target string, sessionID string, status string) {
+	t.Helper()
+	writeReceiptDocument(t, target, control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        sessionID,
+		ProfileID: "profile-local",
+		TargetID:  "target-local",
+		StartedAt: "2026-05-16T00:00:00Z",
+		EndedAt:   "2026-05-16T00:01:00Z",
+		Status:    status,
+	})
+}
+
+func writeReceiptDocument(t *testing.T, target string, receipt control.SessionReceipt) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactSessionReceipt, receipt.ID)
+	if err != nil {
+		t.Fatalf("control.Path(%q, receipt, %q) error = %v, want nil", target, receipt.ID, err)
 	}
 	if err := control.WriteFile(path, receipt); err != nil {
 		t.Fatalf("control.WriteFile(%q, receipt) error = %v, want nil", path, err)
