@@ -385,6 +385,69 @@ func TestPreflightAndRunRefuseDivergentTargetFile(t *testing.T) {
 	}
 }
 
+func TestEnsureDirectoryPreflightClassifiesExistingTarget(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing")
+	if err := ensureDirectoryPreflight(missing); err != nil {
+		t.Fatalf("ensureDirectoryPreflight(%q) error = %v, want nil for missing target", missing, err)
+	}
+
+	plainDir := filepath.Join(dir, "plain")
+	if err := os.Mkdir(plainDir, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q) error = %v, want nil", plainDir, err)
+	}
+	if err := ensureDirectoryPreflight(plainDir); err != nil {
+		t.Fatalf("ensureDirectoryPreflight(%q) error = %v, want nil for plain directory", plainDir, err)
+	}
+
+	filePath := filepath.Join(dir, "file")
+	if err := os.WriteFile(filePath, []byte("file"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", filePath, err)
+	}
+	if err := ensureDirectoryPreflight(filePath); err == nil || !strings.Contains(err.Error(), "non-directory") {
+		t.Fatalf("ensureDirectoryPreflight(%q) error = %v, want non-directory refusal", filePath, err)
+	}
+
+	linkPath := filepath.Join(dir, "link")
+	if err := os.Symlink(plainDir, linkPath); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	if err := ensureDirectoryPreflight(linkPath); err == nil || !strings.Contains(err.Error(), "non-directory") {
+		t.Fatalf("ensureDirectoryPreflight(%q) error = %v, want symlink refusal", linkPath, err)
+	}
+}
+
+func TestSymlinkTargetStateClassifiesTargets(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "missing")
+	same, exists, err := symlinkTargetState(missing, "target.txt")
+	if err != nil || same || exists {
+		t.Fatalf("symlinkTargetState(%q, target.txt) = same=%t exists=%t err=%v, want missing false/false/nil", missing, same, exists, err)
+	}
+
+	linkPath := filepath.Join(dir, "link")
+	if err := os.Symlink("target.txt", linkPath); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
+	}
+	same, exists, err = symlinkTargetState(linkPath, "target.txt")
+	if err != nil || !same || !exists {
+		t.Fatalf("symlinkTargetState(%q, target.txt) = same=%t exists=%t err=%v, want same existing symlink", linkPath, same, exists, err)
+	}
+	same, exists, err = symlinkTargetState(linkPath, "other.txt")
+	if err != nil || same || !exists {
+		t.Fatalf("symlinkTargetState(%q, other.txt) = same=%t exists=%t err=%v, want different existing symlink", linkPath, same, exists, err)
+	}
+
+	filePath := filepath.Join(dir, "file")
+	if err := os.WriteFile(filePath, []byte("file"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", filePath, err)
+	}
+	same, exists, err = symlinkTargetState(filePath, "target.txt")
+	if !errors.Is(err, errSymlinkTargetConflict) || same || !exists {
+		t.Fatalf("symlinkTargetState(%q, target.txt) = same=%t exists=%t err=%v, want conflict on non-symlink", filePath, same, exists, err)
+	}
+}
+
 func TestRunRejectsNormalizedReservedControlPlaneTargetPathBeforePublish(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -1119,6 +1182,82 @@ func TestRunAllowsExistingIdenticalTargetFile(t *testing.T) {
 	}
 }
 
+func TestRecoverRejectsStagedSessionWithMismatchedProfileSnapshot(t *testing.T) {
+	tests := []struct {
+		name string
+		edit func(*control.ProfileSnapshot)
+		want string
+	}{
+		{
+			name: "snapshot profile id mismatch",
+			edit: func(snapshot *control.ProfileSnapshot) {
+				snapshot.ProfileID = "other-profile"
+			},
+			want: "profile_id",
+		},
+		{
+			name: "embedded target id mismatch",
+			edit: func(snapshot *control.ProfileSnapshot) {
+				var embedded profile.Profile
+				if err := json.Unmarshal(snapshot.Profile, &embedded); err != nil {
+					panic(err)
+				}
+				embedded.Target.TargetID = "other-target"
+				data, err := json.Marshal(embedded)
+				if err != nil {
+					panic(err)
+				}
+				snapshot.Profile = data
+			},
+			want: "target_id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source, target, p, sessionID := prepareStagedRecoverySession(t)
+			snapshotPath, err := control.Path(target, control.ArtifactProfileSnapshot, "profile-"+sessionID)
+			if err != nil {
+				t.Fatalf("control.Path(profile snapshot) error = %v, want nil", err)
+			}
+			snapshot := readControlDoc[control.ProfileSnapshot](t, target, control.ArtifactProfileSnapshot, "profile-"+sessionID)
+			tt.edit(&snapshot)
+			if err := control.WriteFile(snapshotPath, snapshot); err != nil {
+				t.Fatalf("control.WriteFile(%q, edited snapshot) error = %v, want nil", snapshotPath, err)
+			}
+
+			result, err := Recover(RecoverOptions{
+				Profile:   p,
+				TargetDir: target,
+				SessionID: sessionID,
+				Now:       time.Date(2026, 5, 16, 5, 0, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatalf("Recover(%s) error = %v, want nil result with needs_repair", tt.name, err)
+			}
+			if result.RepairNeeded != 1 || result.Recovered != 0 || len(result.Items) != 1 {
+				t.Fatalf("Recover(%s) result = %+v, want one repair item and no recovered sessions", tt.name, result)
+			}
+			if result.Items[0].Status != "needs_repair" || !strings.Contains(result.Items[0].Message, tt.want) {
+				t.Fatalf("Recover(%s) item = %+v, want needs_repair message containing %q", tt.name, result.Items[0], tt.want)
+			}
+			if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("os.Stat(published target after rejected recovery) error = %v, want os.ErrNotExist", err)
+			}
+			if _, err := os.Stat(filepath.Join(source, "file.txt")); err != nil {
+				t.Fatalf("os.Stat(source after rejected recovery) error = %v, want source retained", err)
+			}
+			record, err := transaction.ReadSessionRecord(transaction.NewLayout(control.ControlDir(target)).RecordPath(sessionID))
+			if err != nil {
+				t.Fatalf("ReadSessionRecord(%q) error = %v, want nil", sessionID, err)
+			}
+			if record.State != transaction.StateNeedsRepair {
+				t.Fatalf("session state after rejected recovery = %q, want %q", record.State, transaction.StateNeedsRepair)
+			}
+		})
+	}
+}
+
 func TestRunDoesNotMutateExistingTargetDirectoryMetadata(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -1297,6 +1436,52 @@ func readOnlyWarning(t *testing.T, target string) control.Warning {
 		t.Fatalf("control.ReadFile(warning) error = %v, want nil", err)
 	}
 	return warning
+}
+
+func prepareStagedRecoverySession(t *testing.T) (source string, target string, p profile.Profile, sessionID string) {
+	t.Helper()
+	dir := t.TempDir()
+	source = filepath.Join(dir, "source")
+	target = filepath.Join(dir, "target")
+	sessionID = "session-recover"
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "payload", 0o644)
+	p = profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{
+		Profile:   p,
+		TargetDir: target,
+		SessionID: sessionID,
+		Now:       time.Date(2026, 5, 16, 4, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Run(%q) error = %v, want nil", sessionID, err)
+	}
+	layout := transaction.NewLayout(control.ControlDir(target))
+	record, err := transaction.ReadSessionRecord(layout.RecordPath(sessionID))
+	if err != nil {
+		t.Fatalf("ReadSessionRecord(%q) error = %v, want nil", sessionID, err)
+	}
+	staged, err := record.WithState(transaction.StateStaged, time.Date(2026, 5, 16, 4, 30, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("SessionRecord.WithState(staged) error = %v, want nil", err)
+	}
+	if err := layout.WriteSessionRecord(staged); err != nil {
+		t.Fatalf("WriteSessionRecord(staged) error = %v, want nil", err)
+	}
+	stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), "file.txt")
+	if err != nil {
+		t.Fatalf("pathguard.SafeJoinParent(stage, file.txt) error = %v, want nil", err)
+	}
+	mustWriteFile(t, stagePath, "payload", 0o644)
+	if err := os.Remove(filepath.Join(target, "file.txt")); err != nil {
+		t.Fatalf("os.Remove(published file) error = %v, want nil", err)
+	}
+	receiptPath, err := control.Path(target, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	if err := os.Remove(receiptPath); err != nil {
+		t.Fatalf("os.Remove(receipt) error = %v, want nil", err)
+	}
+	return source, target, p, sessionID
 }
 
 func writeManifest(t *testing.T, target string, manifest control.Manifest) {
