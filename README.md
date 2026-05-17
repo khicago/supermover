@@ -49,7 +49,7 @@ The v1 direction is intentionally conservative:
 - one-way `source -> trusted target`
 - profile files as the configuration SSOT
 - `.supermover` control-plane artifacts for receipts, manifests, warnings,
-  history, target drift, soft deletes, and recovery
+  history, soft deletes, and recovery; planned drift records remain separate
 - planned explicit LAN pairing; discovery is not trust
 - planned bounded traffic metadata reduction, not anonymity
 - ordinary file-tree fidelity with auditable supplemental migration records

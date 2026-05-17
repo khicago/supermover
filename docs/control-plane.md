@@ -12,19 +12,24 @@ drift is visible.
 
 ## Paths
 
-Path helpers resolve artifacts under the target root:
+Current local path helpers resolve artifacts under the target root:
 
 - profile snapshot: `.supermover/profiles/<id>.json`
-- pairing receipt: `.supermover/pairings/<id>.json`
 - session receipt: `.supermover/sessions/<session_id>/receipt.json`
 - manifest: `.supermover/sessions/<session_id>/manifest.json`
 - warning: `.supermover/warnings/<id>.json`
-- target drift: `.supermover/drift/<id>.json`
 - soft delete: `.supermover/deleted/<id>.json`
 - history index: `.supermover/history/index.json`
 - recovery state: `.supermover/recovery/state.json`
 
+Planned network and drift path helpers add:
+
+- pairing receipt: `.supermover/pairings/<id>.json`
+- target drift: `.supermover/drift/<id>.json`
+
 ## Artifact Schemas
+
+Current local schemas:
 
 `profile_snapshot` captures the profile SSOT used for a run:
 
@@ -34,15 +39,6 @@ Path helpers resolve artifacts under the target root:
 - `session_id`
 - `captured_at`
 - `profile`: embedded JSON profile payload
-
-`pairing_receipt` records explicit target trust:
-
-- `version`
-- `id`
-- `profile_id`
-- `target_id`
-- `device_public_key`
-- `verified_at`
 
 `session_receipt` records a run:
 
@@ -85,16 +81,6 @@ entries.
 - `suggested_config`
 - `created_at`
 
-`target_drift` records target-local changes detected after sync:
-
-- `version`
-- `id`
-- `session_id`
-- `path`
-- `detected_at`
-- `change`
-- `evidence`
-
 `soft_delete` records source-side deletions before physical pruning:
 
 - `version`
@@ -127,6 +113,27 @@ entries.
 - `status`: one of `clean`, `interrupted`, or `repairing`
 - `updated_at`
 - `checkpoints`
+
+Planned network and drift schemas:
+
+`pairing_receipt` records explicit target trust:
+
+- `version`
+- `id`
+- `profile_id`
+- `target_id`
+- `device_public_key`
+- `verified_at`
+
+`target_drift` records target-local changes detected after sync:
+
+- `version`
+- `id`
+- `session_id`
+- `path`
+- `detected_at`
+- `change`
+- `evidence`
 
 ## Validation Baseline
 
