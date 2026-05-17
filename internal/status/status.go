@@ -37,6 +37,7 @@ type Report struct {
 	Issues         []string                 `json:"issues,omitempty"`
 	LatestSession  LatestSession            `json:"latest_session"`
 	Counts         Counts                   `json:"counts"`
+	PruneReview    PruneReview              `json:"prune_review"`
 	Pairing        PairingEvidence          `json:"pairing"`
 	Privacy        PrivacyEvidence          `json:"privacy"`
 	TrafficPrivacy TrafficPrivacyAcceptance `json:"traffic_privacy_acceptance"`
@@ -74,6 +75,12 @@ type Counts struct {
 	SoftDeletes             int                          `json:"soft_deletes"`
 	PruneApprovals          int                          `json:"prune_approvals"`
 	PruneUnappliedApprovals int                          `json:"prune_unapplied_approvals"`
+	PruneActiveApprovals    int                          `json:"prune_active_approvals"`
+	PruneStaleApprovals     int                          `json:"prune_stale_approvals"`
+	PruneExpiredApprovals   int                          `json:"prune_expired_approvals"`
+	PruneConsumedApprovals  int                          `json:"prune_consumed_approvals"`
+	PruneReceipts           int                          `json:"prune_receipts"`
+	PruneReceiptIssues      int                          `json:"prune_receipt_issues"`
 	TargetDrifts            int                          `json:"target_drifts"`
 	LiveTargetDrifts        int                          `json:"live_target_drifts"`
 	LiveTargetDriftProblems int                          `json:"live_target_drift_artifact_problems"`
@@ -83,6 +90,11 @@ type Counts struct {
 	ArtifactProblemSources  []ArtifactProblemSourceCount `json:"artifact_problem_sources,omitempty"`
 	PairingIssues           int                          `json:"pairing_issues"`
 	NetworkTransfers        int                          `json:"network_transfers"`
+}
+
+type PruneReview struct {
+	Status string `json:"status"`
+	Action string `json:"action"`
 }
 
 type ArtifactProblemSourceCount struct {
@@ -174,6 +186,7 @@ func Build(opts Options) (Report, error) {
 		Issues:         append([]string(nil), full.Overall.Issues...),
 		LatestSession:  latestSession(full.LatestSession),
 		Counts:         counts(full.Summary, full.ArtifactProblems),
+		PruneReview:    pruneReview(full.PruneReview),
 		Pairing:        pairingEvidence(full.Pairing),
 		Privacy:        privacyEvidence(full.Privacy),
 		TrafficPrivacy: trafficPrivacyAcceptance(full.TrafficPrivacy),
@@ -233,6 +246,12 @@ func counts(in report.Summary, artifactProblems []report.ArtifactProblem) Counts
 		SoftDeletes:             in.SoftDeletes,
 		PruneApprovals:          in.PruneApprovals,
 		PruneUnappliedApprovals: in.PruneUnappliedApprovals,
+		PruneActiveApprovals:    in.PruneActiveApprovals,
+		PruneStaleApprovals:     in.PruneStaleApprovals,
+		PruneExpiredApprovals:   in.PruneExpiredApprovals,
+		PruneConsumedApprovals:  in.PruneConsumedApprovals,
+		PruneReceipts:           in.PruneReceipts,
+		PruneReceiptIssues:      in.PruneReceiptIssues,
 		TargetDrifts:            in.TargetDrifts,
 		LiveTargetDrifts:        in.LiveTargetDrifts,
 		LiveTargetDriftProblems: in.LiveTargetDriftProblems,
@@ -242,6 +261,13 @@ func counts(in report.Summary, artifactProblems []report.ArtifactProblem) Counts
 		ArtifactProblemSources:  artifactProblemSourceCounts(artifactProblems),
 		PairingIssues:           in.PairingIssues,
 		NetworkTransfers:        in.NetworkTransfers,
+	}
+}
+
+func pruneReview(in report.PruneReview) PruneReview {
+	return PruneReview{
+		Status: string(in.Status),
+		Action: in.ReviewAction(),
 	}
 }
 

@@ -197,6 +197,7 @@ func TestBuildWarningAndSoftDeleteRequireReviewWithoutMutatingTarget(t *testing.
 func TestBuildPruneApprovalInventoryRequiresReviewWithoutMutatingTarget(t *testing.T) {
 	target := t.TempDir()
 	p := testPruneProfile(t, target)
+	p.DeletePolicy.RetentionDays = 0
 	writeCompleteSession(t, target, "session-previous", "gone.txt", []byte("stale"))
 	writeCompleteSession(t, target, "session-prune", "keep.txt", []byte("keep"))
 	record := control.SoftDelete{
@@ -217,7 +218,7 @@ func TestBuildPruneApprovalInventoryRequiresReviewWithoutMutatingTarget(t *testi
 		Reason:             "missing_from_latest_source_scan",
 	}
 	writeSoftDelete(t, target, record)
-	writePruneApproval(t, target, testPruneApproval(t, p, record))
+	writePruneApproval(t, target, freshTestPruneApproval(t, p, record))
 	before := snapshotControlPlane(t, target)
 
 	got, err := Build(Options{TargetRoot: target, Profile: &p})
@@ -232,8 +233,126 @@ func TestBuildPruneApprovalInventoryRequiresReviewWithoutMutatingTarget(t *testi
 	if got.Counts.PruneApprovals != 1 || got.Counts.PruneUnappliedApprovals != 1 {
 		t.Fatalf("Build(%q).Counts = %+v, want one unapplied prune approval", target, got.Counts)
 	}
+	if got.PruneReview.Status != string(report.PruneReviewReviewRequired) || got.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("Build(%q).PruneReview = %+v, want compact prune review action", target, got.PruneReview)
+	}
+	if got.Counts.PruneActiveApprovals != 1 || got.Counts.PruneStaleApprovals != 0 || got.Counts.PruneExpiredApprovals != 0 || got.Counts.PruneConsumedApprovals != 0 || got.Counts.PruneReceipts != 0 || got.Counts.PruneReceiptIssues != 0 {
+		t.Fatalf("Build(%q).Counts = %+v, want active unapplied approval readiness counts", target, got.Counts)
+	}
 	if strings.Join(before, "\n") != strings.Join(after, "\n") {
 		t.Fatalf("Build(%q) mutated control plane\nbefore=%#v\nafter=%#v", target, before, after)
+	}
+}
+
+func TestBuildPruneApprovalStaleCountsSurfaceInCompactStatus(t *testing.T) {
+	target := t.TempDir()
+	p := testPruneProfile(t, target)
+	p.DeletePolicy.RetentionDays = 0
+	writeCompleteSession(t, target, "session-previous", "gone.txt", []byte("stale"))
+	writeCompleteSession(t, target, "session-prune", "keep.txt", []byte("keep"))
+	record := control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "session-prune-del-001",
+		SessionID:          "session-prune",
+		ProfileID:          "profile-local",
+		TargetID:           "target-local",
+		RootID:             "root",
+		PreviousSessionID:  "session-previous",
+		PreviousManifestID: "manifest-session-previous",
+		SourcePath:         "gone.txt",
+		TargetPath:         "gone.txt",
+		Kind:               "file",
+		Size:               int64(len("stale")),
+		Digest:             digest([]byte("stale")),
+		DetectedAt:         "2026-05-16T00:03:00Z",
+		Reason:             "missing_from_latest_source_scan",
+	}
+	writeSoftDelete(t, target, record)
+	writePruneApproval(t, target, freshTestPruneApproval(t, p, record))
+	if err := os.WriteFile(filepath.Join(target, "gone.txt"), []byte("changed"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(changed target) error = %v, want nil", err)
+	}
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+
+	if got.PruneReview.Status != string(report.PruneReviewReviewRequired) || got.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("Build(%q).PruneReview = %+v, want review-required stale approval action", target, got.PruneReview)
+	}
+	if got.Counts.PruneApprovals != 1 || got.Counts.PruneUnappliedApprovals != 1 || got.Counts.PruneActiveApprovals != 0 || got.Counts.PruneStaleApprovals != 1 || got.Counts.PruneExpiredApprovals != 0 || got.Counts.PruneConsumedApprovals != 0 {
+		t.Fatalf("Build(%q).Counts = %+v, want stale approval compact counts", target, got.Counts)
+	}
+}
+
+func TestBuildPruneConsumedApprovalCountsSurfaceInCompactStatus(t *testing.T) {
+	target := t.TempDir()
+	p := testPruneProfile(t, target)
+	p.DeletePolicy.RetentionDays = 0
+	writeCompleteSession(t, target, "session-previous", "gone.txt", []byte("stale"))
+	writeCompleteSession(t, target, "session-prune", "keep.txt", []byte("keep"))
+	record := control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "session-prune-del-001",
+		SessionID:          "session-prune",
+		ProfileID:          "profile-local",
+		TargetID:           "target-local",
+		RootID:             "root",
+		PreviousSessionID:  "session-previous",
+		PreviousManifestID: "manifest-session-previous",
+		SourcePath:         "gone.txt",
+		TargetPath:         "gone.txt",
+		Kind:               "file",
+		Size:               int64(len("stale")),
+		Digest:             digest([]byte("stale")),
+		DetectedAt:         "2026-05-16T00:03:00Z",
+		Reason:             "missing_from_latest_source_scan",
+	}
+	writeSoftDelete(t, target, record)
+	approval := freshTestPruneApproval(t, p, record)
+	writePruneApproval(t, target, approval)
+	present := true
+	writePruneReceipt(t, target, control.PruneReceipt{
+		Version:             control.CurrentVersion,
+		ID:                  "approval-status",
+		PruneSessionID:      "approval-status",
+		ApprovalID:          approval.ID,
+		ProfileID:           approval.ProfileID,
+		TargetID:            approval.TargetID,
+		StartedAt:           "2026-05-18T09:30:00Z",
+		EndedAt:             "2026-05-18T09:31:00Z",
+		Status:              control.PruneReceiptApplied,
+		DryRun:              false,
+		ApprovalScopeDigest: approval.ApprovalScopeDigest,
+		Items: []control.PruneReceiptItem{{
+			SoftDeleteID:   record.ID,
+			TargetPath:     record.TargetPath,
+			IntendedAction: "delete_file",
+			PrePruneObserved: control.PruneObservedTargetState{
+				Present: &present,
+				Kind:    "file",
+				Path:    record.TargetPath,
+				Digest:  record.Digest,
+			},
+			Result:   "pruned",
+			PrunedAt: "2026-05-18T09:31:00Z",
+		}},
+	})
+	if err := os.Remove(filepath.Join(target, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(gone target) error = %v, want nil", err)
+	}
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+
+	if got.PruneReview.Status != string(report.PruneReviewNoPendingReview) || got.PruneReview.Action != "no_prune_review_action_required" {
+		t.Fatalf("Build(%q).PruneReview = %+v, want no pending prune review", target, got.PruneReview)
+	}
+	if got.Counts.PruneApprovals != 1 || got.Counts.PruneUnappliedApprovals != 0 || got.Counts.PruneActiveApprovals != 0 || got.Counts.PruneStaleApprovals != 0 || got.Counts.PruneExpiredApprovals != 0 || got.Counts.PruneConsumedApprovals != 1 || got.Counts.PruneReceipts != 1 || got.Counts.PruneReceiptIssues != 0 {
+		t.Fatalf("Build(%q).Counts = %+v, want consumed approval and applied receipt counts", target, got.Counts)
 	}
 }
 
@@ -834,6 +953,17 @@ func writePruneApproval(t *testing.T, target string, approval control.PruneAppro
 	}
 }
 
+func writePruneReceipt(t *testing.T, target string, receipt control.PruneReceipt) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactPruneReceipt, receipt.ID)
+	if err != nil {
+		t.Fatalf("control.Path(%q, prune receipt, %q) error = %v, want nil", target, receipt.ID, err)
+	}
+	if err := control.WriteFile(path, receipt); err != nil {
+		t.Fatalf("control.WriteFile(%q, prune receipt) error = %v, want nil", path, err)
+	}
+}
+
 func writePruneApprovalProfileSnapshot(t *testing.T, target string, approval control.PruneApproval) {
 	t.Helper()
 	payload := pruneApprovalProfileSnapshotPayload(t, approval.ID)
@@ -906,6 +1036,13 @@ func testPruneApproval(t *testing.T, p profile.Profile, record control.SoftDelet
 		ApprovalReason: "operator reviewed soft-delete evidence",
 	}
 	approval.ApprovalScopeDigest = prune.ApprovalScopeDigest(approval.ProfileID, approval.TargetID, approval.RootID, approval.ProfileSnapshotID, approval.ProfileSnapshotDigest, p.DeletePolicy, approval.Items)
+	return approval
+}
+
+func freshTestPruneApproval(t *testing.T, p profile.Profile, record control.SoftDelete) control.PruneApproval {
+	t.Helper()
+	approval := testPruneApproval(t, p, record)
+	approval.ExpiresAt = "2099-05-19T12:00:00Z"
 	return approval
 }
 

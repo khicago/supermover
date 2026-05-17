@@ -68,10 +68,11 @@ Current completed slice:
   it does not write prune receipts or delete files.
 - `report` exposes read-only current profile/target prune approval evidence
   from `.supermover/prune/approvals/*.json`; `status` narrows that surface to
-  counts and source breakdown, including authored-but-unapplied approval
-  counts. This is audit evidence only; it does not author approvals, apply prune
-  decisions, write receipts, delete files, make review-required targets clean,
-  automatically release a migration, or close v1.
+  compact prune release counts plus prune review status/action, including
+  authored-but-unapplied, stale, expired, consumed, and receipt-attention
+  states. This is audit evidence only; it does not author approvals, apply
+  prune decisions, write receipts, delete files, make review-required targets
+  clean, automatically release a migration, or close v1.
 - `prune --apply --approval <id>` physically deletes approved file/symlink
   targets only over a durable approval artifact, after profile policy
   validation, path safety checks, a started receipt, and a current target-state
@@ -155,13 +156,15 @@ Known planned surface:
   emits review-only candidate/refusal evidence over published soft-delete
   records. `prune approve` writes durable approval artifacts plus profile
   snapshots from fresh dry-run evidence without deleting files or writing prune
-  receipts.
+  receipts. `prune approvals` lists current-scope approval artifacts, and
+  `prune supersede` can mark one approval artifact superseded without target
+  deletion or receipt writing.
   `prune --apply --approval <id>` physically deletes approved file/symlink
   targets only after durable approval evidence, a started receipt, and a
   current target-state recheck. `prune review` now exposes focused read-only
   prune release inventory; `report` exposes approval evidence and `status`
-  exposes approval counts/source breakdown as read-only audit evidence, but
-  broader release workflow surfaces beyond that still need release acceptance.
+  exposes compact prune release counts and prune review status/action as
+  read-only audit evidence.
 - Broader automatic repair/reconcile command.
 - Background scans and richer drift/prune workflow integration. `drift record`
   is the current durable detector-output write path. `drift acknowledge` and

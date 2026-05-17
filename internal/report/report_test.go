@@ -885,6 +885,42 @@ func TestBuildReportPruneReviewLinksAppliedApprovalInventory(t *testing.T) {
 	}
 }
 
+func TestBuildReportPruneReviewLinksFailedReceiptToApproval(t *testing.T) {
+	source := t.TempDir()
+	target := t.TempDir()
+	p := profile.NewDefault("profile-local", "Profile", source, target)
+	p.Target.TargetID = "target-local"
+	p.DeletePolicy.Mode = profile.DeleteModePrune
+	p.DeletePolicy.RequireReview = true
+	p.DeletePolicy.RetentionDays = 0
+	p.DeletePolicy.AllowPhysicalPrune = true
+	record := writeReportPruneCandidateFixture(t, target)
+	approval := reportPruneApproval(t, target, "approval-report", p, record)
+	writeReportPruneApproval(t, target, approval)
+	writeReportPruneReceiptWithApproval(t, target, "receipt-report-failed", control.PruneReceiptFailed, approval.ID, approval.ApprovalScopeDigest, []control.PruneReceiptItem{failedReportPruneItem(record)})
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: p.ProfileID, TargetID: p.Target.TargetID, Profile: &p})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Summary.PruneApprovals != 1 || got.Summary.PruneUnappliedApprovals != 0 || got.Summary.PruneReceipts != 1 || got.Summary.PruneReceiptIssues != 1 {
+		t.Fatalf("BuildReport(%q).Summary = %+v, want failed linked receipt counted as receipt attention", target, got.Summary)
+	}
+	if len(got.PruneReview.Approvals) != 1 {
+		t.Fatalf("BuildReport(%q).PruneReview.Approvals = %+v, want one approval", target, got.PruneReview.Approvals)
+	}
+	view := got.PruneReview.Approvals[0]
+	if view.LinkedReceiptID != "receipt-report-failed" || view.LinkedReceiptStatus != control.PruneReceiptFailed || view.Unapplied || view.ReleaseState != "failed_receipt" || !view.ReleaseBlocker || view.ReleaseAction != "inspect_prune_receipt" {
+		t.Fatalf("BuildReport(%q).PruneReview.Approvals[0] = %+v, want failed receipt-linked approval attention", target, view)
+	}
+	if view.SupersededBy != "" || view.SupersededAt != "" {
+		t.Fatalf("BuildReport(%q).PruneReview.Approvals[0] supersede metadata = %+v, want empty for non-superseded approval", target, view)
+	}
+	if !containsIssue(got.Overall.Issues, "prune_receipt_issues") {
+		t.Fatalf("BuildReport(%q).Overall.Issues = %#v, want prune_receipt_issues issue", target, got.Overall.Issues)
+	}
+}
+
 func TestBuildReportSkipsOutOfScopePruneApprovalBeforePathIDProblems(t *testing.T) {
 	source := t.TempDir()
 	target := t.TempDir()

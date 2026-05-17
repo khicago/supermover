@@ -1329,10 +1329,14 @@ func (r Runner) runPrune(args []string, stdout io.Writer, stderr io.Writer) int 
 		case "help", "-h", "--help":
 			printPruneUsage(stdout)
 			return 0
+		case "approvals":
+			return r.runPruneApprovals(args[1:], stdout, stderr)
 		case "approve":
 			return r.runPruneApprove(args[1:], stdout, stderr)
 		case "review":
 			return r.runPruneReview(args[1:], stdout, stderr)
+		case "supersede", "revoke":
+			return r.runPruneSupersede(args[1:], stdout, stderr)
 		}
 	}
 	fs := newFlagSet("prune", stderr)
@@ -1534,6 +1538,77 @@ receipts, or delete target files.`)
 	return 0
 }
 
+func (r Runner) runPruneApprovals(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("prune approvals", stderr)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage of prune approvals:
+  supermover prune approvals --profile <path> [--format text|json]
+
+Lists current-scope prune approval artifacts for the profile-selected target.
+This command is read-only: it does not supersede approvals, apply prune
+decisions, write prune receipts, or delete target files.`)
+		fs.PrintDefaults()
+	}
+	profilePath := fs.String("profile", "", "profile path")
+	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
+			return 0
+		}
+		fmt.Fprintf(stderr, "prune approvals: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	if strings.TrimSpace(*profilePath) == "" {
+		fmt.Fprintln(stderr, "prune approvals: --profile is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "prune approvals: unexpected arguments: %s\n", formatDiagnosticArgs(fs.Args()))
+		return 2
+	}
+	if *format != "text" && *format != "json" {
+		fmt.Fprintf(stderr, "prune approvals: unsupported format %q\n", *format)
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "prune approvals: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	targetDir, err := targetDirFromProfile(p)
+	if err != nil {
+		fmt.Fprintf(stderr, "prune approvals: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	result, err := prune.ListApprovals(prune.ListApprovalsOptions{
+		TargetRoot: targetDir,
+		ProfileID:  p.ProfileID,
+		TargetID:   p.Target.TargetID,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "prune approvals: %s\n", safeDiagnosticLine(err.Error()))
+		return 1
+	}
+	switch *format {
+	case "text":
+		printPruneApprovalsText(stdout, result)
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintf(stderr, "prune approvals: encode result: %s\n", safeDiagnosticLine(err.Error()))
+			return 1
+		}
+	}
+	return 0
+}
+
 func (r Runner) runPruneApprove(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := newFlagSet("prune approve", stderr)
 	fs.SetOutput(io.Discard)
@@ -1679,6 +1754,101 @@ does not delete target files, write prune receipts, or apply approvals.`)
 		}
 	case "text":
 		printPruneApproveText(stdout, result)
+	}
+	return 0
+}
+
+func (r Runner) runPruneSupersede(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("prune supersede", stderr)
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage of prune supersede:
+  supermover prune supersede --profile <path> --id <approval-id> --reason <text> --reviewer <id> [--format text|json]
+
+Marks one existing current-scope prune approval artifact superseded.
+This updates durable approval review metadata only; it does not apply prune
+decisions, write prune receipts, or delete target files.`)
+		fs.PrintDefaults()
+	}
+	profilePath := fs.String("profile", "", "profile path")
+	id := fs.String("id", "", "approval id under target .supermover/prune/approvals")
+	reason := fs.String("reason", "", "supersede reason")
+	reviewer := fs.String("reviewer", "", "reviewer/operator id")
+	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
+			return 0
+		}
+		fmt.Fprintf(stderr, "prune supersede: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	if strings.TrimSpace(*profilePath) == "" {
+		fmt.Fprintln(stderr, "prune supersede: --profile is required")
+		return 2
+	}
+	if strings.TrimSpace(*id) == "" {
+		fmt.Fprintln(stderr, "prune supersede: --id is required")
+		return 2
+	}
+	if err := control.ValidateArtifactID(strings.TrimSpace(*id)); err != nil {
+		fmt.Fprintf(stderr, "prune supersede: --id is invalid: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	if strings.TrimSpace(*reason) == "" {
+		fmt.Fprintln(stderr, "prune supersede: --reason is required")
+		return 2
+	}
+	if strings.TrimSpace(*reviewer) == "" {
+		fmt.Fprintln(stderr, "prune supersede: --reviewer is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "prune supersede: unexpected arguments: %s\n", formatDiagnosticArgs(fs.Args()))
+		return 2
+	}
+	if *format != "text" && *format != "json" {
+		fmt.Fprintf(stderr, "prune supersede: unsupported format %q\n", *format)
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "prune supersede: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	targetDir, err := targetDirFromProfile(p)
+	if err != nil {
+		fmt.Fprintf(stderr, "prune supersede: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	result, err := prune.SupersedeApproval(prune.SupersedeApprovalOptions{
+		TargetRoot: targetDir,
+		ProfileID:  p.ProfileID,
+		TargetID:   p.Target.TargetID,
+		ApprovalID: strings.TrimSpace(*id),
+		Reason:     *reason,
+		Reviewer:   *reviewer,
+		ReviewTool: "supermover prune supersede",
+		Now:        r.Now,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "prune supersede: %s\n", safeDiagnosticLine(err.Error()))
+		return 1
+	}
+	switch *format {
+	case "text":
+		printPruneSupersedeText(stdout, result)
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(result); err != nil {
+			fmt.Fprintf(stderr, "prune supersede: encode result: %s\n", safeDiagnosticLine(err.Error()))
+			return 1
+		}
 	}
 	return 0
 }
@@ -4534,6 +4704,54 @@ func printPruneApproveText(w io.Writer, result prune.AuthorApprovalResult) {
 	}
 }
 
+func printPruneApprovalsText(w io.Writer, result prune.ListApprovalsResult) {
+	fmt.Fprintf(w, "prune_approvals target=%s profile=%s target_id=%s approvals=%d read_only=%t\n",
+		encodeTextValue(result.TargetRoot),
+		encodeTextValue(result.ProfileID),
+		encodeTextValue(result.TargetID),
+		len(result.Approvals),
+		true,
+	)
+	for _, approval := range result.Approvals {
+		fmt.Fprintf(w, "prune_approval id=%s profile=%s target_id=%s root=%s status=%s items=%d approved_by=%s approved_at=%s superseded_by=%s superseded_at=%s created_at=%s expires_at=%s review_tool=%s approval_scope_digest=%s approval_reason=%s refusal_reason=%s\n",
+			encodeTextValue(approval.ID),
+			encodeTextValue(approval.ProfileID),
+			encodeTextValue(approval.TargetID),
+			encodeTextValue(approval.RootID),
+			encodeTextValue(approval.Status),
+			len(approval.Items),
+			encodeTextValue(defaultTextField(approval.ApprovedBy)),
+			encodeTextValue(defaultTextField(approval.ApprovedAt)),
+			encodeTextValue(defaultTextField(approval.SupersededBy)),
+			encodeTextValue(defaultTextField(approval.SupersededAt)),
+			encodeTextValue(approval.CreatedAt),
+			encodeTextValue(defaultTextField(approval.ExpiresAt)),
+			encodeTextValue(approval.ReviewTool),
+			encodeTextValue(defaultTextField(approval.ApprovalScopeDigest)),
+			encodeTextValue(defaultTextField(approval.ApprovalReason)),
+			encodeTextValue(defaultTextField(approval.RefusalReason)),
+		)
+	}
+}
+
+func printPruneSupersedeText(w io.Writer, result prune.SupersedeApprovalResult) {
+	fmt.Fprintf(w, "prune_approval_supersede id=%s profile=%s target_id=%s approval_path=%s status=%s approved_by=%s approved_at=%s superseded_by=%s superseded_at=%s review_tool=%s refusal_reason=%s physical_pruning=%s receipt_writing=%s\n",
+		encodeTextValue(result.ApprovalID),
+		encodeTextValue(result.ProfileID),
+		encodeTextValue(result.TargetID),
+		encodeTextValue(result.ApprovalPath),
+		encodeTextValue(result.Approval.Status),
+		encodeTextValue(defaultTextField(result.Approval.ApprovedBy)),
+		encodeTextValue(defaultTextField(result.Approval.ApprovedAt)),
+		encodeTextValue(defaultTextField(result.Approval.SupersededBy)),
+		encodeTextValue(defaultTextField(result.Approval.SupersededAt)),
+		encodeTextValue(result.Approval.ReviewTool),
+		encodeTextValue(defaultTextField(result.Approval.RefusalReason)),
+		encodeTextValue("not_applied"),
+		encodeTextValue("not_written_by_supersede"),
+	)
+}
+
 func boolValue(value *bool) bool {
 	return value != nil && *value
 }
@@ -5219,7 +5437,7 @@ func printReportPruneReviewText(w io.Writer, review report.PruneReview) {
 		)
 	}
 	for _, approval := range review.Approvals {
-		fmt.Fprintf(w, "prune_approval id=%s profile=%s target_id=%s root=%s status=%s items=%d unapplied=%t release_state=%s release_blocker=%t release_reason=%s release_action=%s linked_receipt=%s linked_receipt_status=%s path=%s action=%s physical_pruning=%s created_at=%s approved_by=%s approved_at=%s expires_at=%s review_tool=%s profile_snapshot=%s profile_snapshot_path=%s profile_snapshot_digest=%s approval_scope_digest=%s approval_reason=%s refusal_reason=%s policy_mode=%s policy_require_review=%t policy_retention_days=%d policy_allow_physical_prune=%t\n",
+		fmt.Fprintf(w, "prune_approval id=%s profile=%s target_id=%s root=%s status=%s items=%d unapplied=%t release_state=%s release_blocker=%t release_reason=%s release_action=%s linked_receipt=%s linked_receipt_status=%s path=%s action=%s physical_pruning=%s created_at=%s approved_by=%s approved_at=%s superseded_by=%s superseded_at=%s expires_at=%s review_tool=%s profile_snapshot=%s profile_snapshot_path=%s profile_snapshot_digest=%s approval_scope_digest=%s approval_reason=%s refusal_reason=%s policy_mode=%s policy_require_review=%t policy_retention_days=%d policy_allow_physical_prune=%t\n",
 			encodeTextValue(approval.ID),
 			encodeTextValue(approval.ProfileID),
 			encodeTextValue(approval.TargetID),
@@ -5239,6 +5457,8 @@ func printReportPruneReviewText(w io.Writer, review report.PruneReview) {
 			encodeTextValue(approval.CreatedAt),
 			encodeTextValue(defaultTextField(approval.ApprovedBy)),
 			encodeTextValue(defaultTextField(approval.ApprovedAt)),
+			encodeTextValue(defaultTextField(approval.SupersededBy)),
+			encodeTextValue(defaultTextField(approval.SupersededAt)),
 			encodeTextValue(defaultTextField(approval.ExpiresAt)),
 			encodeTextValue(approval.ReviewTool),
 			encodeTextValue(defaultTextField(approval.ProfileSnapshotID)),
@@ -5331,7 +5551,7 @@ func printReportPruneReviewText(w io.Writer, review report.PruneReview) {
 }
 
 func printStatusText(w io.Writer, report status.Report) {
-	fmt.Fprintf(w, "status: target=%s profile_id=%s target_id=%s status=%s target_status=%s review_required=%t latest_session=%s completeness_status=%s manifests=%d files=%d/%d verification_errors=%d verification_warnings=%d warnings=%d profile_suggestions=%d soft_deletes=%d prune_approvals=%d prune_unapplied_approvals=%d target_drifts=%d live_target_drifts=%d live_target_drift_artifact_problems=%d recovery_issues=%d invalid_health_records=%d artifact_problems=%d artifact_problem_sources=%s pairing_issues=%d network_transfers=%d\n",
+	fmt.Fprintf(w, "status: target=%s profile_id=%s target_id=%s status=%s target_status=%s review_required=%t latest_session=%s completeness_status=%s manifests=%d files=%d/%d verification_errors=%d verification_warnings=%d warnings=%d profile_suggestions=%d soft_deletes=%d prune_review_status=%s prune_review_action=%s prune_approvals=%d prune_unapplied_approvals=%d prune_active_approvals=%d prune_stale_approvals=%d prune_expired_approvals=%d prune_consumed_approvals=%d prune_receipts=%d prune_receipt_issues=%d target_drifts=%d live_target_drifts=%d live_target_drift_artifact_problems=%d recovery_issues=%d invalid_health_records=%d artifact_problems=%d artifact_problem_sources=%s pairing_issues=%d network_transfers=%d\n",
 		encodeTextValue(report.TargetRoot),
 		encodeTextValue(report.ProfileID),
 		encodeTextValue(report.TargetID),
@@ -5348,8 +5568,16 @@ func printStatusText(w io.Writer, report status.Report) {
 		report.Counts.Warnings,
 		report.Counts.ProfileSuggestions,
 		report.Counts.SoftDeletes,
+		encodeTextValue(report.PruneReview.Status),
+		encodeTextValue(report.PruneReview.Action),
 		report.Counts.PruneApprovals,
 		report.Counts.PruneUnappliedApprovals,
+		report.Counts.PruneActiveApprovals,
+		report.Counts.PruneStaleApprovals,
+		report.Counts.PruneExpiredApprovals,
+		report.Counts.PruneConsumedApprovals,
+		report.Counts.PruneReceipts,
+		report.Counts.PruneReceiptIssues,
 		report.Counts.TargetDrifts,
 		report.Counts.LiveTargetDrifts,
 		report.Counts.LiveTargetDriftProblems,
@@ -5567,16 +5795,21 @@ func printDeletedUsage(w io.Writer) {
 func printPruneUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage of prune:
   supermover prune --profile <path> [--dry-run|--apply --approval <id>] [--format text|json]
+  supermover prune approvals --profile <path> [--format text|json]
   supermover prune review --profile <path> [--session <id>] [--format text|json]
   supermover prune approve --profile <path> --id <approval-id> --soft-delete <id> [--soft-delete <id>...] --reason <text> [--reviewer <id>|--approved-by <id>] [--expires-at <rfc3339>] [--format text|json]
+  supermover prune supersede --profile <path> --id <approval-id> --reason <text> --reviewer <id> [--format text|json]
 
 Reviews and applies approved physical-prune evidence.
 The profile remains the policy SSOT. The default dry-run wiring reads published
 soft-delete records and emits review candidates/refusals without mutating target
-files. Review reads candidates, approvals, and receipts as a focused release
-review surface without writing approvals, receipts, or target files. Approve
-writes a durable prune approval artifact without deleting target files or
-writing prune receipts. Apply requires durable approval evidence and writes a prune receipt before target mutation.`)
+files. Approvals lists current-scope approval artifacts without mutating them.
+Review reads candidates, approvals, and receipts as a focused release review
+surface without writing approvals, receipts, or target files. Approve writes a
+durable prune approval artifact without deleting target files or writing prune
+receipts. Supersede updates one existing approval artifact to a superseded
+review state without applying prune. Apply requires durable approval evidence
+and writes a prune receipt before target mutation.`)
 }
 
 func printReconcileUsage(w io.Writer) {

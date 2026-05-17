@@ -310,6 +310,62 @@ func TestDriftAcknowledgeHelpIsHonest(t *testing.T) {
 	}
 }
 
+func TestPruneApprovalsHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"prune", "approvals", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune approvals --help exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	for _, want := range []string{
+		"Usage of prune approvals",
+		"--profile",
+		"--format",
+		"Lists current-scope prune approval artifacts",
+		"read-only",
+		"does not supersede approvals",
+		"write prune receipts",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune approvals --help stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune approvals --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestPruneSupersedeHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"prune", "supersede", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune supersede --help exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	for _, want := range []string{
+		"Usage of prune supersede",
+		"--profile",
+		"--id",
+		"--reason",
+		"--reviewer",
+		"Marks one existing current-scope prune approval artifact superseded",
+		"updates durable approval review metadata only",
+		"does not apply prune",
+		"write prune receipts",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune supersede --help stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune supersede --help stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestStatusHelp(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -5584,6 +5640,299 @@ func TestPruneApproveWritesApprovalWithoutDeletingTarget(t *testing.T) {
 	}
 }
 
+func TestPruneApprovalsListsCurrentScopeArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-authored", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got := Run([]string{"prune", "approvals", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune approvals exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"prune_approvals",
+		"approvals=1",
+		"read_only=true",
+		"prune_approval id=approval-authored",
+		"status=approved",
+		"approved_by=cli-reviewer",
+		"approval_reason=reviewed%20stale%20file",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune approvals stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune approvals stderr = %q, want empty", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"prune", "approvals", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune approvals json exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var result prune.ListApprovalsResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(prune approvals stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if result.ProfileID != "profile-local" || result.TargetID != "local:profile-local" || len(result.Approvals) != 1 || result.Approvals[0].ID != "approval-authored" || result.Approvals[0].Status != "approved" {
+		t.Fatalf("prune approvals json result = %+v, want one current-scope approval", result)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune approvals json stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestPruneSupersedeMarksApprovalWithoutDeletingTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-authored", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+
+	runner = Runner{Now: time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	got := runner.Run([]string{"prune", "supersede", "--profile", profilePath, "--id", "approval-authored", "--reason", "replaced by newer approval", "--reviewer", "release-reviewer"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune supersede exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"prune_approval_supersede",
+		"id=approval-authored",
+		"status=superseded",
+		"approved_by=cli-reviewer",
+		"superseded_by=release-reviewer",
+		"superseded_at=2026-05-18T11:00:00Z",
+		"review_tool=supermover%20prune%20supersede",
+		"refusal_reason=replaced%20by%20newer%20approval",
+		"physical_pruning=not_applied",
+		"receipt_writing=not_written_by_supersede",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune supersede stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune supersede stderr = %q, want empty", stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(target, "gone.txt")); err != nil {
+		t.Fatalf("Lstat(target after supersede) error = %v, want retained target file", err)
+	}
+	if _, err := os.Lstat(receiptPathForCLI(t, target, "approval-authored")); !os.IsNotExist(err) {
+		t.Fatalf("Lstat(receipt after supersede) error = %v, want no receipt", err)
+	}
+	approval, err := control.ReadFile[control.PruneApproval](approvalPathForCLI(t, target, "approval-authored"))
+	if err != nil {
+		t.Fatalf("control.ReadFile(superseded approval) error = %v, want nil", err)
+	}
+	if approval.Status != "superseded" || approval.RefusalReason != "replaced by newer approval" || approval.ApprovedBy != "cli-reviewer" || approval.SupersededBy != "release-reviewer" || approval.SupersededAt != "2026-05-18T11:00:00Z" || approval.ReviewTool != "supermover prune supersede" {
+		t.Fatalf("superseded approval = %+v, want superseded review metadata", approval)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"report", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("report after prune supersede exit = %d, stderr = %q, stdout = %q, want review-needed 1", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"prune_approval id=approval-authored",
+		"status=superseded",
+		"release_state=superseded",
+		"release_action=inspect_superseded_prune_approval",
+		"unapplied=false",
+		"superseded_by=release-reviewer",
+		"superseded_at=2026-05-18T11:00:00Z",
+		"refusal_reason=replaced%20by%20newer%20approval",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("report after prune supersede stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestPruneApprovalsRejectsMismatchedApprovalPath(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+	approval := pruneApprovalForCLI(t, profilePath, target, "approval-real", softDeleteID)
+	writePruneApprovalForCLI(t, target, approval)
+	mismatchPath := filepath.Join(target, control.DirName, "prune", "approvals", "approval-path.json")
+	if err := control.WriteNewFile(mismatchPath, approval); err != nil {
+		t.Fatalf("control.WriteNewFile(mismatched approval path) error = %v, want nil", err)
+	}
+	if err := os.Remove(approvalPathForCLI(t, target, "approval-real")); err != nil {
+		t.Fatalf("os.Remove(original approval path) error = %v, want nil", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got := Run([]string{"prune", "approvals", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("prune approvals mismatched path exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "does not match path id") {
+		t.Fatalf("prune approvals mismatched path stderr = %q, want path/id mismatch", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("prune approvals mismatched path stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestPruneSupersedeRejectsLinkedReceiptEvidence(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-authored", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"prune", "--profile", profilePath, "--apply", "--approval", "approval-authored"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune apply exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+
+	runner = Runner{Now: time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	got := runner.Run([]string{"prune", "supersede", "--profile", profilePath, "--id", "approval-authored", "--reason", "replaced by newer approval", "--reviewer", "release-reviewer"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("prune supersede linked receipt exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "already has prune receipt evidence") {
+		t.Fatalf("prune supersede linked receipt stderr = %q, want linked receipt refusal", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("prune supersede linked receipt stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestPruneSupersedeRequiresReviewer(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"prune", "supersede", "--profile", "profile.json", "--id", "approval", "--reason", "replaced"}, &stdout, &stderr)
+
+	if got != 2 {
+		t.Fatalf("prune supersede missing reviewer exit = %d, stderr = %q, stdout = %q, want 2", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--reviewer is required") {
+		t.Fatalf("prune supersede missing reviewer stderr = %q, want reviewer-required", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("prune supersede missing reviewer stdout = %q, want empty", stdout.String())
+	}
+}
+
 func TestReportAndStatusShowAuthoredPruneApprovalInventory(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -5692,8 +6041,16 @@ func TestReportAndStatusShowAuthoredPruneApprovalInventory(t *testing.T) {
 	for _, want := range []string{
 		"status:",
 		"review_required=true",
+		"prune_review_status=review_required",
+		"prune_review_action=inspect_prune_review_before_release",
 		"prune_approvals=1",
 		"prune_unapplied_approvals=1",
+		"prune_active_approvals=1",
+		"prune_stale_approvals=0",
+		"prune_expired_approvals=0",
+		"prune_consumed_approvals=0",
+		"prune_receipts=0",
+		"prune_receipt_issues=0",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status after prune approve stdout = %q, want %q", stdout.String(), want)
@@ -5714,8 +6071,11 @@ func TestReportAndStatusShowAuthoredPruneApprovalInventory(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &statusJSON); err != nil {
 		t.Fatalf("json.Unmarshal(status stdout) error = %v, stdout = %q, want nil", err, stdout.String())
 	}
-	if statusJSON.Counts.PruneApprovals != 1 || statusJSON.Counts.PruneUnappliedApprovals != 1 {
-		t.Fatalf("status json counts = %+v, want compact approval counts", statusJSON.Counts)
+	if statusJSON.PruneReview.Status != string(report.PruneReviewReviewRequired) || statusJSON.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("status json prune review = %+v, want compact review-required action", statusJSON.PruneReview)
+	}
+	if statusJSON.Counts.PruneApprovals != 1 || statusJSON.Counts.PruneUnappliedApprovals != 1 || statusJSON.Counts.PruneActiveApprovals != 1 || statusJSON.Counts.PruneStaleApprovals != 0 || statusJSON.Counts.PruneExpiredApprovals != 0 || statusJSON.Counts.PruneConsumedApprovals != 0 || statusJSON.Counts.PruneReceipts != 0 || statusJSON.Counts.PruneReceiptIssues != 0 {
+		t.Fatalf("status json counts = %+v, want compact prune readiness counts", statusJSON.Counts)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("status json after prune approve stderr = %q, want empty", stderr.String())
@@ -5888,6 +6248,91 @@ func TestPruneReviewCleanPlanExitsZero(t *testing.T) {
 	after := mustSnapshotTree(t, target)
 	if strings.Join(after, "\n") != strings.Join(before, "\n") {
 		t.Fatalf("prune review clean changed target tree\nbefore:\n%s\nafter:\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+}
+
+func TestStatusSurfacesStalePruneApprovalReadinessCounts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-stale", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if err := os.WriteFile(filepath.Join(target, "gone.txt"), []byte("changed"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(changed target) error = %v, want nil", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got := Run([]string{"status", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("status stale prune approval exit = %d, stderr = %q, stdout = %q, want review-needed 1", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"status:",
+		"review_required=true",
+		"prune_review_status=review_required",
+		"prune_review_action=inspect_prune_review_before_release",
+		"prune_approvals=1",
+		"prune_unapplied_approvals=1",
+		"prune_active_approvals=0",
+		"prune_stale_approvals=1",
+		"prune_expired_approvals=0",
+		"prune_consumed_approvals=0",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status stale prune approval stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("status stale prune approval stderr = %q, want empty", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"status", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("status stale prune approval json exit = %d, stderr = %q, stdout = %q, want review-needed 1", got, stderr.String(), stdout.String())
+	}
+	var statusJSON status.Report
+	if err := json.Unmarshal(stdout.Bytes(), &statusJSON); err != nil {
+		t.Fatalf("json.Unmarshal(status stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if statusJSON.PruneReview.Status != string(report.PruneReviewReviewRequired) || statusJSON.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("status stale prune approval prune review = %+v, want review-required action", statusJSON.PruneReview)
+	}
+	if statusJSON.Counts.PruneApprovals != 1 || statusJSON.Counts.PruneUnappliedApprovals != 1 || statusJSON.Counts.PruneActiveApprovals != 0 || statusJSON.Counts.PruneStaleApprovals != 1 || statusJSON.Counts.PruneExpiredApprovals != 0 || statusJSON.Counts.PruneConsumedApprovals != 0 {
+		t.Fatalf("status stale prune approval counts = %+v, want stale approval compact counts", statusJSON.Counts)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("status stale prune approval json stderr = %q, want empty", stderr.String())
 	}
 }
 

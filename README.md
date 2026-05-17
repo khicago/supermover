@@ -63,6 +63,11 @@ dry-run candidate evidence, accepts `--approved-by` as an alias for
 `--format text|json`; it does not delete target files or write prune receipts,
 and the fresh dry-run must be free of refusals or artifact problems before any
 approval is written.
+`prune approvals --profile <path>` lists current-scope approval artifacts
+without mutating them. `prune supersede --profile <path> --id <approval-id>
+--reason <text> --reviewer <id>` updates one existing approval artifact to a
+durable `superseded` review state without deleting target files or writing
+prune receipts.
 `prune --apply --approval <id>` remains the only physical prune path: it writes
 a started prune receipt before target mutation, re-runs the current prune plan,
 rechecks target evidence, and then records the final
@@ -72,11 +77,13 @@ review evidence. `prune review --profile <path>` is a focused read-only release
 review surface over current prune candidates, approval inventory, and receipts.
 `report` is also read-only and surfaces current profile/target prune approval
 evidence from durable `.supermover/prune/approvals/*.json` artifacts, while
-`status` exposes only compact approval counts and source breakdown. That
-evidence helps review authored-but-unapplied approvals; it does not author
-approvals, supersede approvals, apply prune decisions, write receipts, delete
-files or symlinks, repair or reconcile drift, make the target clean,
-automatically release a migration, or close v1. Broader recovery reconciliation,
+`status` exposes compact prune release counts, prune review status/action, and
+artifact-problem source breakdown. That evidence helps review
+authored-but-unapplied approvals, stale or expired approvals, consumed
+approvals, and receipt-attention states; the read-only surfaces do not author
+approvals, supersede approvals, apply prune decisions, write receipts, delete files or
+symlinks, repair or reconcile drift, make the target clean, automatically
+release a migration, or close v1. Broader recovery reconciliation,
 LAN browsing, OS service-manager daemon installation, detached background
 daemon process management, ongoing incremental sync, broad network resume
 acceptance, broad automatic repair/reconcile, and broader prune release
@@ -273,12 +280,14 @@ The v1 direction is intentionally conservative:
   output; `report` also exposes prune candidates, refusals, current-scope
   approval evidence, existing receipts, and receipt issues as read-only review
   evidence. `prune review` exposes the same prune review evidence as a focused
-  read-only release-review surface. `status` narrows that approval surface to
-  counts and source breakdown. Approval evidence is scoped to the current
-  profile/target and helps review authored-but-unapplied approvals only; it does not author
-  approvals, supersede approvals, apply prune decisions, write receipts, delete
-  files or symlinks, repair/reconcile drift, make the target clean,
-  automatically release a migration, or close v1.
+  read-only release-review surface. `status` narrows that surface to compact
+  counts plus prune review status/action, including active/stale/expired/
+  consumed approval counts and receipt-issue counts. Approval evidence is
+  scoped to the current profile/target and helps review authored-but-unapplied
+  approvals and receipt-attention states only; the read-only surfaces do not
+  author approvals, supersede approvals, apply prune decisions, write receipts, delete files or
+  symlinks, repair/reconcile drift, make the target clean, automatically
+  release a migration, or close v1.
   `drift acknowledge` can add
   operator review evidence to existing persisted drift records only, and
   `drift resolve` can close existing persisted drift records only after a fresh

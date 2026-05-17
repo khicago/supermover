@@ -36,14 +36,15 @@ detector findings as durable `.supermover/drift/<id>.json` review records.
 records created by `drift record`, surfaced as `target_drifts`; `drift
 resolve` is wired for existing persisted drift records after a fresh detector
 no longer reports the same path and expected baseline. Broad drift
-reconcile/repair, drift-to-prune integration, background scans, and broader
-prune release workflow surfaces remain planned or partially designed.
+reconcile/repair, drift-to-prune integration, and background scans remain
+planned or partially designed.
 The read-only local migration `report` command, read-only `drift list`
 detector, compact local `status` command, `drift record`, `drift resolve`,
-`prune --dry-run`, focused read-only `prune review`, `prune approve`, and
-`prune --apply --approval <id>` are wired, but they are not substitutes for LAN,
-daemon status, ongoing sync, broad drift reconciliation, drift repair,
-background scans, drift-to-prune integration, or broader release automation.
+`prune --dry-run`, `prune approvals`, focused read-only `prune review`,
+`prune approve`, `prune supersede`, and `prune --apply --approval <id>` are
+wired, but they are not substitutes for LAN, daemon status, ongoing sync,
+broad drift reconciliation, drift repair, background scans, or
+drift-to-prune integration.
 
 ## Primary Status Sources
 

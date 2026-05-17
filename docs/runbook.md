@@ -83,7 +83,7 @@ retention checks, and records applied/partial/failed status after target-state
 rechecks when finalization succeeds. `report` is read-only and exposes prune
 candidates, refusals, current-scope approval evidence, existing receipts, and
 receipt issues alongside other local evidence, while `status` exposes compact
-approval counts and source breakdown. `prune review` exposes the prune-only
+prune release counts plus prune review status/action. `prune review` exposes the prune-only
 release-review inventory without writing approvals, receipts, or target files;
 none of these read-only commands applies prune decisions.
 Include `supermover prune
@@ -595,12 +595,13 @@ pending candidates, refusals such as already-missing targets, current-scope
 approval evidence, receipts, and non-applied receipt issues. Approval evidence
 is read from durable `.supermover/prune/approvals/*.json` artifacts scoped to
 the current profile/target. `prune review` exposes that prune inventory as a
-focused read-only release-review surface, while `status` exposes only the
-related counts and source breakdown. This evidence helps review
-authored-but-unapplied approvals; it does not author approvals, supersede
-approvals, apply prune decisions, write receipts, delete files or symlinks,
-repair/reconcile drift, make the target clean, automatically release a
-migration, or close v1.
+focused read-only release-review surface, while `status` exposes only compact
+counts plus prune review status/action. This evidence helps review
+authored-but-unapplied approvals, stale or expired approvals, consumed
+approvals, and receipt-attention states; the read-only surfaces do not author
+approvals, supersede approvals, apply prune decisions, write receipts, delete
+files or symlinks, repair/reconcile drift, make the target clean,
+automatically release a migration, or close v1.
 
 `report` exits non-zero when the generated report requires review, including
 empty targets, warning records, soft deletes, prune candidates, prune refusals,
@@ -846,6 +847,19 @@ output. The command reuses fresh dry-run evidence, writes
 and does not delete target files or write prune receipts. It writes approvals
 only when the fresh dry-run has no refusals or artifact problems, and selected
 IDs must be current dry-run candidates.
+
+Current prune approval inventory and supersede surfaces:
+
+```bash
+go run ./cmd/supermover prune approvals --profile ./supermover.profile.json --format json
+go run ./cmd/supermover prune supersede --profile ./supermover.profile.json --id <approval-id> --reason "replaced by newer approval" --reviewer "release-smoke"
+```
+
+`prune approvals` is read-only inventory over current-scope approval artifacts.
+`prune supersede` updates one existing approval artifact to durable
+`status=superseded` review metadata, keeps target files untouched, and does not
+write prune receipts or apply prune decisions. Use it when an older approval
+should no longer be treated as the current reviewed decision before any apply.
 
 Current reviewed physical-prune apply surface:
 

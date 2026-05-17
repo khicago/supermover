@@ -172,9 +172,9 @@ Current feature dependency shape:
   reconcile/repair, repair receipts, background scans, and prune integration
   remain planned.
 - Recover and prune commands are partly wired: local recovery, `prune approve`
-  approval-artifact authoring, focused read-only `prune review`, and reviewed
-  `prune --apply --approval <id>` exist, while broader network recovery and
-  broader prune release workflow surfaces remain planned.
+  approval-artifact authoring, `prune approvals`, focused read-only
+  `prune review`, `prune supersede`, and reviewed `prune --apply --approval
+  <id>` exist, while broader network recovery remains planned.
 
 ## Phase 7: Quality Bar
 

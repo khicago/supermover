@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "generated_by": "bagakit-feature-tracker",
+  "feature_id_issuance": {
+    "scheme": "feature-tracker-id-v1-c3n2g4",
+    "next_cursor": 34
+  },
+  "features": [
+    {
+      "feat_id": "f-222nwudju",
+      "title": "Supermover v1 architecture and implementation plan",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-223nw49qj",
+      "title": "Migration audit report and status UX",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-224nw98v7",
+      "title": "Reviewed physical prune flow",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-225nwsa3h",
+      "title": "Changed-file incremental local sync",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-226nwy2vy",
+      "title": "LAN agent discovery and pairing",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-227nw2p2n",
+      "title": "Secure resumable transport integration",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-228nws66k",
+      "title": "Traffic privacy level 2 implementation",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-229nwwybc",
+      "title": "Failure injection and release hardening",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22anw4myc",
+      "title": "Target drift review UX",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22bnwggww",
+      "title": "Compact local status UX",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22cnwwseh",
+      "title": "Operator encrypted network transfer wiring",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22dnw29gt",
+      "title": "Zero-byte network transfer support",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22enw7ycf",
+      "title": "Network interruption recovery release gate",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22fnwcd2h",
+      "title": "Target drift acknowledge UX",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22gnwdxya",
+      "title": "Project closure gap review",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22hnwqzan",
+      "title": "Docs and CLI truth alignment",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22jnw3csc",
+      "title": "Drift acknowledge manifest entry validation",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22knw34tb",
+      "title": "V1 product closure gap review and next blocking slice",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22mnwgg64",
+      "title": "Persist live drift detector output",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22nnwu9x5",
+      "title": "V1 remaining product gap implementation queue",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22pnwraay",
+      "title": "Prune approval authoring UX",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22qnwk3b3",
+      "title": "Drift persisted record resolve and reconcile",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22rnwcmaz",
+      "title": "Same-session network process-kill recovery evidence",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22snwq65b",
+      "title": "Prune approval inventory release evidence",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22tnwsds8",
+      "title": "V1 remaining implementation backlog normalization",
+      "status": "proposal",
+      "workspace_mode": "proposal_only",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22unwv5qs",
+      "title": "Prune release review UX",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22vnwgwjj",
+      "title": "Traffic privacy level 2 release acceptance",
+      "status": "done",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22wnwd5pe",
+      "title": "Broad network recovery acceptance",
+      "status": "done",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22xnwetxr",
+      "title": "Durable drift detector persistence and reconcile",
+      "status": "in_progress",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22ynwqndn",
+      "title": "LAN browsing discovery",
+      "status": "in_progress",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-22znw2utc",
+      "title": "Agent daemon lifecycle",
+      "status": "done",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-232nwu2nw",
+      "title": "Ongoing incremental sync",
+      "status": "in_progress",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-233nwduwz",
+      "title": "Broader automatic repair and reconcile",
+      "status": "ready",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-234nwra8e",
+      "title": "Richer prune and release workflow",
+      "status": "done",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    }
+  ]
+}

@@ -209,6 +209,8 @@ type PruneApproval struct {
 	Status                string                      `json:"status"`
 	ApprovalReason        string                      `json:"approval_reason,omitempty"`
 	RefusalReason         string                      `json:"refusal_reason,omitempty"`
+	SupersededBy          string                      `json:"superseded_by,omitempty"`
+	SupersededAt          string                      `json:"superseded_at,omitempty"`
 	LinkedReceiptID       string                      `json:"linked_receipt_id,omitempty"`
 	LinkedReceiptStatus   control.PruneReceiptStatus  `json:"linked_receipt_status,omitempty"`
 }
@@ -811,8 +813,9 @@ func readPruneReceipts(targetRoot string, profileID string, targetID string, ses
 }
 
 type appliedPruneReceipt struct {
-	ID     string
-	Status control.PruneReceiptStatus
+	ID        string
+	Status    control.PruneReceiptStatus
+	StartedAt string
 }
 
 func readPruneApprovals(targetRoot string, profileID string, targetID string, sessionID string, softDeleteIDs map[string]struct{}, appliedReceipts map[string]appliedPruneReceipt) ([]PruneApproval, []ArtifactProblem) {
@@ -959,7 +962,7 @@ func filterPruneApprovalForSession(approval control.PruneApproval, softDeleteIDs
 	return filtered
 }
 
-func viewPruneApproval(targetRoot string, path string, approval control.PruneApproval, appliedReceipts map[string]appliedPruneReceipt) PruneApproval {
+func viewPruneApproval(targetRoot string, path string, approval control.PruneApproval, linkedReceipts map[string]appliedPruneReceipt) PruneApproval {
 	out := PruneApproval{
 		Path:                  filepath.ToSlash(path),
 		Action:                "inspect_prune_approval",
@@ -984,20 +987,40 @@ func viewPruneApproval(targetRoot string, path string, approval control.PruneApp
 		Status:                approval.Status,
 		ApprovalReason:        approval.ApprovalReason,
 		RefusalReason:         approval.RefusalReason,
+		SupersededBy:          approval.SupersededBy,
+		SupersededAt:          approval.SupersededAt,
 	}
 	if approval.ProfileSnapshotID != "" {
 		if snapshotPath, err := control.Path(targetRoot, control.ArtifactProfileSnapshot, approval.ProfileSnapshotID); err == nil {
 			out.ProfileSnapshotPath = filepath.ToSlash(snapshotPath)
 		}
 	}
-	if linked, ok := appliedReceipts[pruneApprovalReceiptKey(approval.ID, approval.ApprovalScopeDigest)]; ok {
+	if linked, ok := linkedReceipts[pruneApprovalReceiptKey(approval.ID, approval.ApprovalScopeDigest)]; ok {
 		out.LinkedReceiptID = linked.ID
 		out.LinkedReceiptStatus = linked.Status
 		out.Action = "inspect_prune_receipt"
-		out.ReleaseState = "consumed"
-		out.ReleaseReason = "approval has applied or partial prune receipt evidence"
-		out.ReleaseAction = "inspect_prune_receipt"
-		return out
+		switch linked.Status {
+		case control.PruneReceiptApplied, control.PruneReceiptPartial:
+			out.ReleaseState = "consumed"
+			out.ReleaseReason = "approval has applied or partial prune receipt evidence"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		case control.PruneReceiptStarted:
+			out.ReleaseState = "pending_receipt"
+			out.ReleaseReason = "approval has started prune receipt evidence that still requires operator review"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		case control.PruneReceiptFailed:
+			out.ReleaseState = "failed_receipt"
+			out.ReleaseReason = "approval has failed prune receipt evidence that requires operator review"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		default:
+			out.ReleaseState = "receipt_attention"
+			out.ReleaseReason = "approval has prune receipt evidence that requires operator review"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		}
 	}
 	if approval.Status == "superseded" {
 		out.ReleaseState = "superseded"
@@ -1024,16 +1047,22 @@ func approvalSortTime(approval PruneApproval) string {
 func appliedPruneReceipts(receipts []PruneReceipt) map[string]appliedPruneReceipt {
 	out := map[string]appliedPruneReceipt{}
 	for _, receipt := range receipts {
-		switch receipt.Status {
-		case control.PruneReceiptApplied, control.PruneReceiptPartial:
-			out[pruneApprovalReceiptKey(receipt.ApprovalID, receipt.ApprovalScopeDigest)] = appliedPruneReceipt{
-				ID:     receipt.ID,
-				Status: receipt.Status,
-			}
-		default:
+		key := pruneApprovalReceiptKey(receipt.ApprovalID, receipt.ApprovalScopeDigest)
+		current := appliedPruneReceipt{
+			ID:        receipt.ID,
+			Status:    receipt.Status,
+			StartedAt: receipt.StartedAt,
+		}
+		existing, ok := out[key]
+		if !ok || pruneReceiptSortKey(current) >= pruneReceiptSortKey(existing) {
+			out[key] = current
 		}
 	}
 	return out
+}
+
+func pruneReceiptSortKey(receipt appliedPruneReceipt) string {
+	return receipt.StartedAt + "\x00" + receipt.ID
 }
 
 func pruneApprovalReceiptKey(approvalID string, approvalScopeDigest string) string {
@@ -1062,11 +1091,35 @@ func classifyPruneApprovals(review *PruneReview, dryRun prune.DryRunReport) {
 
 func classifyPruneApproval(approval *PruneApproval, candidates map[string]prune.Candidate, refusals map[string]prune.Refusal, now time.Time) {
 	if approval.LinkedReceiptID != "" {
-		approval.ReleaseState = "consumed"
-		approval.ReleaseReason = "approval has applied or partial prune receipt evidence"
-		approval.ReleaseAction = "inspect_prune_receipt"
-		approval.ReleaseBlocker = false
-		return
+		switch approval.LinkedReceiptStatus {
+		case control.PruneReceiptApplied, control.PruneReceiptPartial:
+			approval.ReleaseState = "consumed"
+			approval.ReleaseReason = "approval has applied or partial prune receipt evidence"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = false
+			return
+		case control.PruneReceiptStarted:
+			approval.Unapplied = false
+			approval.ReleaseState = "pending_receipt"
+			approval.ReleaseReason = "approval has started prune receipt evidence that still requires operator review"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = true
+			return
+		case control.PruneReceiptFailed:
+			approval.Unapplied = false
+			approval.ReleaseState = "failed_receipt"
+			approval.ReleaseReason = "approval has failed prune receipt evidence that requires operator review"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = true
+			return
+		default:
+			approval.Unapplied = false
+			approval.ReleaseState = "receipt_attention"
+			approval.ReleaseReason = "approval has prune receipt evidence that requires operator review"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = true
+			return
+		}
 	}
 	if approval.Status == "superseded" {
 		approval.Unapplied = false

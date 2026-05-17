@@ -404,6 +404,11 @@ target files, write `prune_receipt` artifacts, or approve selected IDs that are
 not current candidates. The fresh dry-run must be free of refusals and artifact
 problems before any approval is written. `prune --apply --approval <id>` is the
 only current wired physical prune path.
+`prune approvals --profile <path>` is current wired read-only inventory over
+current-scope approval artifacts. `prune supersede --profile <path> --id
+<approval-id> --reason <text> --reviewer <id>` is current wired approval
+mutation for updating one existing approval artifact to durable
+`status=superseded` review metadata without applying prune.
 
 `prune_approval` is a current schema and apply input for reviewed physical
 prune. `prune approve` authors valid approval artifacts by binding operator
@@ -418,10 +423,11 @@ outside the current profile, target, or session scope are skipped rather than
 reported as current-profile `prune_approval` problems. Corrupt, unparseable,
 symlinked, unreadable, or current-scope invalid approval artifacts may surface
 as `prune_approval` artifact problems. This read path distinguishes
-authored-but-unapplied approvals from approvals that already have applied or
-partial receipt evidence, but it does not author approvals, supersede
-approvals, apply prune decisions, write receipts, delete files or symlinks,
-automatically release a migration, close v1, or duplicate the full apply-time
+authored-but-unapplied approvals from approvals that already have linked prune
+receipt evidence, and compact `status` narrows that read path to aggregate
+counts plus prune review status/action. These read paths do not author
+approvals, supersede approvals, apply prune decisions, write receipts, delete
+files or symlinks, automatically release a migration, close v1, or duplicate the full apply-time
 validation owned by `prune --apply --approval <id>`.
 
 Fields:

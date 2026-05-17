@@ -78,6 +78,23 @@ type AuthorApprovalOptions struct {
 	Now            time.Time
 }
 
+type ListApprovalsOptions struct {
+	TargetRoot string
+	ProfileID  string
+	TargetID   string
+}
+
+type SupersedeApprovalOptions struct {
+	TargetRoot string
+	ProfileID  string
+	TargetID   string
+	ApprovalID string
+	Reason     string
+	Reviewer   string
+	ReviewTool string
+	Now        time.Time
+}
+
 type ApplyResult struct {
 	TargetRoot       string               `json:"target_root"`
 	ProfileID        string               `json:"profile_id"`
@@ -109,6 +126,22 @@ type AuthorApprovalResult struct {
 	Approval               control.PruneApproval       `json:"approval"`
 	Items                  []control.PruneApprovalItem `json:"items"`
 	DryRunSummary          DryRunSummary               `json:"dry_run_summary"`
+}
+
+type ListApprovalsResult struct {
+	TargetRoot string                  `json:"target_root"`
+	ProfileID  string                  `json:"profile_id"`
+	TargetID   string                  `json:"target_id"`
+	Approvals  []control.PruneApproval `json:"approvals,omitempty"`
+}
+
+type SupersedeApprovalResult struct {
+	TargetRoot   string                `json:"target_root"`
+	ProfileID    string                `json:"profile_id"`
+	TargetID     string                `json:"target_id"`
+	ApprovalID   string                `json:"approval_id"`
+	ApprovalPath string                `json:"approval_path"`
+	Approval     control.PruneApproval `json:"approval"`
 }
 
 type DryRunReport struct {
@@ -327,6 +360,262 @@ func AuthorApproval(opts AuthorApprovalOptions) (AuthorApprovalResult, error) {
 		Items:                  append([]control.PruneApprovalItem(nil), approval.Items...),
 		DryRunSummary:          report.Summary,
 	}, nil
+}
+
+func ListApprovals(opts ListApprovalsOptions) (ListApprovalsResult, error) {
+	if strings.TrimSpace(opts.TargetRoot) == "" {
+		return ListApprovalsResult{}, errors.New("target root is required")
+	}
+	targetRoot, err := filepath.Abs(opts.TargetRoot)
+	if err != nil {
+		return ListApprovalsResult{}, err
+	}
+	if err := requireExistingTargetRoot(targetRoot); err != nil {
+		return ListApprovalsResult{}, err
+	}
+
+	dir := filepath.Join(control.ControlDir(targetRoot), "prune", "approvals")
+	if err := pathguard.EnsureDirectory(targetRoot, dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ListApprovalsResult{
+				TargetRoot: filepath.ToSlash(targetRoot),
+				ProfileID:  opts.ProfileID,
+				TargetID:   opts.TargetID,
+			}, nil
+		}
+		return ListApprovalsResult{}, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ListApprovalsResult{
+				TargetRoot: filepath.ToSlash(targetRoot),
+				ProfileID:  opts.ProfileID,
+				TargetID:   opts.TargetID,
+			}, nil
+		}
+		return ListApprovalsResult{}, err
+	}
+
+	approvals := make([]control.PruneApproval, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		scope, err := readPruneApprovalScopeDocument(targetRoot, path)
+		if err != nil {
+			return ListApprovalsResult{}, fmt.Errorf("read prune approval scope %q: %w", path, err)
+		}
+		if scope.excludedBy(opts.ProfileID, opts.TargetID) {
+			continue
+		}
+		approval, err := control.ReadFileNoSymlinkUnderRoot[control.PruneApproval](targetRoot, path)
+		if err != nil {
+			return ListApprovalsResult{}, fmt.Errorf("read prune approval %q: %w", path, err)
+		}
+		pathID := strings.TrimSuffix(entry.Name(), ".json")
+		if approval.ID != pathID {
+			return ListApprovalsResult{}, fmt.Errorf("prune approval id %q does not match path id %q", approval.ID, pathID)
+		}
+		approvals = append(approvals, approval)
+	}
+	sort.Slice(approvals, func(i, j int) bool {
+		left := approvals[i].ApprovedAt
+		if left == "" {
+			left = approvals[i].CreatedAt
+		}
+		right := approvals[j].ApprovedAt
+		if right == "" {
+			right = approvals[j].CreatedAt
+		}
+		if left == right {
+			return approvals[i].ID < approvals[j].ID
+		}
+		return left < right
+	})
+
+	return ListApprovalsResult{
+		TargetRoot: filepath.ToSlash(targetRoot),
+		ProfileID:  opts.ProfileID,
+		TargetID:   opts.TargetID,
+		Approvals:  approvals,
+	}, nil
+}
+
+type pruneApprovalScopeDocument map[string]json.RawMessage
+
+func (d pruneApprovalScopeDocument) Validate() error {
+	return nil
+}
+
+type pruneApprovalScope struct {
+	profileID    string
+	profileKnown bool
+	targetID     string
+	targetKnown  bool
+}
+
+func readPruneApprovalScopeDocument(targetRoot string, path string) (pruneApprovalScope, error) {
+	doc, err := control.ReadFileNoSymlinkUnderRoot[pruneApprovalScopeDocument](targetRoot, path)
+	if err != nil {
+		return pruneApprovalScope{}, err
+	}
+	profileID, profileKnown := rawOptionalJSONString(doc, "profile_id")
+	targetID, targetKnown := rawOptionalJSONString(doc, "target_id")
+	return pruneApprovalScope{
+		profileID:    profileID,
+		profileKnown: profileKnown,
+		targetID:     targetID,
+		targetKnown:  targetKnown,
+	}, nil
+}
+
+func rawOptionalJSONString(doc pruneApprovalScopeDocument, field string) (string, bool) {
+	raw, ok := doc[field]
+	if !ok {
+		return "", false
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+func (scope pruneApprovalScope) excludedBy(profileID string, targetID string) bool {
+	if strings.TrimSpace(profileID) != "" && scope.profileKnown && scope.profileID != profileID {
+		return true
+	}
+	if strings.TrimSpace(targetID) != "" && scope.targetKnown && scope.targetID != targetID {
+		return true
+	}
+	return false
+}
+
+func SupersedeApproval(opts SupersedeApprovalOptions) (SupersedeApprovalResult, error) {
+	if strings.TrimSpace(opts.TargetRoot) == "" {
+		return SupersedeApprovalResult{}, errors.New("target root is required")
+	}
+	targetRoot, err := filepath.Abs(opts.TargetRoot)
+	if err != nil {
+		return SupersedeApprovalResult{}, err
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	now = now.UTC()
+	if err := requireExistingTargetRoot(targetRoot); err != nil {
+		return SupersedeApprovalResult{}, err
+	}
+	if strings.TrimSpace(opts.ApprovalID) == "" {
+		return SupersedeApprovalResult{}, errors.New("approval id is required")
+	}
+	if err := control.ValidateArtifactID(strings.TrimSpace(opts.ApprovalID)); err != nil {
+		return SupersedeApprovalResult{}, fmt.Errorf("approval id is invalid: %w", err)
+	}
+	if strings.TrimSpace(opts.Reason) == "" {
+		return SupersedeApprovalResult{}, errors.New("supersede reason is required")
+	}
+	reviewTool := strings.TrimSpace(opts.ReviewTool)
+	if reviewTool == "" {
+		reviewTool = "supermover prune supersede"
+	}
+
+	unlock, err := targetlock.LockTarget(targetRoot)
+	if err != nil {
+		return SupersedeApprovalResult{}, fmt.Errorf("lock target for prune approval supersede: %w", err)
+	}
+	defer unlock()
+
+	approvalPath, err := control.Path(targetRoot, control.ArtifactPruneApproval, strings.TrimSpace(opts.ApprovalID))
+	if err != nil {
+		return SupersedeApprovalResult{}, err
+	}
+	approval, err := readControlFileNoSymlink[control.PruneApproval](targetRoot, approvalPath, "prune approval")
+	if err != nil {
+		return SupersedeApprovalResult{}, fmt.Errorf("read prune approval: %w", err)
+	}
+	if strings.TrimSpace(opts.ProfileID) != "" && approval.ProfileID != opts.ProfileID {
+		return SupersedeApprovalResult{}, fmt.Errorf("approval profile_id %q does not match profile %q", approval.ProfileID, opts.ProfileID)
+	}
+	if strings.TrimSpace(opts.TargetID) != "" && approval.TargetID != opts.TargetID {
+		return SupersedeApprovalResult{}, fmt.Errorf("approval target_id %q does not match target %q", approval.TargetID, opts.TargetID)
+	}
+	if linkedReceipts, err := appliedPruneReceiptsForTarget(targetRoot, approval.ProfileID, approval.TargetID, approval.ID, approval.ApprovalScopeDigest); err != nil {
+		return SupersedeApprovalResult{}, err
+	} else if len(linkedReceipts) > 0 {
+		return SupersedeApprovalResult{}, errors.New("approval already has prune receipt evidence and cannot be superseded")
+	}
+	if approval.Status == "superseded" {
+		return SupersedeApprovalResult{
+			TargetRoot:   filepath.ToSlash(targetRoot),
+			ProfileID:    approval.ProfileID,
+			TargetID:     approval.TargetID,
+			ApprovalID:   approval.ID,
+			ApprovalPath: filepath.ToSlash(approvalPath),
+			Approval:     approval,
+		}, nil
+	}
+	if approval.Status != "approved" {
+		return SupersedeApprovalResult{}, fmt.Errorf("approval status %q cannot be superseded", approval.Status)
+	}
+
+	approval.Status = "superseded"
+	approval.RefusalReason = strings.TrimSpace(opts.Reason)
+	approval.ReviewTool = reviewTool
+	approval.SupersededBy = strings.TrimSpace(opts.Reviewer)
+	approval.SupersededAt = now.Format(time.RFC3339Nano)
+
+	if err := control.WriteFile(approvalPath, approval); err != nil {
+		return SupersedeApprovalResult{}, fmt.Errorf("write superseded prune approval: %w", err)
+	}
+	return SupersedeApprovalResult{
+		TargetRoot:   filepath.ToSlash(targetRoot),
+		ProfileID:    approval.ProfileID,
+		TargetID:     approval.TargetID,
+		ApprovalID:   approval.ID,
+		ApprovalPath: filepath.ToSlash(approvalPath),
+		Approval:     approval,
+	}, nil
+}
+
+func appliedPruneReceiptsForTarget(targetRoot string, profileID string, targetID string, approvalID string, scopeDigest string) ([]control.PruneReceipt, error) {
+	dir := filepath.Join(control.ControlDir(targetRoot), "prune", "receipts")
+	if err := pathguard.EnsureDirectory(targetRoot, dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var receipts []control.PruneReceipt
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		receipt, err := control.ReadFileNoSymlinkUnderRoot[control.PruneReceipt](targetRoot, path)
+		if err != nil {
+			return nil, fmt.Errorf("read prune receipt %q: %w", path, err)
+		}
+		pathID := strings.TrimSuffix(entry.Name(), ".json")
+		if receipt.ID != pathID {
+			return nil, fmt.Errorf("prune receipt id %q does not match path id %q", receipt.ID, pathID)
+		}
+		if receipt.ProfileID != profileID || receipt.TargetID != targetID || receipt.ApprovalID != approvalID || receipt.ApprovalScopeDigest != scopeDigest {
+			continue
+		}
+		receipts = append(receipts, receipt)
+	}
+	return receipts, nil
 }
 
 func Apply(opts ApplyOptions) (ApplyResult, error) {

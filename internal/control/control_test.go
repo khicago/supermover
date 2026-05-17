@@ -410,6 +410,14 @@ func TestValidateDocuments(t *testing.T) {
 			Status:        "refused",
 			RefusalReason: "delete_policy.allow_physical_prune is false",
 		}},
+		{name: "valid superseded prune approval preserves approval plus supersede metadata", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededBy = "reviewer@example.com"
+			doc.SupersededAt = "2026-05-16T00:03:00Z"
+			return doc
+		}()},
 		{name: "invalid prune approval approved before created", doc: func() PruneApproval {
 			doc := validPruneApproval()
 			doc.ApprovedAt = "2026-05-15T00:00:00Z"
@@ -463,6 +471,30 @@ func TestValidateDocuments(t *testing.T) {
 			doc.Status = "refused"
 			return doc
 		}(), wantErr: "refusal_reason is required"},
+		{name: "invalid prune approval superseded without supersede reviewer", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededAt = "2026-05-16T00:03:00Z"
+			doc.SupersededBy = ""
+			return doc
+		}(), wantErr: "superseded_by"},
+		{name: "invalid prune approval superseded without superseded_at", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededBy = "reviewer@example.com"
+			doc.SupersededAt = ""
+			return doc
+		}(), wantErr: "superseded_at"},
+		{name: "invalid prune approval superseded before approval", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededBy = "reviewer@example.com"
+			doc.SupersededAt = "2026-05-16T00:01:30Z"
+			return doc
+		}(), wantErr: "superseded_at must be greater than or equal to approved_at"},
 		{name: "invalid prune receipt dry run applied", doc: func() PruneReceipt {
 			doc := validPruneReceipt()
 			doc.Status = PruneReceiptApplied

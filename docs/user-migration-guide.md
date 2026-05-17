@@ -137,11 +137,12 @@ existing prune receipts, receipt issues, health/recovery issues, artifact
 problems, pairing evidence state, and published-manifest verification state at
 report time. It also runs the live target drift detector and reports
 review-required drift separately from persisted `.supermover/drift/*.json`
-records. `status` narrows prune approval evidence to counts and source
-breakdown. Prune report/status state is evidence-only; report/status do not
-author approval artifacts, supersede approvals, apply prune decisions, write
-receipts, delete files or symlinks, repair/reconcile drift, make the target
-clean, automatically release a migration, or close v1. Use
+records. `status` narrows prune approval evidence to compact prune release
+counts plus prune review status/action. Prune report/status state is
+evidence-only; report/status do not author approval artifacts, supersede
+approvals, apply prune decisions, write receipts, delete files or symlinks,
+repair/reconcile drift, make the target clean, automatically release a
+migration, or close v1. Use
 `prune approve` for durable approval authoring and
 `prune --apply --approval <id>` for physical prune. Pairing state is evidence-only;
 examples include `unpaired`, `paired_receipt_valid`,
@@ -420,10 +421,16 @@ approval when the fresh dry-run has no refusals or artifact problems, and
 selected IDs must be current dry-run candidates.
 
 After authoring, `report` exposes current profile/target approval evidence from
-`.supermover/prune/approvals/*.json`, while `status` exposes the related counts
-and source breakdown. This helps release review distinguish
-authored-but-unapplied approvals from applied receipts, but it is not deletion
-authorization or automatic release evidence by itself.
+`.supermover/prune/approvals/*.json`, while `status` exposes compact prune
+release counts plus prune review status/action. This helps release review
+distinguish authored-but-unapplied approvals, stale or expired approvals,
+consumed approvals, and receipt-attention states from applied receipts, but it
+is not deletion authorization or automatic release evidence by itself.
+Use `prune approvals --profile ./supermover.profile.json` for read-only
+inventory over current-scope approval artifacts, and
+`prune supersede --profile ./supermover.profile.json --id <approval-id>
+--reason <text> --reviewer <reviewer-id>` to mark an older approval superseded
+without deleting target files or writing prune receipts.
 Use `prune review --profile ./supermover.profile.json` for the focused
 read-only prune release-review view; it reads candidates, approvals, and
 receipts without writing approvals, receipts, or deleting target files.

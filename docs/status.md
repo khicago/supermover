@@ -19,14 +19,17 @@ verification and live drift detection. It is read-only. It does not repair,
 recover, prune, rewrite profiles, acknowledge review state, persist live
 detector output, or run background scans.
 
-`status` also exposes compact current profile/target prune approval counts and
-source breakdown from durable `.supermover/prune/approvals/*.json` artifacts.
-It does not list the full approval inventory; use `prune review` for the
-focused read-only prune release inventory. These counts are read-only audit
-evidence for review of authored-but-unapplied approvals; they do not authorize
-prune, author approvals, supersede approvals, apply prune decisions, write
-prune receipts, delete files or symlinks, repair or reconcile drift, make a
-review-required target clean, automatically release a migration, or close v1.
+`status` also exposes compact current profile/target prune approval counts,
+prune receipt counts/issues, prune review status/action, and artifact-problem
+source breakdown from durable `.supermover/prune/approvals/*.json` and
+`.supermover/prune/receipts/*.json` artifacts. It does not list the full
+approval or receipt inventory; use `prune review` for the focused read-only
+prune release inventory. These counts are read-only audit evidence for review
+of authored-but-unapplied approvals, stale or expired approvals, consumed
+approvals, and receipt-attention states; they do not authorize prune, author
+approvals, supersede approvals, apply prune decisions, write prune receipts,
+delete files or symlinks, repair or reconcile drift, make a review-required
+target clean, automatically release a migration, or close v1.
 
 Persisted target-drift review state is managed by separate commands:
 `supermover drift acknowledge --profile <path> --id <persisted-drift-id>
@@ -74,8 +77,12 @@ be stable for the same evidence set. The current top-level fields are:
   completeness summary.
 - `counts`: counts for warnings, soft deletes, persisted target drift, live
   target drift, prune approvals, authored-but-unapplied prune approvals,
-  recovery issues, invalid health records, artifact problems, verification
-  findings, pairing evidence issues, and network-transfer evidence.
+  active/stale/expired/consumed prune approvals, prune receipts, prune receipt
+  issues, recovery issues, invalid health records, artifact problems,
+  verification findings, pairing evidence issues, and network-transfer
+  evidence.
+- `prune_review`: compact prune release-review status/action copied from the
+  broader report/review evidence without expanding to full item inventory.
 - `pairing`: local pairing/profile-pin evidence state.
 - `privacy`: profile privacy evidence and current local/network wiring status.
 - `traffic_privacy_acceptance`: level 2 acceptance evidence for the

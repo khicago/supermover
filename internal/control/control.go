@@ -566,6 +566,8 @@ type PruneApproval struct {
 	Status                string              `json:"status"`
 	ApprovalReason        string              `json:"approval_reason,omitempty"`
 	RefusalReason         string              `json:"refusal_reason,omitempty"`
+	SupersededBy          string              `json:"superseded_by,omitempty"`
+	SupersededAt          string              `json:"superseded_at,omitempty"`
 }
 
 type PruneApprovalItem struct {
@@ -1909,6 +1911,26 @@ func (d PruneApproval) Validate() error {
 	require("status", d.Status, &errs)
 	if strings.TrimSpace(d.Status) != "" && !pruneApprovalStatusValid(d.Status) {
 		errs = append(errs, errors.New("status must be one of approved, refused, superseded"))
+	}
+	var supersededAt time.Time
+	var supersededAtOK bool
+	if d.Status == "superseded" {
+		require("superseded_by", d.SupersededBy, &errs)
+		supersededAt, supersededAtOK = requireRFC3339("superseded_at", d.SupersededAt, &errs)
+	} else {
+		supersededAt, supersededAtOK = parseOptionalRFC3339("superseded_at", d.SupersededAt, &errs)
+		if strings.TrimSpace(d.SupersededBy) != "" {
+			errs = append(errs, errors.New("superseded_by is only valid when status is superseded"))
+		}
+		if strings.TrimSpace(d.SupersededAt) != "" {
+			errs = append(errs, errors.New("superseded_at is only valid when status is superseded"))
+		}
+	}
+	if approvedAtOK && supersededAtOK && supersededAt.Before(approvedAt) {
+		errs = append(errs, errors.New("superseded_at must be greater than or equal to approved_at"))
+	}
+	if createdAtOK && supersededAtOK && supersededAt.Before(createdAt) {
+		errs = append(errs, errors.New("superseded_at must be greater than or equal to created_at"))
 	}
 	if d.Status == "approved" && strings.TrimSpace(d.RefusalReason) != "" {
 		errs = append(errs, errors.New("refusal_reason must be empty when status is approved"))

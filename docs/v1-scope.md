@@ -124,11 +124,14 @@ magic.
 - Automatic physical prune from review evidence. `prune --dry-run` is
   review-only candidate/refusal evidence and never deletes files; `prune
   approve` writes durable approval artifacts plus profile snapshots without
-  deleting files or writing prune receipts; `prune review` and `report` surface
-  current profile/target approval evidence, prune candidates, refusals,
-  existing receipts, and receipt issues as read-only evidence; `status` exposes
-  approval counts/source breakdown as compact read-only evidence for
-  authored-but-unapplied approvals;
+  deleting files or writing prune receipts; `prune approvals` is read-only
+  approval inventory; `prune supersede` updates one existing approval artifact
+  to durable superseded review metadata without applying prune; `prune review`
+  and `report` surface current profile/target approval evidence, prune
+  candidates, refusals, existing receipts, and receipt issues as read-only
+  evidence; `status` exposes compact prune release counts plus prune review
+  status/action for authored-but-unapplied, stale, expired, consumed, and
+  receipt-attention states;
   `prune --apply --approval <id>` remains the only physical prune path.
 - Runtime flags that silently override profile policy for delete, privacy,
   metadata, or target identity behavior.
@@ -172,9 +175,12 @@ never authorizes deletion. Approval artifacts live under
 `.supermover/prune/approvals/<id>.json`; apply writes receipts under
 `.supermover/prune/receipts/<id>.json`. `prune approve` authors approval
 artifacts plus profile snapshots from fresh dry-run candidate evidence without
-deleting target files or writing prune receipts. `report` and compact `status`
-read approval artifacts as audit evidence only; `status` narrows this to counts
-and source breakdown. They do not apply, supersede, or validate approvals for
+deleting target files or writing prune receipts. `prune approvals` is read-only
+approval inventory, and `prune supersede` updates one existing approval
+artifact to durable superseded review metadata without applying prune. `report`
+and compact `status` read approval artifacts as audit evidence only; `status`
+narrows this to compact prune release counts plus prune review status/action.
+These read-only surfaces do not apply, supersede, or validate approvals for
 mutation, and they do not automatically release a migration or close v1.
 
 Refusal remains the default when policy, approval evidence, target identity,
@@ -322,7 +328,10 @@ go run ./cmd/supermover report --profile <path> --session <session-id>
 go run ./cmd/supermover status --profile <path> [--format text|json]
 go run ./cmd/supermover prune --help
 go run ./cmd/supermover prune --profile <path> --dry-run
+go run ./cmd/supermover prune approvals --profile <path> [--format text|json]
 go run ./cmd/supermover prune approve --profile <path> --id <approval-id> --soft-delete <soft-delete-id> --reason <text> --reviewer <reviewer-id>
+go run ./cmd/supermover prune review --profile <path> [--session <session-id>] [--format text|json]
+go run ./cmd/supermover prune supersede --profile <path> --id <approval-id> --reason <text> --reviewer <reviewer-id> [--format text|json]
 go run ./cmd/supermover prune --profile <path> --apply --approval <approval-id>
 go run ./cmd/supermover recover --profile <path> --session <session-id>
 go run ./cmd/supermover daemon install --profile <target-profile>
@@ -357,11 +366,12 @@ The current operator CLI exposes `prune --dry-run` for profile-policy
 validation and non-mutating candidate/refusal evidence over published
 soft-delete records, including `retention_window_active` refusals while
 retention is active. It exposes `prune approve` for durable approval authoring
-from fresh dry-run candidates, and conservative physical prune apply through
-`prune --apply --approval <id>` when the approval artifact exists under the
-target control plane. Apply re-runs the prune plan before deletion, so
-retention-active approved items produce refusal receipts instead of deletion.
-`prune review` and `report` surface prune candidates, refusals, current-scope
-approval evidence, existing receipts, and receipt issues as read-only audit
-evidence, while `status` exposes approval counts/source breakdown. Broader
-release workflow surfaces beyond this evidence remain future work.
+from fresh dry-run candidates, `prune approvals` for read-only approval
+inventory, `prune supersede` for durable approval supersede metadata, and
+conservative physical prune apply through `prune --apply --approval <id>` when
+the approval artifact exists under the target control plane. Apply re-runs the
+prune plan before deletion, so retention-active approved items produce refusal
+receipts instead of deletion. `prune review` and `report` surface prune
+candidates, refusals, current-scope approval evidence, existing receipts, and
+receipt issues as read-only audit evidence, while `status` exposes compact
+prune release counts plus prune review status/action.
