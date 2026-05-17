@@ -12,8 +12,8 @@ optimization.
 - Deletion: source deletions become soft-delete records first; physical pruning
   is separate.
 - Consistency: `live`, `strict`, and `snapshot` are explicit modes.
-- Discovery: LAN discovery returns address hints only. Pairing and pinned
-  device identity establish trust.
+- Planned discovery: LAN discovery returns address hints only. Planned pairing
+  and pinned device identity establish trust.
 
 ## Control Plane
 
