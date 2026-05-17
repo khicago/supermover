@@ -164,13 +164,34 @@ func TestMoveFileNoReplaceMovesSourceToMissingFinal(t *testing.T) {
 	}
 
 	if err := MoveFileNoReplace(sourcePath, finalPath); err != nil {
+		if unsupportedMoveNoReplacePlatform() && errors.Is(err, ErrValidationFailure) {
+			if got, readErr := os.ReadFile(sourcePath); readErr != nil || string(got) != "payload" {
+				t.Fatalf("unsupported MoveFileNoReplace(%q, %q) source = (%q, %v), want retained payload", sourcePath, finalPath, string(got), readErr)
+			}
+			if _, statErr := os.Stat(finalPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("unsupported MoveFileNoReplace(%q, %q) final stat error = %v, want os.ErrNotExist", sourcePath, finalPath, statErr)
+			}
+			return
+		}
 		t.Fatalf("MoveFileNoReplace(%q, %q) error = %v, want nil", sourcePath, finalPath, err)
+	}
+	if unsupportedMoveNoReplacePlatform() {
+		t.Fatalf("MoveFileNoReplace(%q, %q) succeeded on unsupported platform", sourcePath, finalPath)
 	}
 	if got, err := os.ReadFile(finalPath); err != nil || string(got) != "payload" {
 		t.Fatalf("os.ReadFile(%q) = (%q, %v), want payload", finalPath, string(got), err)
 	}
 	if _, err := os.Stat(sourcePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("os.Stat(%q) error = %v, want os.ErrNotExist", sourcePath, err)
+	}
+}
+
+func unsupportedMoveNoReplacePlatform() bool {
+	switch runtime.GOOS {
+	case "darwin", "linux", "windows":
+		return false
+	default:
+		return true
 	}
 }
 
