@@ -5,12 +5,13 @@ design includes incremental sync from a source machine to a trusted target
 machine.
 
 The current implementation is a local push vertical slice. Available commands
-are `profile`, `scan`, `push`, `verify`, `deleted list`, `health`, and
-`recover`. It supports first migration, idempotent reruns, additions, warning
-records, soft-delete records, and conservative recovery. Changed-file
-incremental update, network receiver CLI wiring, pairing, physical prune,
-broader recovery reconciliation, status, discovery, and drift review commands
-are planned and may appear in design docs before CLI wiring exists.
+are `profile`, `scan`, `push`, `verify`, `deleted list`, `health`, `report`,
+and `recover`. It supports first migration, idempotent reruns,
+additions, warning records, soft-delete records, read-only operator reports,
+and conservative recovery. Changed-file incremental update, network receiver
+CLI wiring, pairing, physical prune, broader recovery reconciliation, status,
+discovery, and drift review commands are planned and may appear in design docs
+before CLI wiring exists.
 
 ## Quickstart
 
@@ -22,6 +23,7 @@ go run ./cmd/supermover push --profile ./supermover.profile.json --session sessi
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
+go run ./cmd/supermover report --profile ./supermover.profile.json
 go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 ```
 
@@ -36,6 +38,11 @@ published as review warnings. `verify` checks published regular files for
 size, SHA-256 digest, permissions, and modification time, and checks directory
 and symlink entries for presence/type/target fidelity. It exits non-zero for
 error findings, warning findings, artifact problems, or a missing manifest.
+`report` is read-only and aggregates the profile SSOT plus target
+`.supermover` artifacts into an operator view of warnings, profile suggestions,
+soft deletes, health/recovery issues, artifact problems, and verification state
+at report time. It returns non-zero when the report requires operator review,
+even if the report itself was generated successfully.
 
 The v1 direction is intentionally conservative:
 

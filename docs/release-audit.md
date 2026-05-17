@@ -9,7 +9,7 @@ that directory is intentionally ignored by Git.
 Current completed slice:
 
 - Go CLI commands: `profile`, `scan`, `push`, `verify`, `deleted list`,
-  `health`, and `recover`.
+  `health`, `report`, and `recover`.
 - One-way local push from one source root to a trusted local or mounted target.
 - Hidden files are included by default.
 - Regular files are copied into session staging with source stability checks,
@@ -20,6 +20,10 @@ Current completed slice:
 - Target `.supermover` records profile snapshots, transaction state, receipts,
   manifests, warnings, soft deletes, and agent influence records. Health is a
   read-only report over those artifacts.
+- This feature adds `report` as a read-only operator aggregation command.
+  `report` aggregates warnings, profile suggestions, soft deletes,
+  health/recovery issues, artifact problems, and published-manifest
+  verification state at report time.
 - `recover` can replay safely staged local sessions, mark explicitly abandoned
   incomplete sessions as `rolled_back`, and mark non-automatable sessions as
   `needs_repair`.
@@ -33,6 +37,7 @@ Known planned surface:
 - Traffic-shaping implementation beyond the current profile policy model.
 - Reviewed physical prune command.
 - Broader automatic repair/reconcile command.
+- Compact `status` command.
 - Drift review command.
 
 Open-source governance now includes `LICENSE`, `SECURITY.md`,
@@ -107,6 +112,11 @@ thin entrypoint over `internal/cli`.
 - `health` is read-only. It reports incomplete transactions and damaged
   published artifacts. `recover` is the explicit mutating command for the safe
   local subset.
+- `report` is also read-only. Its evidence source is the profile SSOT plus
+  target `.supermover` control-plane artifacts, and its presence does not imply
+  network transfer, encrypted transport, daemon status, or physical prune
+  support. `report` returns non-zero when review is required, even when it
+  successfully emits a parseable text or JSON report.
 - Publish reconciliation is intentionally conservative. If interruption happens
   during final publish, `recover` can replay staged files that still match the
   manifest, accept already-published identical targets, or report

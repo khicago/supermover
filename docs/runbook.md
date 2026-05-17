@@ -3,7 +3,10 @@
 This runbook gives repeatable steps for a local push migration and the evidence
 operators should preserve. It separates currently implemented commands from
 planned mainline commands so acceptance work can proceed without implying
-network features are complete.
+network features are complete. The read-only `report` command added by this
+feature is an operator view over the profile SSOT and target control-plane
+artifacts; it does not represent daemon, LAN agent, transport, or prune
+completion.
 
 ## Preflight
 
@@ -86,6 +89,7 @@ Required:
 - session receipt exists under `.supermover/sessions/<session>/receipt.json`;
 - manifest exists under `.supermover/sessions/<session>/manifest.json`;
 - warning records exist when the run reported warnings;
+- soft-delete records exist when the run reported deleted paths;
 - agent influence record exists when the run reported influences.
 
 Inspect the receipt:
@@ -109,6 +113,30 @@ find /path/to/target/.supermover/warnings -type f -name '*.json' -maxdepth 1 2>/
 Every warning must have an owner decision: accept, rerun with changed profile,
 or block release.
 
+Run the read-only aggregate report:
+
+```bash
+go run ./cmd/supermover report --profile ./supermover.profile.json
+```
+
+Use it to review the combined operator surface:
+
+- warnings and profile suggestions;
+- soft-delete records that need review;
+- health and recovery issues;
+- artifact problems such as missing or corrupt receipts, manifests, and
+  profile snapshots;
+- published-manifest verification state for the local push evidence.
+
+The report is a summary over `.supermover` evidence. Preserve the underlying
+profile snapshot, receipts, manifests, warnings, deleted records, and influence
+records as the audit source of truth.
+
+`report` exits non-zero when the generated report requires review, including
+empty targets, warning records, soft deletes, recovery issues, artifact
+problems, or verification findings. In shell scripts, capture stdout before
+letting `set -e` abort so the review evidence is not lost.
+
 Run verify and treat any non-zero result as a release blocker until explained:
 
 ```bash
@@ -128,7 +156,11 @@ is needed:
 
 ```bash
 go run ./cmd/supermover health --profile ./supermover.profile.json
+go run ./cmd/supermover report --profile ./supermover.profile.json
 ```
+
+Use `health` for the focused recovery classifier and `report` for the broader
+read-only operator aggregation. Neither command repairs state.
 
 `recover` performs the conservative automated subset. It uses the profile SSOT
 to find `target.local_path` and to write any repaired receipt.
@@ -159,6 +191,7 @@ Current review command:
 
 ```bash
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
+go run ./cmd/supermover report --profile ./supermover.profile.json
 ```
 
 Planned physical-prune command shape:
@@ -175,6 +208,10 @@ Required review evidence:
 - session that detected the deletion;
 - profile delete policy snapshot;
 - approver and approval time, once approval support exists.
+
+Use `report` to confirm soft-delete records are visible in the same view as
+warnings, health/recovery issues, artifact problems, and migration
+verification state. Use `deleted list` for the itemized deletion review.
 
 ## Discovery And Pairing Procedure
 
@@ -201,6 +238,7 @@ For any failed or suspicious run, collect:
 - command line, stdout, stderr, and exit code;
 - source and target filesystem type if a promotion or rename failed;
 - warning files and session receipt for the affected session.
+- `report` output when available, plus the artifacts it summarizes.
 
 Do not "clean up" warnings, receipts, or manifests before triage. They are the
 audit trail.

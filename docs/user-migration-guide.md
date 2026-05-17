@@ -17,6 +17,9 @@ serve/discover/pair transfer is planned, but not required for this workflow.
   but leaves a reviewable gap.
 - Source deletions are recorded before any physical prune. Physical pruning must
   require explicit review and a profile policy that permits it.
+- Operator summaries are derived from the profile SSOT and target
+  control-plane artifacts. Command stdout is useful for triage, but the durable
+  evidence lives under `.supermover`.
 - LAN discovery is address discovery only. A discovered endpoint is not trusted
   until pairing verifies and pins device identity.
 
@@ -33,6 +36,7 @@ go run ./cmd/supermover push --profile ./supermover.profile.json --session sessi
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
+go run ./cmd/supermover report --profile ./supermover.profile.json
 go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 ```
 
@@ -53,6 +57,12 @@ error findings, warning findings, artifact problems, or a missing manifest.
 `deleted list` shows reviewable source-side deletions. `health` is read-only:
 it reports incomplete or invalid session records and missing/corrupt published
 artifacts under the target `.supermover` directory and does not repair them.
+This feature adds `report` as a read-only aggregation command over the same
+evidence. `report` summarizes warnings, profile suggestions, soft-delete
+records, health/recovery issues, artifact problems, and published-manifest
+verification state at report time. It is not a long-running daemon, LAN agent,
+or network transport status. It exits non-zero when the report requires
+operator review, even when text or JSON output was produced successfully.
 `recover` performs the conservative mutating recovery subset.
 
 ## Prepare A Profile
@@ -77,7 +87,8 @@ artifacts under the target `.supermover` directory and does not repair them.
 
    `profile lint` validates schema and safety invariants. It does not prove
    the profile is executable by the current local push implementation; use
-   `push --dry-run`, `verify`, and `health` as the operational readiness gates.
+   `push --dry-run`, `verify`, `health`, and the read-only `report` summary as
+   the operational readiness gates.
 
 4. Confirm these fields are intentional:
 
@@ -174,6 +185,20 @@ The profile snapshot is the audit anchor. If the operator cannot answer "which
 profile produced this target state" from `.supermover/profiles/`, the run is not
 acceptable.
 
+Use the read-only operator summaries after checking the artifact inventory:
+
+```bash
+go run ./cmd/supermover report --profile ./supermover.profile.json
+```
+
+`report` is the review surface for combining warning records, profile
+suggestions, soft-delete records, health/recovery issues, artifact problems,
+and published-manifest verification state into one audit-oriented view. Treat
+the command as a view over the profile and `.supermover` evidence, not as a
+substitute for preserving the artifacts. In scripts, capture the output before
+acting on a non-zero exit; non-zero means review is required unless stderr says
+the report could not be generated.
+
 `verify` and `deleted list` use published receipts as the review boundary. If a
 session has a manifest or soft-delete artifact but no `published` receipt, those
 artifacts are recovery evidence; run `health` and `recover` before treating them
@@ -195,7 +220,8 @@ symlink cannot replace an existing non-symlink target and is recorded as
 `symlink_not_published`. Source scanner `scan_error` findings are different:
 they block push before publish because source inventory and soft-delete
 evidence are not reliable. The exact warning `code` is the machine-readable
-field to use in acceptance checks.
+field to use in acceptance checks. `report` groups warning records with profile
+suggestions, but the warning JSON remains the durable decision artifact.
 
 ## Soft-Delete Review
 
@@ -212,8 +238,13 @@ them before any manual cleanup:
 
 ```bash
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
+go run ./cmd/supermover report --profile ./supermover.profile.json
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
 ```
+
+`report` surfaces soft-delete records alongside published-manifest
+verification state and health/recovery issues. `deleted list` remains the
+itemized review command for source paths that disappeared.
 
 Physical prune and approval commands are intentionally not implemented in the
 current local push slice. Do not manually remove target files as a substitute

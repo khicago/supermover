@@ -13,8 +13,10 @@ Completion claims must be checked against all three:
 Do not treat a tested vertical slice as the completed minimum product. For this
 repository, the current local/mounted migration slice is implemented, while LAN
 agent, encrypted communication, traffic-shape protection, changed-file
-incremental sync, audit/report/status UX, and physical prune remain planned or
-partially designed.
+incremental sync, compact status UX, and physical prune remain planned or
+partially designed. The read-only local migration `report` command is wired,
+but it is not a substitute for LAN, transport, daemon status, incremental sync,
+or prune support.
 
 ## Primary Status Sources
 
@@ -23,13 +25,17 @@ partially designed.
   surface, and safety notes.
 - `docs/v1-scope.md`: product boundaries and implemented/planned command split.
 - `docs/plan.md`: high-level v1 phase map.
-- `.bagakit/feature-tracker`: feature lifecycle state. This may lag code and
-  must be updated before it is used as execution SSOT.
+- `.bagakit/feature-tracker`: optional local feature lifecycle state. It is
+  useful during execution but is ignored from Git; checked-in docs must carry
+  any status summary that future clones need to audit.
 
 ## Shared Checked-In Knowledge
 
 - root:
   - `docs`
+- `AGENTS.md` is only the bootstrap layer. `.bagakit/knowledge_conf.toml` may
+  declare the same root for local Bagakit operators, but `.bagakit` is ignored
+  runtime state and is not the only checked-in authority.
 
 ## Runtime Roots Declared By Protocol
 
@@ -66,7 +72,8 @@ The original broad feature tracker topic began as a full v1 plan and is now
 archived as historical evidence. Active remaining work is split into narrower
 proposal-only features:
 
-- `f-223nw49qj`: migration audit report and status UX
+- `f-223nw49qj`: migration audit report UX; `report` is implemented and
+  compact `status` remains planned
 - `f-224nw98v7`: reviewed physical prune flow
 - `f-225nwsa3h`: changed-file incremental local sync
 - `f-226nwy2vy`: LAN agent discovery and pairing
@@ -75,4 +82,6 @@ proposal-only features:
 - `f-229nwwybc`: failure injection and release hardening
 
 Before implementation, assign the selected feature to `current_tree` or a
-worktree and start the first task through feature-tracker commands.
+worktree and start the first task through feature-tracker commands when local
+feature-tracker runtime is available. Do not cite ignored tracker state as the
+only auditable evidence for checked-in commits.
