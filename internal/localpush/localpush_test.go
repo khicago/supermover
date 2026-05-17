@@ -1414,6 +1414,57 @@ func TestRunRefusesOrphanedSessionDirectoryBeforeCopying(t *testing.T) {
 	}
 }
 
+func TestRunRefusesLegacyPublishedSessionFromDifferentScopeBeforeCopying(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "new.txt"), "new", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	other := profile.NewDefault("profile-other", "Other profile", source, target)
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session-legacy",
+		SessionID: "session-legacy",
+		RootID:    p.Roots[0].ID,
+		CreatedAt: "2026-05-15T00:00:00Z",
+	})
+	writeReceipt(t, target, other, "session-legacy", "2026-05-15T00:00:00Z")
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-new", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)})
+	if err == nil {
+		t.Fatalf("Run(legacy session different scope) error = nil, want invalid recovery refusal")
+	}
+	if !strings.Contains(err.Error(), "invalid recovery state") {
+		t.Fatalf("Run(legacy session different scope) error = %v, want invalid recovery state", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "new.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target data after different-scope legacy refusal) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRunAllowsLegacyPublishedSessionForSameScope(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	mustWriteFile(t, filepath.Join(source, "new.txt"), "new", 0o644)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session-legacy",
+		SessionID: "session-legacy",
+		RootID:    p.Roots[0].ID,
+		CreatedAt: "2026-05-15T00:00:00Z",
+	})
+	writeReceipt(t, target, p, "session-legacy", "2026-05-15T00:00:00Z")
+
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-new", Now: time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("Run(same-scope legacy published session) error = %v, want nil", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "new.txt")); err != nil || string(got) != "new" {
+		t.Fatalf("target data after same-scope legacy run = (%q, %v), want new", string(got), err)
+	}
+}
+
 func TestRunReplacesChangedManagedTargetFile(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
