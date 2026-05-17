@@ -12,9 +12,9 @@ magic.
   changed-file incremental update is planned.
 - Profile JSON as the configuration single source of truth.
 - Target-side `.supermover` control plane. The current local slice stores
-  profile snapshots, session receipts, manifests, warnings, history,
-  soft-delete records, and recovery state; planned network and drift surfaces
-  add pairing receipts and target-drift records.
+  profile snapshots, session receipts, manifests, warnings, soft-delete
+  records, and transaction recovery state; history, network, and drift writer
+  surfaces remain planned.
 - Local push vertical slice that copies supported regular files to a trusted
   local target and writes auditable control artifacts.
 - Explicit warning records for recoverable or reviewable gaps.

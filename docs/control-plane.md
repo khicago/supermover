@@ -1,9 +1,9 @@
 # Control Plane
 
 The target-side `.supermover` directory stores machine-readable artifacts for
-current `verify`, `deleted list`, `health`, `report`, and `recover` commands
-and planned prune, history, drift, and agent-facing reporting commands. The Go
-schema foundation lives in `internal/control`.
+current `verify`, `deleted list`, `health`, `report`, and `recover` commands.
+The Go schema/path foundation in `internal/control` also includes planned
+history, recovery-state, pairing, drift, and agent-facing reporting surfaces.
 
 All control-plane documents use JSON with `version: 1`. Writers emit stable,
 indented JSON. Readers reject unknown fields and trailing JSON documents, so
@@ -12,24 +12,25 @@ drift is visible.
 
 ## Paths
 
-Current local path helpers resolve artifacts under the target root:
+Current local writer paths under the target root:
 
 - profile snapshot: `.supermover/profiles/<id>.json`
 - session receipt: `.supermover/sessions/<session_id>/receipt.json`
 - manifest: `.supermover/sessions/<session_id>/manifest.json`
 - warning: `.supermover/warnings/<id>.json`
 - soft delete: `.supermover/deleted/<id>.json`
+- transaction recovery state: `.supermover/sessions/<session_id>/session.json`
+
+Schema/path foundation for planned artifact surfaces:
+
 - history index: `.supermover/history/index.json`
-- recovery state: `.supermover/recovery/state.json`
-
-Planned network and drift path helpers add:
-
 - pairing receipt: `.supermover/pairings/<id>.json`
 - target drift: `.supermover/drift/<id>.json`
+- recovery state: `.supermover/recovery/state.json`
 
 ## Artifact Schemas
 
-Current local schemas:
+Current local writer schemas:
 
 `profile_snapshot` captures the profile SSOT used for a run:
 
@@ -99,6 +100,12 @@ entries.
 - `detected_at`
 - `reason`
 
+`transaction recovery state` records live transaction checkpoints under
+`.supermover/sessions/<session_id>/session.json`; see
+`docs/recovery.md` for the runtime state machine.
+
+Schema foundation for planned artifact surfaces:
+
 `history_index` points to known sessions:
 
 - `version`
@@ -113,8 +120,6 @@ entries.
 - `status`: one of `clean`, `interrupted`, or `repairing`
 - `updated_at`
 - `checkpoints`
-
-Planned network and drift schemas:
 
 `pairing_receipt` records explicit target trust:
 

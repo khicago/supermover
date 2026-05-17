@@ -25,11 +25,12 @@ current local slice writes:
 - manifests
 - audit warnings
 - soft-delete records
+- transaction recovery state
+
+The schema and path foundation also covers planned history, network, and drift
+artifact surfaces:
+
 - history indexes
-- recovery state
-
-Planned network and drift surfaces add:
-
 - pairing receipts
 - target-drift records
 
