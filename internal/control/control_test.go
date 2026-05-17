@@ -83,6 +83,13 @@ func TestValidateDocuments(t *testing.T) {
 		{name: "invalid manifest partial previous evidence", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "file", Kind: "file", PreviousSessionID: "s0", PreviousDigest: "sha256:abc"}}}, wantErr: "previous evidence must include"},
 		{name: "invalid manifest unsupported previous digest", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "file", Kind: "file", PreviousSessionID: "s0", PreviousManifestID: "m0", PreviousDigest: "md5:abc"}}}, wantErr: "previous_digest must be sha256 hex"},
 		{name: "invalid manifest short previous digest", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "file", Kind: "file", PreviousSessionID: "s0", PreviousManifestID: "m0", PreviousDigest: "sha256:abc"}}}, wantErr: "previous_digest must be sha256 hex"},
+		{name: "invalid manifest previous evidence without previous_size", doc: manifestWithPreviousEvidence(func(entry *ManifestEntry) { entry.previousSizePresent = false }), wantErr: "previous evidence must include previous_size"},
+		{name: "invalid manifest previous evidence without previous_mode", doc: manifestWithPreviousEvidence(func(entry *ManifestEntry) {
+			entry.PreviousMode = 0
+			entry.previousModePresent = false
+		}), wantErr: "previous evidence must include previous_mode"},
+		{name: "invalid manifest previous evidence without modtime", doc: manifestWithPreviousEvidence(func(entry *ManifestEntry) { entry.PreviousModTime = "" }), wantErr: "previous evidence must include previous_mod_time"},
+		{name: "invalid manifest malformed previous modtime", doc: manifestWithPreviousEvidence(func(entry *ManifestEntry) { entry.PreviousModTime = "not-a-time" }), wantErr: "previous_mod_time must be RFC3339 timestamp"},
 		{name: "invalid manifest metadata without previous evidence", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "file", Kind: "file", PreviousMode: 0o644}}}, wantErr: "previous metadata requires previous evidence"},
 		{name: "invalid manifest previous evidence on directory", doc: Manifest{Version: CurrentVersion, ID: "m1", SessionID: "s1", CreatedAt: "2026-05-16T00:00:00Z", Entries: []ManifestEntry{{Path: "dir", Kind: "dir", PreviousSessionID: "s0", PreviousManifestID: "m0", PreviousDigest: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}}, wantErr: "previous evidence is only valid for file entries"},
 		{name: "invalid warning missing session", doc: Warning{Version: CurrentVersion, ID: "w1", Severity: "warning", Code: "c", Message: "m", Paths: []string{"p"}, CreatedAt: "2026-05-16T00:00:00Z"}, wantErr: "session_id is required"},
@@ -128,6 +135,48 @@ func TestReadWriteRoundTrip(t *testing.T) {
 	}
 	if len(got.Entries) != 1 || got.Entries[0].Path != "notes/a.md" {
 		t.Fatalf("Read() entries = %#v, want notes/a.md entry", got.Entries)
+	}
+}
+
+func TestManifestEntryRoundTripPreservesZeroEvidenceFields(t *testing.T) {
+	want := validManifest()
+	want.Entries = []ManifestEntry{{Path: "secret.txt", Kind: "file", ModTime: "2026-05-16T00:00:00Z", Digest: "sha256:abc"}}
+	want.Entries[0].SetModeEvidence(0)
+	want.Entries[0].SetSizeEvidence(0)
+	want.Entries[0].PreviousSessionID = "previous"
+	want.Entries[0].PreviousManifestID = "previous-manifest"
+	want.Entries[0].PreviousDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	want.Entries[0].PreviousModTime = "2026-05-15T00:00:00Z"
+	want.Entries[0].SetPreviousSizeEvidence(0)
+	want.Entries[0].SetPreviousModeEvidence(0)
+
+	var buf bytes.Buffer
+	if err := Write(&buf, want); err != nil {
+		t.Fatalf("Write(zero evidence manifest) error = %v, want nil", err)
+	}
+	payload := buf.String()
+	for _, wantField := range []string{`"mode": 0`, `"size": 0`, `"previous_mode": 0`, `"previous_size": 0`} {
+		if !strings.Contains(payload, wantField) {
+			t.Fatalf("Write(zero evidence manifest) payload = %s, want field %s", payload, wantField)
+		}
+	}
+
+	got, err := Read[Manifest](strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("Read(zero evidence manifest) error = %v, want nil", err)
+	}
+	entry := got.Entries[0]
+	if !entry.HasModeEvidence() || entry.Mode != 0 {
+		t.Fatalf("Read(zero evidence).mode = (%v, %d), want present 0", entry.HasModeEvidence(), entry.Mode)
+	}
+	if !entry.HasSizeEvidence() || entry.Size != 0 {
+		t.Fatalf("Read(zero evidence).size = (%v, %d), want present 0", entry.HasSizeEvidence(), entry.Size)
+	}
+	if !entry.HasPreviousModeEvidence() || entry.PreviousMode != 0 {
+		t.Fatalf("Read(zero evidence).previous_mode = (%v, %d), want present 0", entry.HasPreviousModeEvidence(), entry.PreviousMode)
+	}
+	if !entry.HasPreviousSizeEvidence() || entry.PreviousSize != 0 {
+		t.Fatalf("Read(zero evidence).previous_size = (%v, %d), want present 0", entry.HasPreviousSizeEvidence(), entry.PreviousSize)
 	}
 }
 
@@ -257,6 +306,29 @@ func validManifest() Manifest {
 		Entries: []ManifestEntry{
 			{Path: "notes/a.md", Kind: "file", Size: 12, Digest: "sha256:abc"},
 		},
+	}
+}
+
+func manifestWithPreviousEvidence(edit func(*ManifestEntry)) Manifest {
+	entry := ManifestEntry{
+		Path:               "file",
+		Kind:               "file",
+		PreviousSessionID:  "s0",
+		PreviousManifestID: "m0",
+		PreviousDigest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		PreviousModTime:    "2026-05-15T00:00:00Z",
+	}
+	entry.SetPreviousSizeEvidence(0)
+	entry.SetPreviousModeEvidence(0o644)
+	if edit != nil {
+		edit(&entry)
+	}
+	return Manifest{
+		Version:   CurrentVersion,
+		ID:        "m1",
+		SessionID: "s1",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []ManifestEntry{entry},
 	}
 }
 

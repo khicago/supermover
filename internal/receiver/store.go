@@ -911,7 +911,7 @@ func ensureManifestMatchesMeta(manifest control.Manifest, meta sessionMeta) erro
 		return fmt.Errorf("%w: published session %q manifest created_at = %q, want %q", ErrConflict, meta.SessionID, manifest.CreatedAt, meta.CreatedAt.UTC().Format(time.RFC3339))
 	}
 	wantEntries := controlEntriesFromProtocol(meta.Manifest.Entries)
-	if !reflect.DeepEqual(manifest.Entries, wantEntries) {
+	if !control.EqualManifestEntries(manifest.Entries, wantEntries) {
 		return fmt.Errorf("%w: published session %q manifest entries do not match session metadata", ErrConflict, meta.SessionID)
 	}
 	return nil
@@ -920,16 +920,17 @@ func ensureManifestMatchesMeta(manifest control.Manifest, meta sessionMeta) erro
 func controlEntriesFromProtocol(entries []protocol.ManifestEntry) []control.ManifestEntry {
 	out := make([]control.ManifestEntry, 0, len(entries))
 	for _, entry := range entries {
-		out = append(out, control.ManifestEntry{
+		next := control.ManifestEntry{
 			Path:          entry.Path,
 			Kind:          string(entry.Kind),
-			Mode:          entry.Mode,
-			Size:          entry.Size,
 			ModTime:       formatOptionalTime(entry.ModTime),
 			Digest:        entry.Digest,
 			TargetPath:    entry.TargetPath,
 			SymlinkTarget: entry.SymlinkTarget,
-		})
+		}
+		next.SetModeEvidence(entry.Mode)
+		next.SetSizeEvidence(entry.Size)
+		out = append(out, next)
 	}
 	return out
 }

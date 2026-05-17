@@ -64,6 +64,22 @@ func PromoteFileNoReplace(tempPath string, finalPath string) error {
 	}
 }
 
+func MoveFileNoReplace(sourcePath string, finalPath string) error {
+	if sourcePath == "" || finalPath == "" {
+		return wrap("move without replace", finalPath, fmt.Errorf("%w: source and final paths are required", ErrValidationFailure))
+	}
+	if filepath.Clean(sourcePath) == filepath.Clean(finalPath) {
+		return wrap("move without replace", finalPath, fmt.Errorf("%w: source and final paths must differ", ErrValidationFailure))
+	}
+	if err := renameFileNoReplace(sourcePath, finalPath); err != nil {
+		return wrap("rename without replace", finalPath, err)
+	}
+	if err := SyncDirBestEffort(filepath.Dir(sourcePath)); err != nil {
+		return err
+	}
+	return SyncDirBestEffort(filepath.Dir(finalPath))
+}
+
 func canFallbackNoReplace(err error) bool {
 	return errors.Is(err, syscall.EXDEV)
 }
@@ -131,7 +147,42 @@ func copyFileNoReplace(tempPath, finalPath string) error {
 func SyncFile(path string) error {
 	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
+		if os.IsPermission(err) {
+			return syncFileWithTemporaryOwnerRead(path)
+		}
 		return wrap("open for sync", path, err)
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil {
+		return wrap("sync file", path, err)
+	}
+	return nil
+}
+
+func syncFileWithTemporaryOwnerRead(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return wrap("stat for sync", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return wrap("open for sync", path, os.ErrPermission)
+	}
+	originalMode := info.Mode().Perm()
+	if err := os.Chmod(path, originalMode|0o400); err != nil {
+		return wrap("chmod for sync", path, err)
+	}
+	f, openErr := os.OpenFile(path, os.O_RDONLY, 0)
+	if restoreErr := os.Chmod(path, originalMode); restoreErr != nil {
+		if openErr != nil {
+			return errors.Join(wrap("open for sync", path, openErr), wrap("restore mode after sync open", path, restoreErr))
+		}
+		if f != nil {
+			_ = f.Close()
+		}
+		return wrap("restore mode after sync open", path, restoreErr)
+	}
+	if openErr != nil {
+		return wrap("open for sync", path, openErr)
 	}
 	defer f.Close()
 	if err := f.Sync(); err != nil {

@@ -133,6 +133,77 @@ func TestPromoteFileNoReplaceCreatesFinal(t *testing.T) {
 	}
 }
 
+func TestSyncFileHandlesUnreadableFileMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	if err := os.WriteFile(path, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatalf("os.Chmod(%q, 0000) error = %v, want nil", path, err)
+	}
+
+	if err := SyncFile(path); err != nil {
+		t.Fatalf("SyncFile(%q) error = %v, want nil", path, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("os.Stat(%q) error = %v, want nil", path, err)
+	}
+	if info.Mode().Perm() != 0 {
+		t.Fatalf("SyncFile(%q) mode = %v, want 0000", path, info.Mode().Perm())
+	}
+}
+
+func TestMoveFileNoReplaceMovesSourceToMissingFinal(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.txt")
+	finalPath := filepath.Join(dir, "final.txt")
+	if err := os.WriteFile(sourcePath, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", sourcePath, err)
+	}
+
+	if err := MoveFileNoReplace(sourcePath, finalPath); err != nil {
+		t.Fatalf("MoveFileNoReplace(%q, %q) error = %v, want nil", sourcePath, finalPath, err)
+	}
+	if got, err := os.ReadFile(finalPath); err != nil || string(got) != "payload" {
+		t.Fatalf("os.ReadFile(%q) = (%q, %v), want payload", finalPath, string(got), err)
+	}
+	if _, err := os.Stat(sourcePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) error = %v, want os.ErrNotExist", sourcePath, err)
+	}
+}
+
+func TestMoveFileNoReplaceRefusesExistingFinal(t *testing.T) {
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "source.txt")
+	finalPath := filepath.Join(dir, "final.txt")
+	if err := os.WriteFile(sourcePath, []byte("source"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", sourcePath, err)
+	}
+	if err := os.WriteFile(finalPath, []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", finalPath, err)
+	}
+
+	err := MoveFileNoReplace(sourcePath, finalPath)
+	if err == nil {
+		t.Fatalf("MoveFileNoReplace(%q, %q) error = nil, want existing final error", sourcePath, finalPath)
+	}
+	var durableErr *Error
+	if !errors.As(err, &durableErr) {
+		t.Fatalf("MoveFileNoReplace(%q, %q) error = %T, want *Error", sourcePath, finalPath, err)
+	}
+	if durableErr.Op != "rename without replace" {
+		t.Fatalf("MoveFileNoReplace(%q, %q) op = %q, want rename without replace", sourcePath, finalPath, durableErr.Op)
+	}
+	if got, err := os.ReadFile(finalPath); err != nil || string(got) != "existing" {
+		t.Fatalf("os.ReadFile(%q) = (%q, %v), want existing", finalPath, string(got), err)
+	}
+	if got, err := os.ReadFile(sourcePath); err != nil || string(got) != "source" {
+		t.Fatalf("os.ReadFile(%q) = (%q, %v), want source", sourcePath, string(got), err)
+	}
+}
+
 func TestPromoteFileNoReplaceRefusesExistingFinal(t *testing.T) {
 	dir := t.TempDir()
 	tempPath := filepath.Join(dir, "file.tmp")

@@ -50,6 +50,8 @@ var errManagedReplaceTargetChanged = errors.New("managed replace target changed"
 var beforeReadStableSymlink func(sourcePath string, entry scan.Entry) error
 var beforePublishStaged func(entry control.ManifestEntry, targetPath string) error
 var beforeManagedReplacePromote func(entry control.ManifestEntry, targetPath string) error
+var beforeManagedReplaceCurrentHold func(entry control.ManifestEntry, targetPath string, holdPath string) error
+var afterManagedReplaceHold func(entry control.ManifestEntry, targetPath string, holdPath string) error
 
 type publishMode int
 
@@ -93,6 +95,13 @@ type previousFileEvidence struct {
 	Digest     string
 	Mode       uint32
 	ModTime    string
+	HasSize    bool
+	HasMode    bool
+}
+
+type replacementHolds struct {
+	previousPath string
+	currentPath  string
 }
 
 func Run(opts Options) (Result, error) {
@@ -665,7 +674,7 @@ func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID
 		}
 		switch entry.Kind {
 		case "file":
-			same, exists, err := targetFileState(finalPath, entry.Size, entry.Digest)
+			same, exists, err := targetFileContentState(finalPath, entry.Size, entry.Digest)
 			if err != nil {
 				return err
 			}
@@ -696,7 +705,13 @@ func preflightPublishPlan(layout transaction.Layout, targetDir string, sessionID
 				return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", finalPath)
 			}
 			if previousFileEvidenceComplete(previous) {
-				return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", finalPath)
+				holdSame, err := replacementHoldMatchesPrevious(targetDir, sessionID, entryTarget, previous)
+				if err != nil {
+					return err
+				}
+				if !holdSame {
+					return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", finalPath)
+				}
 			}
 			if err := validateStagedManifestFile(layout, sessionID, entry); err != nil {
 				return err
@@ -1026,13 +1041,18 @@ func previousManifestEntries(previous control.Manifest, ok bool) map[string]prev
 		if entry.Kind != "file" || !isSHA256Digest(entry.Digest) {
 			continue
 		}
-		out[cleanManifestTarget(targetPath(entry))] = previousFileEvidence{
+		evidence := previousFileEvidence{
 			SessionID:  previous.SessionID,
 			ManifestID: previous.ID,
 			Size:       entry.Size,
 			Digest:     entry.Digest,
 			Mode:       entry.Mode,
 			ModTime:    entry.ModTime,
+			HasSize:    entry.HasSizeEvidence(),
+			HasMode:    entry.HasModeEvidence(),
+		}
+		if previousFileEvidenceComplete(evidence) {
+			out[cleanManifestTarget(targetPath(entry))] = evidence
 		}
 	}
 	return out
@@ -1177,7 +1197,7 @@ func preflightRegularTarget(sourcePath, targetPath string, previous previousFile
 	if err != nil {
 		return err
 	}
-	same, exists, err := targetFileState(targetPath, sourceInfo.Size(), sourceDigest)
+	same, exists, err := targetFileContentState(targetPath, sourceInfo.Size(), sourceDigest)
 	if err != nil {
 		return err
 	}
@@ -1293,7 +1313,7 @@ func copyRegularWithPostCopy(sourcePath, targetPath string, mode os.FileMode, mo
 	if err != nil {
 		return "", fmt.Errorf("stat staged file before publish: %w", err)
 	}
-	same, exists, err := targetFileState(targetPath, info.Size(), digest)
+	same, exists, err := targetFileContentState(targetPath, info.Size(), digest)
 	if err != nil {
 		return "", err
 	}
@@ -1399,7 +1419,7 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 		switch entry.Kind {
 		case "dir":
 			mode := os.FileMode(entry.Mode)
-			if mode == 0 {
+			if !entry.HasModeEvidence() {
 				mode = 0o755
 			}
 			existed, err := directoryExists(targetPath)
@@ -1425,7 +1445,7 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 				}
 			}
 			previous := previousEvidenceFromManifestEntry(entry)
-			same, exists, err := targetFileState(targetPath, entry.Size, entry.Digest)
+			same, exists, err := targetFileContentState(targetPath, entry.Size, entry.Digest)
 			if err != nil {
 				return err
 			}
@@ -1436,8 +1456,43 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 						if err != nil {
 							return err
 						}
-						if !previousSame {
+						manifestSame, err := targetMatchesManifestFile(targetPath, entry)
+						if err != nil {
+							return err
+						}
+						if !previousSame && !manifestSame {
 							return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", targetPath)
+						}
+					}
+					if previousFileEvidenceComplete(previous) && mode == publishModeRecover {
+						manifestSame, err := targetMatchesManifestFile(targetPath, entry)
+						if err != nil {
+							return err
+						}
+						if !manifestSame {
+							return fmt.Errorf("target file %q already matches new content but not staged manifest metadata; refusing to complete managed replacement", targetPath)
+						}
+						if err := removeMatchingReplacementHoldsIfPresent(targetDir, sessionID, entry, previous); err != nil {
+							return err
+						}
+					}
+					if previousFileEvidenceComplete(previous) && mode != publishModeRecover {
+						manifestSame, err := targetMatchesManifestFile(targetPath, entry)
+						if err != nil {
+							return err
+						}
+						if !manifestSame {
+							previousSame, err := targetMatchesPreviousFile(targetPath, previous)
+							if err != nil {
+								return err
+							}
+							if !previousSame {
+								return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", targetPath)
+							}
+							if err := publishManagedReplacement(stagePath, targetPath, targetDir, sessionID, entry, previous); err != nil {
+								return err
+							}
+							continue
 						}
 					}
 					if err := removeStagedIfPresent(stagePath, entry.Path); err != nil {
@@ -1452,7 +1507,7 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 				if !previousSame {
 					return fmt.Errorf("target file %q already exists with different content; refusing to overwrite", targetPath)
 				}
-				if err := publishManagedReplacement(stagePath, targetPath, entry, previous); err != nil {
+				if err := publishManagedReplacement(stagePath, targetPath, targetDir, sessionID, entry, previous); err != nil {
 					return err
 				}
 				continue
@@ -1463,7 +1518,17 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 				}
 				continue
 			}
-			return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", targetPath)
+			holdSame, err := replacementHoldMatchesPrevious(targetDir, sessionID, entryTarget, previous)
+			if err != nil {
+				return err
+			}
+			if !holdSame {
+				return fmt.Errorf("target file %q is missing for managed replacement; refusing to publish without previous target evidence", targetPath)
+			}
+			if err := publishHeldManagedReplacement(stagePath, targetPath, targetDir, sessionID, entry); err != nil {
+				return err
+			}
+			continue
 		case "symlink":
 			if err := pathguard.ValidateRelativeSymlinkTarget(entry.SymlinkTarget); err != nil {
 				return fmt.Errorf("publish symlink %q: %w", entry.Path, err)
@@ -1507,7 +1572,7 @@ func publishNewStagedFile(stagePath, targetDir, targetPath string, entry control
 		return fmt.Errorf("publish file parent %q: %w", entry.Path, err)
 	}
 	mode := os.FileMode(entry.Mode)
-	if mode == 0 {
+	if !entry.HasModeEvidence() {
 		mode = 0o644
 	}
 	if err := applyFileMetadata(stagePath, mode, parseManifestModTime(entry.ModTime)); err != nil {
@@ -1627,7 +1692,7 @@ func applyFileMetadata(path string, mode os.FileMode, modTime time.Time) error {
 	return nil
 }
 
-func targetFileState(path string, size int64, digest string) (same bool, exists bool, err error) {
+func targetFileContentState(path string, size int64, digest string) (same bool, exists bool, err error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1652,40 +1717,56 @@ func targetMatchesPreviousFile(path string, previous previousFileEvidence) (bool
 	if !previousFileEvidenceComplete(previous) {
 		return false, nil
 	}
+	return targetMatchesFileEvidence(path, previous.Size, previous.Digest, previous.Mode, previous.ModTime, "previous target")
+}
+
+func targetMatchesManifestFile(path string, entry control.ManifestEntry) (bool, error) {
+	if entry.Kind != "file" || !isSHA256Digest(entry.Digest) || !entry.HasModeEvidence() || strings.TrimSpace(entry.ModTime) == "" {
+		return false, nil
+	}
+	if parseManifestModTime(entry.ModTime).IsZero() {
+		return false, nil
+	}
+	return targetMatchesFileEvidence(path, entry.Size, entry.Digest, entry.Mode, entry.ModTime, "manifest target")
+}
+
+func targetMatchesFileEvidence(path string, size int64, digest string, mode uint32, modTime string, description string) (bool, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("stat previous target file %q: %w", path, err)
+		return false, fmt.Errorf("stat %s file %q: %w", description, path, err)
 	}
 	if !info.Mode().IsRegular() {
 		return false, fmt.Errorf("target path %q already exists and is not a regular file; refusing to overwrite", path)
 	}
-	if info.Size() != previous.Size {
+	if info.Size() != size {
 		return false, nil
 	}
-	if previous.Mode != 0 && uint32(info.Mode().Perm()) != previous.Mode {
+	if uint32(info.Mode().Perm()) != mode {
 		return false, nil
 	}
-	if previous.ModTime != "" {
-		previousModTime := parseManifestModTime(previous.ModTime)
-		if previousModTime.IsZero() || !info.ModTime().Equal(previousModTime) {
-			return false, nil
-		}
+	wantModTime := parseManifestModTime(modTime)
+	if wantModTime.IsZero() || !info.ModTime().Equal(wantModTime) {
+		return false, nil
 	}
 	got, err := digestFile(path)
 	if err != nil {
 		return false, err
 	}
-	return got == previous.Digest, nil
+	return got == digest, nil
 }
 
 func previousFileEvidenceComplete(previous previousFileEvidence) bool {
 	return strings.TrimSpace(previous.SessionID) != "" &&
 		strings.TrimSpace(previous.ManifestID) != "" &&
 		isSHA256Digest(previous.Digest) &&
-		previous.Size >= 0
+		previous.HasSize &&
+		previous.HasMode &&
+		previous.Size >= 0 &&
+		strings.TrimSpace(previous.ModTime) != "" &&
+		!parseManifestModTime(previous.ModTime).IsZero()
 }
 
 func isSHA256Digest(value string) bool {
@@ -1714,10 +1795,12 @@ func previousEvidenceFromManifestEntry(entry control.ManifestEntry) previousFile
 		Digest:     entry.PreviousDigest,
 		Mode:       entry.PreviousMode,
 		ModTime:    entry.PreviousModTime,
+		HasSize:    entry.HasPreviousSizeEvidence(),
+		HasMode:    entry.HasPreviousModeEvidence(),
 	}
 }
 
-func publishManagedReplacement(stagePath, finalPath string, entry control.ManifestEntry, previous previousFileEvidence) error {
+func publishManagedReplacement(stagePath, finalPath, targetDir, sessionID string, entry control.ManifestEntry, previous previousFileEvidence) error {
 	previousSame, err := targetMatchesPreviousFile(finalPath, previous)
 	if err != nil {
 		return err
@@ -1726,7 +1809,7 @@ func publishManagedReplacement(stagePath, finalPath string, entry control.Manife
 		return fmt.Errorf("%w: target file %q no longer matches previous manifest evidence", errManagedReplaceTargetChanged, finalPath)
 	}
 	mode := os.FileMode(entry.Mode)
-	if mode == 0 {
+	if !entry.HasModeEvidence() {
 		mode = 0o644
 	}
 	if err := applyFileMetadata(stagePath, mode, parseManifestModTime(entry.ModTime)); err != nil {
@@ -1744,7 +1827,385 @@ func publishManagedReplacement(stagePath, finalPath string, entry control.Manife
 	if !previousSame {
 		return fmt.Errorf("%w: target file %q changed before managed replacement", errManagedReplaceTargetChanged, finalPath)
 	}
-	return durable.PromoteFile(stagePath, finalPath)
+	holds, err := holdTargetForManagedReplacement(targetDir, sessionID, entry, finalPath, previous)
+	if err != nil {
+		return err
+	}
+	if afterManagedReplaceHold != nil {
+		if err := afterManagedReplaceHold(entry, finalPath, holds.previousPath); err != nil {
+			return err
+		}
+	}
+	if err := durable.PromoteFileNoReplace(stagePath, finalPath); err != nil {
+		return errors.Join(err, restoreReplacementHolds(holds, finalPath, previous))
+	}
+	return removeReplacementHolds(holds, finalPath, previous)
+}
+
+func publishHeldManagedReplacement(stagePath, finalPath, targetDir, sessionID string, entry control.ManifestEntry) error {
+	previous := previousEvidenceFromManifestEntry(entry)
+	holdPath, err := replacementHoldPath(targetDir, sessionID, "previous", targetPath(entry))
+	if err != nil {
+		return err
+	}
+	currentHoldPath, err := replacementHoldPath(targetDir, sessionID, "current", targetPath(entry))
+	if err != nil {
+		return err
+	}
+	holdSame, err := targetMatchesPreviousFile(holdPath, previous)
+	if err != nil {
+		return err
+	}
+	if !holdSame {
+		return fmt.Errorf("replacement hold for %q no longer matches previous manifest evidence", finalPath)
+	}
+	currentSame, err := targetMatchesPreviousFile(currentHoldPath, previous)
+	if err != nil {
+		return err
+	}
+	if !currentSame {
+		return fmt.Errorf("current replacement hold for %q no longer matches previous manifest evidence", finalPath)
+	}
+	mode := os.FileMode(entry.Mode)
+	if !entry.HasModeEvidence() {
+		mode = 0o644
+	}
+	if err := applyFileMetadata(stagePath, mode, parseManifestModTime(entry.ModTime)); err != nil {
+		return err
+	}
+	if err := durable.PromoteFileNoReplace(stagePath, finalPath); err != nil {
+		return err
+	}
+	return removeMatchingReplacementHoldsIfPresent(targetDir, sessionID, entry, previous)
+}
+
+func holdTargetForManagedReplacement(targetDir, sessionID string, entry control.ManifestEntry, finalPath string, previous previousFileEvidence) (replacementHolds, error) {
+	entryTarget := targetPath(entry)
+	previousHoldPath, err := replacementHoldPath(targetDir, sessionID, "previous", entryTarget)
+	if err != nil {
+		return replacementHolds{}, err
+	}
+	currentHoldPath, err := replacementHoldPath(targetDir, sessionID, "current", entryTarget)
+	if err != nil {
+		return replacementHolds{}, err
+	}
+	holds := replacementHolds{previousPath: previousHoldPath, currentPath: currentHoldPath}
+	createdHold := false
+	if _, err := os.Lstat(previousHoldPath); err == nil {
+		holdSame, err := targetMatchesPreviousFile(previousHoldPath, previous)
+		if err != nil {
+			return replacementHolds{}, err
+		}
+		if !holdSame {
+			return replacementHolds{}, fmt.Errorf("replacement hold for %q no longer matches previous manifest evidence", finalPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return replacementHolds{}, fmt.Errorf("stat replacement hold %q: %w", previousHoldPath, err)
+	} else {
+		if err := pathguard.EnsurePlainDirectory(control.ControlDir(targetDir), filepath.Dir(previousHoldPath), 0o700); err != nil {
+			return replacementHolds{}, fmt.Errorf("create replacement hold parent %q: %w", filepath.Dir(previousHoldPath), err)
+		}
+		if err := createReplacementHold(finalPath, previousHoldPath); err != nil {
+			return replacementHolds{}, fmt.Errorf("create replacement hold %q for %q: %w", previousHoldPath, finalPath, err)
+		}
+		createdHold = true
+		if err := durable.SyncDirBestEffort(filepath.Dir(previousHoldPath)); err != nil {
+			return replacementHolds{}, err
+		}
+		holdSame, err := targetMatchesPreviousFile(previousHoldPath, previous)
+		if err != nil {
+			return replacementHolds{}, err
+		}
+		if !holdSame {
+			removeErr := removeReplacementHold(previousHoldPath)
+			return replacementHolds{}, errors.Join(fmt.Errorf("%w: held target %q does not match previous manifest evidence", errManagedReplaceTargetChanged, previousHoldPath), removeErr)
+		}
+	}
+
+	finalSame, err := targetMatchesPreviousFile(finalPath, previous)
+	if err != nil {
+		return replacementHolds{}, err
+	}
+	if !finalSame {
+		return replacementHolds{}, fmt.Errorf("%w: target file %q changed before managed replacement; replacement hold retained at %q", errManagedReplaceTargetChanged, finalPath, previousHoldPath)
+	}
+	if _, err := os.Lstat(currentHoldPath); err == nil {
+		return replacementHolds{}, fmt.Errorf("current replacement hold %q already exists; recovery is required before replacing %q", currentHoldPath, finalPath)
+	} else if !os.IsNotExist(err) {
+		return replacementHolds{}, fmt.Errorf("stat current replacement hold %q: %w", currentHoldPath, err)
+	}
+	if err := pathguard.EnsurePlainDirectory(control.ControlDir(targetDir), filepath.Dir(currentHoldPath), 0o700); err != nil {
+		return replacementHolds{}, fmt.Errorf("create current replacement hold parent %q: %w", filepath.Dir(currentHoldPath), err)
+	}
+	if beforeManagedReplaceCurrentHold != nil {
+		if err := beforeManagedReplaceCurrentHold(entry, finalPath, currentHoldPath); err != nil {
+			return replacementHolds{}, err
+		}
+	}
+	if err := durable.MoveFileNoReplace(finalPath, currentHoldPath); err != nil {
+		var cleanupErr error
+		if createdHold {
+			cleanupErr = removeReplacementHold(previousHoldPath)
+		}
+		return replacementHolds{}, errors.Join(fmt.Errorf("move current target %q to replacement hold: %w", finalPath, err), cleanupErr)
+	}
+	if err := durable.SyncDirBestEffort(filepath.Dir(finalPath)); err != nil {
+		return replacementHolds{}, err
+	}
+	if err := durable.SyncDirBestEffort(filepath.Dir(currentHoldPath)); err != nil {
+		return replacementHolds{}, err
+	}
+	holdSame, err := targetMatchesPreviousFile(previousHoldPath, previous)
+	if err != nil {
+		return replacementHolds{}, err
+	}
+	currentSame, currentErr := targetMatchesPreviousFile(currentHoldPath, previous)
+	if currentErr != nil {
+		return replacementHolds{}, currentErr
+	}
+	if holdSame && currentSame {
+		return holds, nil
+	}
+	restoreErr := restoreCurrentReplacementHold(holds, finalPath)
+	return replacementHolds{}, errors.Join(fmt.Errorf("%w: replacement hold for %q no longer matches previous manifest evidence", errManagedReplaceTargetChanged, finalPath), restoreErr)
+}
+
+func replacementHoldMatchesPrevious(targetDir, sessionID, entryTarget string, previous previousFileEvidence) (bool, error) {
+	holdPath, err := replacementHoldPath(targetDir, sessionID, "previous", entryTarget)
+	if err != nil {
+		return false, err
+	}
+	previousSame, err := targetMatchesPreviousFile(holdPath, previous)
+	if err != nil || !previousSame {
+		return previousSame, err
+	}
+	currentHoldPath, err := replacementHoldPath(targetDir, sessionID, "current", entryTarget)
+	if err != nil {
+		return false, err
+	}
+	return targetMatchesPreviousFile(currentHoldPath, previous)
+}
+
+func createReplacementHold(finalPath, holdPath string) error {
+	info, err := os.Lstat(finalPath)
+	if err != nil {
+		return fmt.Errorf("stat previous target %q: %w", finalPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("previous target %q is not a regular file", finalPath)
+	}
+	in, err := os.Open(finalPath)
+	if err != nil {
+		return fmt.Errorf("open previous target %q: %w", finalPath, err)
+	}
+	defer in.Close()
+	openedInfo, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("stat opened previous target %q: %w", finalPath, err)
+	}
+	if !sameSourceFile(info, openedInfo) {
+		return fmt.Errorf("previous target %q changed before replacement hold copy", finalPath)
+	}
+
+	temp, err := os.CreateTemp(filepath.Dir(holdPath), ".replacement-hold-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create replacement hold temp: %w", err)
+	}
+	tempName := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tempName)
+		}
+	}()
+
+	if _, err := io.Copy(temp, in); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("copy previous target %q to replacement hold temp: %w", finalPath, err)
+	}
+	if err := temp.Chmod(info.Mode().Perm()); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("chmod replacement hold temp: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close replacement hold temp: %w", err)
+	}
+	after, err := os.Lstat(finalPath)
+	if err != nil {
+		return fmt.Errorf("stat previous target %q after hold copy: %w", finalPath, err)
+	}
+	if !sameSourceFile(info, after) {
+		return fmt.Errorf("previous target %q changed during replacement hold copy", finalPath)
+	}
+	if err := os.Chtimes(tempName, info.ModTime(), info.ModTime()); err != nil {
+		return fmt.Errorf("preserve replacement hold temp modtime: %w", err)
+	}
+	if err := durable.PromoteFileNoReplace(tempName, holdPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
+func replacementHoldPath(targetDir, sessionID, holdKind, entryTarget string) (string, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return "", fmt.Errorf("replacement hold session id is required")
+	}
+	switch holdKind {
+	case "previous", "current":
+	default:
+		return "", fmt.Errorf("replacement hold kind %q is invalid", holdKind)
+	}
+	holdRoot := filepath.Join(control.ControlDir(targetDir), "replacement-holds", sessionID, holdKind)
+	holdPath, err := pathguard.SafeJoin(holdRoot, entryTarget)
+	if err != nil {
+		return "", err
+	}
+	if err := validateReplacementHoldParent(targetDir, filepath.Dir(holdPath)); err != nil {
+		return "", err
+	}
+	return holdPath, nil
+}
+
+func validateReplacementHoldParent(targetDir, dir string) error {
+	controlDir := control.ControlDir(targetDir)
+	if err := pathguard.EnsureDirectory(filepath.Dir(controlDir), controlDir); err != nil {
+		return fmt.Errorf("validate control directory %q: %w", controlDir, err)
+	}
+	if err := pathguard.EnsureDirectory(controlDir, dir); err != nil {
+		return fmt.Errorf("validate replacement hold parent %q: %w", dir, err)
+	}
+	return nil
+}
+
+func restoreReplacementHold(holdPath, finalPath string, previous previousFileEvidence) error {
+	if _, err := os.Lstat(holdPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat replacement hold %q: %w", holdPath, err)
+	}
+	holdSame, err := targetMatchesPreviousFile(holdPath, previous)
+	if err != nil {
+		return err
+	}
+	if !holdSame {
+		return fmt.Errorf("%w: replacement hold for %q changed before restore", errManagedReplaceTargetChanged, finalPath)
+	}
+	if _, err := os.Lstat(finalPath); err == nil {
+		return fmt.Errorf("target path %q exists while restoring replacement hold %q", finalPath, holdPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat target path %q before replacement hold restore: %w", finalPath, err)
+	}
+	if err := durable.PromoteFileNoReplace(holdPath, finalPath); err != nil {
+		return fmt.Errorf("restore replacement hold %q: %w", holdPath, err)
+	}
+	return nil
+}
+
+func restoreCurrentReplacementHold(holds replacementHolds, finalPath string) error {
+	if _, err := os.Lstat(holds.currentPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat current replacement hold %q: %w", holds.currentPath, err)
+	}
+	if _, err := os.Lstat(finalPath); err == nil {
+		return fmt.Errorf("target path %q exists while restoring current replacement hold %q", finalPath, holds.currentPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat target path %q before current hold restore: %w", finalPath, err)
+	}
+	if err := durable.PromoteFileNoReplace(holds.currentPath, finalPath); err != nil {
+		return fmt.Errorf("restore current replacement hold %q: %w", holds.currentPath, err)
+	}
+	return nil
+}
+
+func restoreReplacementHolds(holds replacementHolds, finalPath string, previous previousFileEvidence) error {
+	if err := restoreReplacementHold(holds.previousPath, finalPath, previous); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(holds.currentPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat current replacement hold %q: %w", holds.currentPath, err)
+	}
+	currentSame, err := targetMatchesPreviousFile(holds.currentPath, previous)
+	if err != nil {
+		return err
+	}
+	if !currentSame {
+		return fmt.Errorf("%w: current replacement hold for %q changed before cleanup", errManagedReplaceTargetChanged, finalPath)
+	}
+	return removeReplacementHold(holds.currentPath)
+}
+
+func removeReplacementHold(holdPath string) error {
+	if err := os.Remove(holdPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("remove replacement hold %q: %w", holdPath, err)
+	}
+	return durable.SyncDirBestEffort(filepath.Dir(holdPath))
+}
+
+func removeReplacementHolds(holds replacementHolds, finalPath string, previous previousFileEvidence) error {
+	if err := validateReplacementHoldMatches(holds.previousPath, finalPath, previous); err != nil {
+		return err
+	}
+	if err := validateReplacementHoldMatches(holds.currentPath, finalPath, previous); err != nil {
+		return err
+	}
+	if err := removeReplacementHold(holds.currentPath); err != nil {
+		return err
+	}
+	if err := removeReplacementHold(holds.previousPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func removeMatchingReplacementHoldsIfPresent(targetDir, sessionID string, entry control.ManifestEntry, previous previousFileEvidence) error {
+	type presentHold struct {
+		kind string
+		path string
+	}
+	holds := make([]presentHold, 0, 2)
+	for _, holdKind := range []string{"previous", "current"} {
+		holdPath, err := replacementHoldPath(targetDir, sessionID, holdKind, targetPath(entry))
+		if err != nil {
+			return err
+		}
+		if _, err := os.Lstat(holdPath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat replacement hold %q: %w", holdPath, err)
+		}
+		if err := validateReplacementHoldMatches(holdPath, entry.Path, previous); err != nil {
+			return err
+		}
+		holds = append(holds, presentHold{kind: holdKind, path: holdPath})
+	}
+	for _, hold := range holds {
+		if err := removeReplacementHold(hold.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateReplacementHoldMatches(holdPath, finalPath string, previous previousFileEvidence) error {
+	holdSame, err := targetMatchesPreviousFile(holdPath, previous)
+	if err != nil {
+		return err
+	}
+	if !holdSame {
+		return fmt.Errorf("%w: replacement hold for %q changed during managed replacement", errManagedReplaceTargetChanged, finalPath)
+	}
+	return nil
 }
 
 func digestFile(path string) (string, error) {
@@ -1791,16 +2252,17 @@ func readStableSymlink(sourcePath string, entry scan.Entry) (string, error) {
 }
 
 func manifestEntry(entry scan.Entry, kind string, digest string) control.ManifestEntry {
-	return control.ManifestEntry{
+	out := control.ManifestEntry{
 		Path:          entry.Path,
 		Kind:          kind,
-		Mode:          uint32(entry.Mode.Perm()),
-		Size:          entry.Size,
 		ModTime:       entry.ModTime.UTC().Format(time.RFC3339Nano),
 		Digest:        digest,
 		TargetPath:    entry.Path,
 		SymlinkTarget: entry.SymlinkTarget,
 	}
+	out.SetModeEvidence(uint32(entry.Mode.Perm()))
+	out.SetSizeEvidence(entry.Size)
+	return out
 }
 
 func manifestEntryWithPrevious(entry scan.Entry, kind string, digest string, previous previousFileEvidence) control.ManifestEntry {
@@ -1808,9 +2270,9 @@ func manifestEntryWithPrevious(entry scan.Entry, kind string, digest string, pre
 	if previousFileEvidenceComplete(previous) {
 		out.PreviousSessionID = previous.SessionID
 		out.PreviousManifestID = previous.ManifestID
-		out.PreviousSize = previous.Size
+		out.SetPreviousSizeEvidence(previous.Size)
 		out.PreviousDigest = previous.Digest
-		out.PreviousMode = previous.Mode
+		out.SetPreviousModeEvidence(previous.Mode)
 		out.PreviousModTime = previous.ModTime
 	}
 	return out

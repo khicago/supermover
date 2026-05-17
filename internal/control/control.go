@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,6 +87,174 @@ type ManifestEntry struct {
 	PreviousDigest     string `json:"previous_digest,omitempty"`
 	PreviousMode       uint32 `json:"previous_mode,omitempty"`
 	PreviousModTime    string `json:"previous_mod_time,omitempty"`
+
+	modePresent         bool
+	sizePresent         bool
+	previousModePresent bool
+	previousSizePresent bool
+}
+
+type manifestEntryJSON struct {
+	Path               string  `json:"path"`
+	Kind               string  `json:"kind"`
+	Mode               *uint32 `json:"mode,omitempty"`
+	Size               *int64  `json:"size,omitempty"`
+	ModTime            string  `json:"mod_time,omitempty"`
+	Digest             string  `json:"digest,omitempty"`
+	TargetPath         string  `json:"target_path,omitempty"`
+	SymlinkTarget      string  `json:"symlink_target,omitempty"`
+	PreviousSessionID  string  `json:"previous_session_id,omitempty"`
+	PreviousManifestID string  `json:"previous_manifest_id,omitempty"`
+	PreviousSize       *int64  `json:"previous_size,omitempty"`
+	PreviousDigest     string  `json:"previous_digest,omitempty"`
+	PreviousMode       *uint32 `json:"previous_mode,omitempty"`
+	PreviousModTime    string  `json:"previous_mod_time,omitempty"`
+}
+
+func (e ManifestEntry) MarshalJSON() ([]byte, error) {
+	wire := manifestEntryJSON{
+		Path:               e.Path,
+		Kind:               e.Kind,
+		ModTime:            e.ModTime,
+		Digest:             e.Digest,
+		TargetPath:         e.TargetPath,
+		SymlinkTarget:      e.SymlinkTarget,
+		PreviousSessionID:  e.PreviousSessionID,
+		PreviousManifestID: e.PreviousManifestID,
+		PreviousDigest:     e.PreviousDigest,
+		PreviousModTime:    e.PreviousModTime,
+	}
+	if e.modePresent || e.Mode != 0 {
+		mode := e.Mode
+		wire.Mode = &mode
+	}
+	if e.sizePresent || e.Size != 0 {
+		size := e.Size
+		wire.Size = &size
+	}
+	if e.previousSizePresent || e.PreviousSize != 0 {
+		size := e.PreviousSize
+		wire.PreviousSize = &size
+	}
+	if e.previousModePresent || e.PreviousMode != 0 {
+		mode := e.PreviousMode
+		wire.PreviousMode = &mode
+	}
+	return json.Marshal(wire)
+}
+
+func (e *ManifestEntry) UnmarshalJSON(data []byte) error {
+	var wire manifestEntryJSON
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return err
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return err
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*e = ManifestEntry{
+		Path:                wire.Path,
+		Kind:                wire.Kind,
+		ModTime:             wire.ModTime,
+		Digest:              wire.Digest,
+		TargetPath:          wire.TargetPath,
+		SymlinkTarget:       wire.SymlinkTarget,
+		PreviousSessionID:   wire.PreviousSessionID,
+		PreviousManifestID:  wire.PreviousManifestID,
+		PreviousDigest:      wire.PreviousDigest,
+		PreviousModTime:     wire.PreviousModTime,
+		modePresent:         raw["mode"] != nil,
+		sizePresent:         raw["size"] != nil,
+		previousModePresent: raw["previous_mode"] != nil,
+		previousSizePresent: raw["previous_size"] != nil,
+	}
+	if wire.Mode != nil {
+		e.Mode = *wire.Mode
+	}
+	if wire.Size != nil {
+		e.Size = *wire.Size
+	}
+	if wire.PreviousMode != nil {
+		e.PreviousMode = *wire.PreviousMode
+	}
+	if wire.PreviousSize != nil {
+		e.PreviousSize = *wire.PreviousSize
+	}
+	return nil
+}
+
+func (e *ManifestEntry) SetModeEvidence(mode uint32) {
+	e.Mode = mode
+	e.modePresent = true
+}
+
+func (e *ManifestEntry) SetSizeEvidence(size int64) {
+	e.Size = size
+	e.sizePresent = true
+}
+
+func (e *ManifestEntry) SetPreviousModeEvidence(mode uint32) {
+	e.PreviousMode = mode
+	e.previousModePresent = true
+}
+
+func (e *ManifestEntry) SetPreviousSizeEvidence(size int64) {
+	e.PreviousSize = size
+	e.previousSizePresent = true
+}
+
+func (e ManifestEntry) HasModeEvidence() bool {
+	return e.modePresent || e.Mode != 0
+}
+
+func (e ManifestEntry) HasSizeEvidence() bool {
+	return e.sizePresent || e.Size != 0
+}
+
+func (e ManifestEntry) HasPreviousModeEvidence() bool {
+	return e.previousModePresent || e.PreviousMode != 0
+}
+
+func (e ManifestEntry) HasPreviousSizeEvidence() bool {
+	return e.previousSizePresent || e.PreviousSize != 0
+}
+
+func (e ManifestEntry) EqualManifestEvidence(other ManifestEntry) bool {
+	return e.Path == other.Path &&
+		e.Kind == other.Kind &&
+		e.Mode == other.Mode &&
+		e.Size == other.Size &&
+		e.ModTime == other.ModTime &&
+		e.Digest == other.Digest &&
+		e.TargetPath == other.TargetPath &&
+		e.SymlinkTarget == other.SymlinkTarget &&
+		e.PreviousSessionID == other.PreviousSessionID &&
+		e.PreviousManifestID == other.PreviousManifestID &&
+		e.PreviousSize == other.PreviousSize &&
+		e.PreviousDigest == other.PreviousDigest &&
+		e.PreviousMode == other.PreviousMode &&
+		e.PreviousModTime == other.PreviousModTime &&
+		e.HasModeEvidence() == other.HasModeEvidence() &&
+		e.HasSizeEvidence() == other.HasSizeEvidence() &&
+		e.HasPreviousModeEvidence() == other.HasPreviousModeEvidence() &&
+		e.HasPreviousSizeEvidence() == other.HasPreviousSizeEvidence()
+}
+
+func EqualManifestEntries(a, b []ManifestEntry) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !a[i].EqualManifestEvidence(b[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 type Warning struct {
@@ -432,7 +601,21 @@ func (d Manifest) validateWithOptions(opts manifestValidationOptions) error {
 		if previousPresent > 0 && entry.Kind != "file" {
 			errs = append(errs, fmt.Errorf("entries[%d].previous evidence is only valid for file entries", i))
 		}
-		if previousPresent == 0 && (entry.PreviousSize > 0 || entry.PreviousMode > 0 || strings.TrimSpace(entry.PreviousModTime) != "") {
+		if previousPresent > 0 && !entry.HasPreviousSizeEvidence() {
+			errs = append(errs, fmt.Errorf("entries[%d].previous evidence must include previous_size", i))
+		}
+		if previousPresent > 0 && !entry.HasPreviousModeEvidence() {
+			errs = append(errs, fmt.Errorf("entries[%d].previous evidence must include previous_mode", i))
+		}
+		if previousPresent > 0 && strings.TrimSpace(entry.PreviousModTime) == "" {
+			errs = append(errs, fmt.Errorf("entries[%d].previous evidence must include previous_mod_time", i))
+		}
+		if strings.TrimSpace(entry.PreviousModTime) != "" {
+			if _, err := time.Parse(time.RFC3339Nano, entry.PreviousModTime); err != nil {
+				errs = append(errs, fmt.Errorf("entries[%d].previous_mod_time must be RFC3339 timestamp: %w", i, err))
+			}
+		}
+		if previousPresent == 0 && (entry.HasPreviousSizeEvidence() || entry.HasPreviousModeEvidence() || strings.TrimSpace(entry.PreviousModTime) != "") {
 			errs = append(errs, fmt.Errorf("entries[%d].previous metadata requires previous evidence", i))
 		}
 		if strings.TrimSpace(entry.PreviousDigest) != "" && !isSHA256Digest(entry.PreviousDigest) {
