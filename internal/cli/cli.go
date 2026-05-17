@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/khicago/supermover/internal/health"
 	"github.com/khicago/supermover/internal/localpush"
 	"github.com/khicago/supermover/internal/profile"
+	"github.com/khicago/supermover/internal/report"
 	"github.com/khicago/supermover/internal/scan"
 	"github.com/khicago/supermover/internal/verify"
 )
@@ -55,6 +57,8 @@ func (r Runner) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return r.runDeleted(args[1:], stdout, stderr)
 	case "health":
 		return r.runHealth(args[1:], stdout, stderr)
+	case "report":
+		return r.runReport(args[1:], stdout, stderr)
 	case "recover":
 		return r.runRecover(args[1:], stdout, stderr)
 	default:
@@ -492,6 +496,80 @@ func (r Runner) runHealth(args []string, stdout io.Writer, stderr io.Writer) int
 	return 0
 }
 
+func (r Runner) runReport(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("report", stderr)
+	profilePath := fs.String("profile", "", "profile path")
+	sessionID := fs.String("session", "", "optional session id to report")
+	format := fs.String("format", "text", "output format: text or json")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			fs.SetOutput(stdout)
+			fs.Usage()
+			return 0
+		}
+		return 2
+	}
+	if *profilePath == "" {
+		fmt.Fprintln(stderr, "report: --profile is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "report: unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
+		return 2
+	}
+	if *format != "text" && *format != "json" {
+		fmt.Fprintf(stderr, "report: unsupported format %q\n", *format)
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "report: %v\n", err)
+		return 2
+	}
+	targetDir, err := targetDirFromProfile(p)
+	if err != nil {
+		fmt.Fprintf(stderr, "report: %v\n", err)
+		return 2
+	}
+	auditReport, err := report.BuildReport(report.Options{
+		TargetRoot: targetDir,
+		SessionID:  *sessionID,
+		ProfileID:  p.ProfileID,
+		TargetID:   p.Target.TargetID,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "report: %v\n", err)
+		return 1
+	}
+	switch *format {
+	case "text":
+		printReportText(stdout, auditReport)
+	case "json":
+		if err := json.NewEncoder(stdout).Encode(auditReport); err != nil {
+			fmt.Fprintf(stderr, "report: encode report: %v\n", err)
+			return 1
+		}
+	}
+	if auditReport.NeedsReview() {
+		return 1
+	}
+	return 0
+}
+
+func hasHelpFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
 func (r Runner) runRecover(args []string, stdout io.Writer, stderr io.Writer) int {
 	fs := newFlagSet("recover", stderr)
 	profilePath := fs.String("profile", "", "profile path")
@@ -658,11 +736,102 @@ func printHealthText(w io.Writer, report health.Report) {
 		fmt.Fprintf(w, "%s state=%s action=%s reason=%s path=%s\n", item.SessionID, item.State, item.Action, item.Reason, item.Path)
 	}
 	for _, invalid := range report.Invalid {
-		fmt.Fprintf(w, "invalid path=%s error=%s\n", invalid.Path, invalid.Error)
+		fmt.Fprintf(w, "invalid session=%s path=%s error=%s\n", invalid.SessionID, invalid.Path, invalid.Error)
 	}
 	for _, artifact := range report.Artifacts {
 		fmt.Fprintf(w, "artifact session=%s path=%s error=%s\n", artifact.SessionID, artifact.Path, artifact.Error)
 	}
+}
+
+func printReportText(w io.Writer, report report.Report) {
+	fmt.Fprintf(w, "report: target=%s status=%s session=%s manifests=%d files=%d/%d verification_errors=%d verification_warnings=%d warnings=%d profile_suggestions=%d soft_deletes=%d recovery_issues=%d invalid_records=%d artifact_problems=%d scope=%s\n",
+		report.TargetRoot,
+		report.Overall.Status,
+		report.LatestSession.ID,
+		report.Summary.ManifestCount,
+		report.Summary.FilesVerified,
+		report.Summary.FilesExpected,
+		report.Summary.VerificationErrors,
+		report.Summary.VerificationWarnings,
+		report.Summary.Warnings,
+		report.Summary.ProfileSuggestions,
+		report.Summary.SoftDeletes,
+		report.Summary.RecoveryIssues,
+		report.Summary.InvalidHealthRecords,
+		report.Summary.ArtifactProblems,
+		report.Scope,
+	)
+	if len(report.Overall.Issues) > 0 {
+		fmt.Fprintf(w, "issues=%s\n", strings.Join(report.Overall.Issues, ","))
+	}
+	for _, warning := range report.Warnings {
+		fmt.Fprintf(w, "warning id=%s session=%s severity=%s code=%s paths=%s target=%s message=%s\n",
+			warning.ID,
+			warning.SessionID,
+			warning.Severity,
+			warning.Code,
+			strings.Join(warning.Paths, ","),
+			warning.TargetPath,
+			warning.Message,
+		)
+	}
+	for _, suggestion := range report.ProfileSuggestions {
+		fmt.Fprintf(w, "profile_suggestion warning=%s code=%s paths=%s target=%s patch=%s config=%s message=%s\n",
+			suggestion.WarningID,
+			suggestion.Code,
+			strings.Join(suggestion.Paths, ","),
+			suggestion.TargetPath,
+			formatStringMap(suggestion.SuggestedProfilePatch),
+			formatStringMap(suggestion.SuggestedConfig),
+			suggestion.Message,
+		)
+	}
+	for _, record := range report.SoftDeletes {
+		fmt.Fprintf(w, "soft_delete id=%s session=%s profile=%s target_id=%s root=%s previous_session=%s previous_manifest=%s source=%s target=%s kind=%s size=%d digest=%s detected_at=%s reason=%s\n",
+			record.ID,
+			record.SessionID,
+			record.ProfileID,
+			record.TargetID,
+			record.RootID,
+			record.PreviousSessionID,
+			record.PreviousManifestID,
+			record.SourcePath,
+			record.TargetPath,
+			record.Kind,
+			record.Size,
+			record.Digest,
+			record.DetectedAt,
+			record.Reason,
+		)
+	}
+	for _, item := range report.Health.RecoveryIssues {
+		fmt.Fprintf(w, "recovery session=%s state=%s action=%s reason=%s path=%s\n", item.SessionID, item.State, item.Action, item.Reason, item.Path)
+	}
+	for _, invalid := range report.Health.InvalidRecords {
+		fmt.Fprintf(w, "invalid_record session=%s path=%s error=%s\n", invalid.SessionID, invalid.Path, invalid.Error)
+	}
+	for _, problem := range report.ArtifactProblems {
+		fmt.Fprintf(w, "artifact_problem source=%s session=%s path=%s error=%s\n", problem.Source, problem.SessionID, problem.Path, problem.Error)
+	}
+	for _, finding := range report.VerificationFindings {
+		fmt.Fprintf(w, "verification %s %s path=%s target=%s message=%s\n", finding.Severity, finding.Kind, finding.Path, finding.TargetPath, finding.Message)
+	}
+}
+
+func formatStringMap(values map[string]string) string {
+	if len(values) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+"="+values[key])
+	}
+	return strings.Join(parts, ",")
 }
 
 func printRecoverText(w io.Writer, result localpush.RecoverResult) {
@@ -710,13 +879,14 @@ Available commands:
   verify      Verify manifests and restored files
   deleted     Review source-side soft-delete records
   health      Inspect target control-plane health
+  report      Summarize local migration evidence for operator review
   recover     Resume safe local sessions or mark incomplete sessions
 
 Planned commands:
   serve       Run a trusted network target receiver
   pair        Pair with a target by explicit verification
   prune       Apply reviewed physical pruning after policy checks
-  status      Show local profile/session status
+  status      Show compact local profile/session status
   discover    Find local targets without trusting them
   drift       Review target-local drift
 

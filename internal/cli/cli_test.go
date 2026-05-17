@@ -11,6 +11,7 @@ import (
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/profile"
+	"github.com/khicago/supermover/internal/report"
 	"github.com/khicago/supermover/internal/transaction"
 	"github.com/khicago/supermover/internal/verify"
 )
@@ -38,7 +39,7 @@ func TestRunHelp(t *testing.T) {
 	}
 	availableIndex := strings.Index(stdout.String(), "Available commands:")
 	plannedIndex := strings.Index(stdout.String(), "Planned commands:")
-	for _, command := range []string{"profile", "scan", "push", "verify", "deleted", "health", "recover"} {
+	for _, command := range []string{"profile", "scan", "push", "verify", "deleted", "health", "report", "recover"} {
 		commandIndex := strings.Index(stdout.String(), "\n  "+command+" ")
 		if commandIndex == -1 {
 			t.Errorf("Run(%v) stdout = %q, want available command %q", []string{"help"}, stdout.String(), command)
@@ -74,6 +75,7 @@ func TestLeafHelpReturnsSuccess(t *testing.T) {
 		{"deleted", "--help"},
 		{"deleted", "list", "--help"},
 		{"health", "--help"},
+		{"report", "--help"},
 		{"recover", "--help"},
 	}
 	for _, args := range tests {
@@ -90,6 +92,46 @@ func TestLeafHelpReturnsSuccess(t *testing.T) {
 				t.Fatalf("Run(%v) produced no help output, want usage text", args)
 			}
 		})
+	}
+}
+
+func TestReportHelpWritesStdout(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"report", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("report --help exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Usage of report") {
+		t.Fatalf("report --help stdout = %q, want flag usage", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("report --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReportUnsupportedFormatReturnsUsageBeforeTargetRead(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "missing-target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	writeDefaultProfile(t, profilePath, source, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"report", "--profile", profilePath, "--format", "yaml"}, &stdout, &stderr)
+
+	if got != 2 {
+		t.Fatalf("report unsupported format exit = %d, stderr = %q, want 2", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), `unsupported format "yaml"`) {
+		t.Fatalf("report unsupported format stderr = %q, want unsupported format", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("report unsupported format stdout = %q, want empty", stdout.String())
 	}
 }
 
@@ -784,6 +826,215 @@ func TestHealthReturnsFailureForIncompleteSessions(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "session-recover") || !strings.Contains(stdout.String(), "action=recover") {
 		t.Fatalf("health stdout = %q, want recovery item", stdout.String())
+	}
+}
+
+func TestReportJSONShowsEmptyTargetAsReviewState(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"report", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("report empty target exit = %d, stderr = %q, stdout = %q, want 1 with JSON report", got, stderr.String(), stdout.String())
+	}
+	var gotReport report.Report
+	if err := json.Unmarshal(stdout.Bytes(), &gotReport); err != nil {
+		t.Fatalf("json.Unmarshal(report stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if gotReport.Scope != report.ScopeLocalMigrationTarget || gotReport.Overall.Status != report.StatusEmpty {
+		t.Fatalf("report empty target = %+v, want local empty report", gotReport.Overall)
+	}
+	if gotReport.Summary.ManifestCount != 0 || gotReport.LatestSession.Completeness.Status != report.CompletenessNoPublishedSession {
+		t.Fatalf("report empty target summary=%+v latest=%+v, want no published session", gotReport.Summary, gotReport.LatestSession)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("report empty target stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReportTextShowsWarningsSuggestionsAndSoftDeletes(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	warning := control.Warning{
+		Version:   control.CurrentVersion,
+		ID:        "session-two-001-extra-config",
+		SessionID: "session-two",
+		Code:      "needs_profile_config",
+		Message:   "path needs additional migration config",
+		Severity:  "warning",
+		Paths:     []string{"needs-extra"},
+		SuggestedProfilePatch: map[string]string{
+			"include.needs_extra": "true",
+		},
+		CreatedAt: "2026-05-16T00:00:00Z",
+	}
+	warningPath, err := control.Path(target, control.ArtifactWarning, warning.ID)
+	if err != nil {
+		t.Fatalf("control.Path(warning) error = %v, want nil", err)
+	}
+	if err := control.WriteFile(warningPath, warning); err != nil {
+		t.Fatalf("control.WriteFile(warning) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"report", "--profile", profilePath}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("report warnings/deletes exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"status=local_target_attention",
+		"warnings=1",
+		"profile_suggestions=1",
+		"soft_deletes=1",
+		"warning id=session-two-001-extra-config",
+		"code=needs_profile_config",
+		"profile_suggestion warning=session-two-001-extra-config",
+		"patch=include.needs_extra=true",
+		"soft_delete id=session-two-del_",
+		"profile=profile-local",
+		"target_id=local:profile-local",
+		"root=root",
+		"previous_session=session-one",
+		"previous_manifest=manifest-session-one",
+		"detected_at=",
+		"source=gone.txt",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("report stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("report stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReportShowsRecoveryIssuesWithoutMutatingState(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	writeSessionRecord(t, layout, "session-recover", transaction.StateStaged)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"report", "--profile", profilePath}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("report recovery issue exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "status=local_target_unhealthy") || !strings.Contains(stdout.String(), "recovery session=session-recover") {
+		t.Fatalf("report recovery issue stdout = %q, want unhealthy recovery issue", stdout.String())
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-recover"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(session-recover) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateStaged {
+		t.Fatalf("report mutated session state to %q, want %q", record.State, transaction.StateStaged)
+	}
+}
+
+func TestReportSessionCorruptManifestEmitsStructuredReport(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	receiptPath, err := control.Path(target, control.ArtifactSessionReceipt, "bad")
+	if err != nil {
+		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
+	}
+	if err := control.WriteFile(receiptPath, control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        "bad",
+		ProfileID: "profile-local",
+		TargetID:  "local:profile-local",
+		StartedAt: "2026-05-16T00:00:00Z",
+		Status:    "published",
+	}); err != nil {
+		t.Fatalf("control.WriteFile(%q, receipt) error = %v, want nil", receiptPath, err)
+	}
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "bad")
+	if err != nil {
+		t.Fatalf("control.Path(manifest) error = %v, want nil", err)
+	}
+	mustWrite(t, manifestPath, "{")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"report", "--profile", profilePath, "--session", "bad", "--format", "json"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("report corrupt manifest exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	var gotReport report.Report
+	if err := json.Unmarshal(stdout.Bytes(), &gotReport); err != nil {
+		t.Fatalf("json.Unmarshal(report stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if gotReport.Summary.ArtifactProblems != 1 || len(gotReport.ArtifactProblems) != 1 || gotReport.ArtifactProblems[0].SessionID != "bad" {
+		t.Fatalf("report corrupt manifest = %+v artifact_problems=%#v, want structured artifact problem", gotReport.Summary, gotReport.ArtifactProblems)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("report corrupt manifest stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReportTextShowsInvalidHealthRecordDetails(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	badPath := filepath.Join(control.ControlDir(target), "sessions", "bad", "session.json")
+	mustWrite(t, badPath, "{")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"report", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("report invalid record exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "invalid_records=1") || !strings.Contains(stdout.String(), "invalid_record session=bad") || !strings.Contains(stdout.String(), "path="+badPath) {
+		t.Fatalf("report invalid record stdout = %q, want itemized invalid record", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("report invalid record stderr = %q, want empty", stderr.String())
 	}
 }
 
