@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/khicago/supermover/internal/protocol"
+	"github.com/khicago/supermover/internal/transaction"
 )
 
 func TestHandlerBeginChunkStatusCommit(t *testing.T) {
@@ -63,6 +64,78 @@ func TestHandlerMapsValidationAndConflictErrors(t *testing.T) {
 	}
 }
 
+func TestHandlerMapsStoreErrors(t *testing.T) {
+	tests := []struct {
+		name   string
+		store  Store
+		method string
+		path   string
+		body   any
+		want   int
+		code   protocol.ErrorCode
+	}{
+		{
+			name:   "begin validation",
+			store:  routeErrorStore{beginErr: transaction.ErrValidation},
+			method: http.MethodPost,
+			path:   "/v1/sessions",
+			body:   validBeginRequest([]byte("abc")),
+			want:   http.StatusBadRequest,
+			code:   protocol.ErrorCodeBadRequest,
+		},
+		{
+			name:   "status not found",
+			store:  routeErrorStore{statusErr: ErrSessionNotFound},
+			method: http.MethodGet,
+			path:   "/v1/sessions/session-1/status",
+			want:   http.StatusNotFound,
+			code:   protocol.ErrorCodeNotFound,
+		},
+		{
+			name:   "chunk conflict",
+			store:  routeErrorStore{chunkErr: ErrConflict},
+			method: http.MethodPost,
+			path:   "/v1/chunks",
+			body:   protocol.ChunkUploadRequest{SessionID: "session-1", Path: "docs/a.txt", Offset: 0, Data: []byte("abc")},
+			want:   http.StatusConflict,
+			code:   protocol.ErrorCodeConflict,
+		},
+		{
+			name:   "commit integrity",
+			store:  routeErrorStore{commitErr: ErrIntegrity},
+			method: http.MethodPost,
+			path:   "/v1/commit",
+			body:   protocol.CommitSessionRequest{SessionID: "session-1", EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)},
+			want:   http.StatusUnprocessableEntity,
+			code:   protocol.ErrorCodeIntegrity,
+		},
+		{
+			name:   "commit io",
+			store:  routeErrorStore{commitErr: errors.New("disk refused write")},
+			method: http.MethodPost,
+			path:   "/v1/commit",
+			body:   protocol.CommitSessionRequest{SessionID: "session-1", EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)},
+			want:   http.StatusInternalServerError,
+			code:   protocol.ErrorCodeIO,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := NewHandler(tt.store)
+			var rec *httptest.ResponseRecorder
+			if tt.body == nil {
+				req := httptest.NewRequest(tt.method, tt.path, nil)
+				rec = httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+			} else {
+				rec = doJSON(t, handler, tt.method, tt.path, tt.body)
+			}
+			assertErrorResponse(t, rec, tt.want, tt.code)
+		})
+	}
+}
+
 func TestHandlerRejectsTrailingJSON(t *testing.T) {
 	handler := NewHandler(FileStore{TargetRoot: t.TempDir()})
 	body := strings.NewReader(`{}` + "\n" + `{}`)
@@ -73,6 +146,62 @@ func TestHandlerRejectsTrailingJSON(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("POST /v1/sessions trailing JSON status = %d, want %d body %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func TestHandlerRejectsMissingStoreAndUnknownRoute(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.Handler
+		method  string
+		path    string
+		want    int
+		code    protocol.ErrorCode
+	}{
+		{
+			name:    "missing store",
+			handler: NewHandler(nil),
+			method:  http.MethodGet,
+			path:    "/v1/sessions/session-1/status",
+			want:    http.StatusInternalServerError,
+			code:    protocol.ErrorCodeIO,
+		},
+		{
+			name:    "unknown route",
+			handler: NewHandler(FileStore{TargetRoot: t.TempDir()}),
+			method:  http.MethodGet,
+			path:    "/v1/unknown",
+			want:    http.StatusNotFound,
+			code:    protocol.ErrorCodeNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, nil)
+			rec := httptest.NewRecorder()
+			tt.handler.ServeHTTP(rec, req)
+			assertErrorResponse(t, rec, tt.want, tt.code)
+		})
+	}
+}
+
+func TestHandlerRejectsMalformedJSON(t *testing.T) {
+	handler := NewHandler(FileStore{TargetRoot: t.TempDir()})
+	req := httptest.NewRequest(http.MethodPost, "/v1/sessions", strings.NewReader(`{"session_id":`))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/sessions malformed JSON status = %d, want %d body %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	var errResp protocol.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("json.Unmarshal(error response) error = %v, want nil body %s", err, rec.Body.String())
+	}
+	if errResp.Code != protocol.ErrorCodeBadRequest {
+		t.Fatalf("POST /v1/sessions malformed JSON error code = %q, want %q", errResp.Code, protocol.ErrorCodeBadRequest)
 	}
 }
 
@@ -124,6 +253,55 @@ func doJSON(t *testing.T, handler http.Handler, method, path string, value any) 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func assertErrorResponse(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantCode protocol.ErrorCode) {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Fatalf("response status = %d, want %d body %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var got protocol.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal(error response) error = %v, want nil body %s", err, rec.Body.String())
+	}
+	if got.Code != wantCode {
+		t.Fatalf("error response code = %q, want %q body %s", got.Code, wantCode, rec.Body.String())
+	}
+}
+
+type routeErrorStore struct {
+	beginErr  error
+	statusErr error
+	chunkErr  error
+	commitErr error
+}
+
+func (s routeErrorStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessionResponse, error) {
+	if s.beginErr != nil {
+		return protocol.BeginSessionResponse{}, s.beginErr
+	}
+	return protocol.BeginSessionResponse{SessionID: req.SessionID, State: protocol.SessionStateValidated}, nil
+}
+
+func (s routeErrorStore) Status(sessionID string) (protocol.SessionStatusResponse, error) {
+	if s.statusErr != nil {
+		return protocol.SessionStatusResponse{}, s.statusErr
+	}
+	return protocol.SessionStatusResponse{SessionID: sessionID, State: protocol.SessionStateValidated}, nil
+}
+
+func (s routeErrorStore) AppendChunk(req protocol.ChunkUploadRequest) (protocol.ChunkUploadResponse, error) {
+	if s.chunkErr != nil {
+		return protocol.ChunkUploadResponse{}, s.chunkErr
+	}
+	return protocol.ChunkUploadResponse{SessionID: req.SessionID, Path: req.Path, CommittedSize: int64(len(req.Data)), ChunkState: protocol.ChunkStateAccepted}, nil
+}
+
+func (s routeErrorStore) Commit(req protocol.CommitSessionRequest) (protocol.CommitSessionResponse, error) {
+	if s.commitErr != nil {
+		return protocol.CommitSessionResponse{}, s.commitErr
+	}
+	return protocol.CommitSessionResponse{SessionID: req.SessionID, State: protocol.SessionStatePublished, ReceiptID: req.SessionID}, nil
 }
 
 type chunkCaptureStore struct {
