@@ -5,6 +5,26 @@ order follows the local Bagakit feature plan, but this tracked document keeps
 the public project direction visible without depending on ignored local
 planning files.
 
+## Current Execution Features
+
+The original broad tracker feature has been archived as historical planning
+evidence. Remaining work is split into narrower proposal-only features under
+`.bagakit/feature-tracker/features/`:
+
+| Feature | Purpose |
+| --- | --- |
+| `f-223nw49qj` | Migration audit report and status UX. |
+| `f-224nw98v7` | Reviewed physical prune flow. |
+| `f-225nwsa3h` | Changed-file incremental local sync. |
+| `f-226nwy2vy` | LAN agent discovery and pairing. |
+| `f-227nw2p2n` | Secure resumable transport integration. |
+| `f-228nws66k` | Traffic privacy level 2 implementation. |
+| `f-229nwwybc` | Failure injection and release hardening. |
+
+Recommended next implementation feature: `f-223nw49qj`, because it closes the
+operator visibility gap for warnings, soft deletes, recovery state, profile
+suggestions, and migration completeness.
+
 ## Phase 1: Project Skeleton
 
 - Go module and `cmd/supermover` entrypoint.
