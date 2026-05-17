@@ -3,23 +3,30 @@
 The target-side `.supermover` directory stores machine-readable artifacts for
 current `verify`, `deleted list`, `health`, `report`, and `recover` commands.
 The Go schema/path foundation in `internal/control` also includes planned
-history, recovery-state, pairing, drift, and agent-facing reporting surfaces.
+history, recovery-state, pairing, and drift artifacts.
 
-All control-plane documents use JSON with `version: 1`. Writers emit stable,
-indented JSON. Readers reject unknown fields and trailing JSON documents, so
-each artifact path contains exactly one schema-valid JSON document and schema
-drift is visible.
+Documents owned by `internal/control` use JSON with `version: 1`. Writers emit
+stable, indented JSON. Readers reject unknown fields and trailing JSON
+documents, so each `internal/control` artifact path contains exactly one
+schema-valid JSON document and schema drift is visible.
+
+Transaction session records are separate `internal/transaction` JSON records.
+They are not `version: 1` control documents; they are decoded and validated by
+the transaction package.
 
 ## Paths
 
-Current local writer paths under the target root:
+Current local `internal/control` writer paths under the target root:
 
 - profile snapshot: `.supermover/profiles/<id>.json`
 - session receipt: `.supermover/sessions/<session_id>/receipt.json`
 - manifest: `.supermover/sessions/<session_id>/manifest.json`
 - warning: `.supermover/warnings/<id>.json`
 - soft delete: `.supermover/deleted/<id>.json`
-- transaction recovery state: `.supermover/sessions/<session_id>/session.json`
+
+Current local `internal/transaction` writer path:
+
+- transaction session record: `.supermover/sessions/<session_id>/session.json`
 
 Schema/path foundation for planned artifact surfaces:
 
@@ -30,7 +37,7 @@ Schema/path foundation for planned artifact surfaces:
 
 ## Artifact Schemas
 
-Current local writer schemas:
+Current local `internal/control` writer schemas:
 
 `profile_snapshot` captures the profile SSOT used for a run:
 
@@ -100,9 +107,12 @@ entries.
 - `detected_at`
 - `reason`
 
-`transaction recovery state` records live transaction checkpoints under
-`.supermover/sessions/<session_id>/session.json`; see
-`docs/recovery.md` for the runtime state machine.
+Current local `internal/transaction` record:
+
+`session.json` records live transaction checkpoints under
+`.supermover/sessions/<session_id>/session.json`. It contains `id`, `state`,
+`created_at`, `updated_at`, and optional `note`; see `docs/recovery.md` for the
+runtime state machine.
 
 Schema foundation for planned artifact surfaces:
 
