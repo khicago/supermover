@@ -1797,6 +1797,55 @@ func TestRunMovesExternalReplacementToCurrentHoldWhenTargetChangesBeforeRename(t
 	}
 }
 
+func TestRunRefusesExternalTargetThatAlreadyMatchesNewManifest(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	oldTime := time.Date(2026, 5, 16, 1, 0, 0, 0, time.UTC)
+	newTime := time.Date(2026, 5, 16, 2, 0, 0, 0, time.UTC)
+	mustWriteFile(t, filepath.Join(source, "file.txt"), "old", 0o644)
+	if err := os.Chtimes(filepath.Join(source, "file.txt"), oldTime, oldTime); err != nil {
+		t.Fatalf("os.Chtimes(source old file) error = %v, want nil", err)
+	}
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	if _, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-one", Now: time.Date(2026, 5, 16, 1, 30, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("first Run() error = %v, want nil", err)
+	}
+	mustReplaceFile(t, filepath.Join(source, "file.txt"), "new source", 0o600)
+	if err := os.Chtimes(filepath.Join(source, "file.txt"), newTime, newTime); err != nil {
+		t.Fatalf("os.Chtimes(source new file) error = %v, want nil", err)
+	}
+
+	triggered := false
+	setBeforePublishStagedHook(func(entry control.ManifestEntry, targetPath string) error {
+		if entry.Path != "file.txt" || triggered {
+			return nil
+		}
+		triggered = true
+		mustReplaceFile(t, targetPath, "new source", 0o600)
+		if err := os.Chtimes(targetPath, newTime, newTime); err != nil {
+			t.Fatalf("os.Chtimes(external target) error = %v, want nil", err)
+		}
+		return nil
+	})
+	t.Cleanup(func() { setBeforePublishStagedHook(nil) })
+
+	_, err := Run(Options{Profile: p, TargetDir: target, SessionID: "session-two", Now: time.Date(2026, 5, 16, 2, 30, 0, 0, time.UTC)})
+	setBeforePublishStagedHook(nil)
+	if err == nil || !strings.Contains(err.Error(), "refusing to accept external replacement") {
+		t.Fatalf("Run(external target matches new manifest) error = %v, want external replacement refusal", err)
+	}
+	if !triggered {
+		t.Fatalf("beforePublishStaged was not triggered")
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "file.txt")); err != nil || string(got) != "new source" {
+		t.Fatalf("target after external replacement refusal = (%q, %v), want external new source left intact", string(got), err)
+	}
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "sessions", "session-two", "receipt.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(receipt after external replacement refusal) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRunRefusesToOverwriteConcurrentCurrentReplacementHold(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

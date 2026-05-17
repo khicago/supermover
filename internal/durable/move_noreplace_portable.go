@@ -3,18 +3,9 @@
 package durable
 
 import (
-	"errors"
-	"os"
+	"fmt"
 )
 
 func renameFileNoReplace(sourcePath, finalPath string) error {
-	if _, err := os.Lstat(finalPath); err == nil {
-		return os.ErrExist
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.Rename(sourcePath, finalPath); err != nil {
-		return err
-	}
-	return nil
+	return fmt.Errorf("%w: atomic no-replace move is not implemented for this platform", ErrValidationFailure)
 }

@@ -1460,8 +1460,14 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 						if err != nil {
 							return err
 						}
-						if !previousSame && !manifestSame {
+						if !previousSame {
 							return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", targetPath)
+						}
+						if !manifestSame {
+							if err := publishManagedReplacement(stagePath, targetPath, targetDir, sessionID, entry, previous); err != nil {
+								return err
+							}
+							continue
 						}
 					}
 					if previousFileEvidenceComplete(previous) && mode == publishModeRecover {
@@ -1474,25 +1480,6 @@ func publishStaged(layout transaction.Layout, targetDir string, sessionID string
 						}
 						if err := removeMatchingReplacementHoldsIfPresent(targetDir, sessionID, entry, previous); err != nil {
 							return err
-						}
-					}
-					if previousFileEvidenceComplete(previous) && mode != publishModeRecover {
-						manifestSame, err := targetMatchesManifestFile(targetPath, entry)
-						if err != nil {
-							return err
-						}
-						if !manifestSame {
-							previousSame, err := targetMatchesPreviousFile(targetPath, previous)
-							if err != nil {
-								return err
-							}
-							if !previousSame {
-								return fmt.Errorf("target file %q already matches new content but not previous manifest evidence; refusing to accept external replacement", targetPath)
-							}
-							if err := publishManagedReplacement(stagePath, targetPath, targetDir, sessionID, entry, previous); err != nil {
-								return err
-							}
-							continue
 						}
 					}
 					if err := removeStagedIfPresent(stagePath, entry.Path); err != nil {
