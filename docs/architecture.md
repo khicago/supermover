@@ -30,8 +30,8 @@ The target-side `.supermover` area is a first-class artifact surface:
 - recovery state
 
 The control plane must be machine-readable and stable enough for current
-`verify`, `deleted list`, `health`, and `recover` commands plus future prune,
-status, drift, and agent-facing report commands.
+`verify`, `deleted list`, `health`, `report`, and `recover` commands plus
+planned prune, status, drift, and agent-facing reporting commands.
 
 ## Implementation Boundary
 

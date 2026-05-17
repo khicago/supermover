@@ -96,19 +96,28 @@ func TestLeafHelpReturnsSuccess(t *testing.T) {
 }
 
 func TestReportHelpWritesStdout(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Run([]string{"report", "--help"}, &stdout, &stderr)
-
-	if got != 0 {
-		t.Fatalf("report --help exit = %d, stderr = %q, want 0", got, stderr.String())
+	tests := [][]string{
+		{"report", "--help"},
+		{"report", "-help"},
+		{"report", "-h"},
 	}
-	if !strings.Contains(stdout.String(), "Usage of report") {
-		t.Fatalf("report --help stdout = %q, want flag usage", stdout.String())
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("report --help stderr = %q, want empty", stderr.String())
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			got := Run(args, &stdout, &stderr)
+
+			if got != 0 {
+				t.Fatalf("Run(%v) exit = %d, stderr = %q, want 0", args, got, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "Usage of report") {
+				t.Fatalf("Run(%v) stdout = %q, want flag usage", args, stdout.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("Run(%v) stderr = %q, want empty", args, stderr.String())
+			}
+		})
 	}
 }
 
@@ -856,6 +865,45 @@ func TestReportJSONShowsEmptyTargetAsReviewState(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("report empty target stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReportCleanPublishedSessionReturnsSuccess(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-ok"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got := Run([]string{"report", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("report clean target exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"status=local_target_verified",
+		"session=session-ok",
+		"files=1/1",
+		"warnings=0",
+		"soft_deletes=0",
+		"artifact_problems=0",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("report clean target stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("report clean target stderr = %q, want empty", stderr.String())
 	}
 }
 

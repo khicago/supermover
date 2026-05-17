@@ -287,7 +287,7 @@ func summarizeHealth(report health.Report, sessionID string) Health {
 		})
 	}
 	for _, issue := range report.Artifacts {
-		if sessionID != "" && issue.SessionID != sessionID {
+		if sessionID != "" && issue.SessionID != "" && issue.SessionID != sessionID {
 			continue
 		}
 		out.ArtifactIssues = append(out.ArtifactIssues, ArtifactProblem{
@@ -465,7 +465,7 @@ func mergeArtifactProblems(sessionID string, healthIssues []ArtifactProblem, ver
 	var out []ArtifactProblem
 	seen := map[string]struct{}{}
 	add := func(problem ArtifactProblem) {
-		if sessionID != "" && problem.SessionID != sessionID {
+		if sessionID != "" && problem.SessionID != "" && problem.SessionID != sessionID {
 			return
 		}
 		problem.Path = filepath.ToSlash(problem.Path)

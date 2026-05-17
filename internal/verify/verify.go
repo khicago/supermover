@@ -121,6 +121,12 @@ type Artifacts struct {
 	PublishedReceipts map[string]control.SessionReceipt
 }
 
+type publishedDocument[T control.Document] struct {
+	Doc       T
+	Path      string
+	SessionID string
+}
+
 func BuildReport(opts Options) (Report, error) {
 	if strings.TrimSpace(opts.TargetRoot) == "" {
 		return Report{}, errors.New("target root is required")
@@ -363,6 +369,15 @@ func readManifests(controlDir string, published map[string]struct{}, problems []
 }
 
 func readPublishedDocuments[T control.Document](dir string, known map[string]struct{}, published map[string]struct{}, problems []ArtifactProblem) ([]T, []ArtifactProblem) {
+	documents, problems := readPublishedDocumentFiles[T](dir, known, published, problems)
+	docs := make([]T, 0, len(documents))
+	for _, document := range documents {
+		docs = append(docs, document.Doc)
+	}
+	return docs, problems
+}
+
+func readPublishedDocumentFiles[T control.Document](dir string, known map[string]struct{}, published map[string]struct{}, problems []ArtifactProblem) ([]publishedDocument[T], []ArtifactProblem) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -370,7 +385,7 @@ func readPublishedDocuments[T control.Document](dir string, known map[string]str
 		}
 		return nil, appendProblem(problems, "", dir, err)
 	}
-	var docs []T
+	var docs []publishedDocument[T]
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -389,36 +404,40 @@ func readPublishedDocuments[T control.Document](dir string, known map[string]str
 			continue
 		}
 		if _, ok := published[documentSessionID(doc)]; ok {
-			docs = append(docs, doc)
+			docs = append(docs, publishedDocument[T]{
+				Doc:       doc,
+				Path:      path,
+				SessionID: documentSessionID(doc),
+			})
 		}
 	}
 	return docs, problems
 }
 
 func readSoftDeletes(dir string, known map[string]struct{}, published map[string]struct{}, receipts map[string]control.SessionReceipt, manifestRoots map[string]string, problems []ArtifactProblem) ([]control.SoftDelete, []ArtifactProblem) {
-	records, problems := readPublishedDocuments[control.SoftDelete](dir, known, published, problems)
+	records, problems := readPublishedDocumentFiles[control.SoftDelete](dir, known, published, problems)
 	out := make([]control.SoftDelete, 0, len(records))
-	for _, record := range records {
-		path := filepath.Join(dir, record.ID+".json")
-		receipt, ok := receipts[record.SessionID]
+	for _, document := range records {
+		record := document.Doc
+		receipt, ok := receipts[document.SessionID]
 		if !ok {
 			out = append(out, record)
 			continue
 		}
 		if record.ProfileID != receipt.ProfileID {
-			problems = appendProblem(problems, record.SessionID, path, fmt.Errorf("soft delete profile_id %q does not match session receipt profile_id %q", record.ProfileID, receipt.ProfileID))
+			problems = appendProblem(problems, document.SessionID, document.Path, fmt.Errorf("soft delete profile_id %q does not match session receipt profile_id %q", record.ProfileID, receipt.ProfileID))
 			continue
 		}
 		if record.TargetID != receipt.TargetID {
-			problems = appendProblem(problems, record.SessionID, path, fmt.Errorf("soft delete target_id %q does not match session receipt target_id %q", record.TargetID, receipt.TargetID))
+			problems = appendProblem(problems, document.SessionID, document.Path, fmt.Errorf("soft delete target_id %q does not match session receipt target_id %q", record.TargetID, receipt.TargetID))
 			continue
 		}
 		if strings.TrimSpace(record.RootID) == "" {
-			problems = appendProblem(problems, record.SessionID, path, errors.New("soft delete root_id is required"))
+			problems = appendProblem(problems, document.SessionID, document.Path, errors.New("soft delete root_id is required"))
 			continue
 		}
-		if rootID := manifestRoots[record.SessionID]; rootID != "" && record.RootID != rootID {
-			problems = appendProblem(problems, record.SessionID, path, fmt.Errorf("soft delete root_id %q does not match session manifest root_id %q", record.RootID, rootID))
+		if rootID := manifestRoots[document.SessionID]; rootID != "" && record.RootID != rootID {
+			problems = appendProblem(problems, document.SessionID, document.Path, fmt.Errorf("soft delete root_id %q does not match session manifest root_id %q", record.RootID, rootID))
 			continue
 		}
 		out = append(out, record)
@@ -799,7 +818,7 @@ func filterArtifactProblems(problems []ArtifactProblem, sessionID string) []Arti
 	}
 	var out []ArtifactProblem
 	for _, problem := range problems {
-		if problem.SessionID == sessionID {
+		if problem.SessionID == "" || problem.SessionID == sessionID {
 			out = append(out, problem)
 		}
 	}

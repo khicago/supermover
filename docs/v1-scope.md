@@ -8,12 +8,13 @@ magic.
 
 - One-way migration from source to trusted target. Current local push supports
   first migration, idempotent reruns, additions, warning records, soft-delete
-  records, and conservative recovery; changed-file incremental update is
-  planned.
+  records, read-only local operator reports, and conservative recovery;
+  changed-file incremental update is planned.
 - Profile JSON as the configuration single source of truth.
-- Target-side `.supermover` control plane for profile snapshots, pairing
-  receipts, session receipts, manifests, warnings, history, target drift,
-  soft-delete records, and recovery state.
+- Target-side `.supermover` control plane. The current local slice stores
+  profile snapshots, session receipts, manifests, warnings, history,
+  soft-delete records, and recovery state; planned network and drift surfaces
+  add pairing receipts and target-drift records.
 - Local push vertical slice that copies supported regular files to a trusted
   local target and writes auditable control artifacts.
 - Explicit warning records for recoverable or reviewable gaps.
@@ -72,7 +73,7 @@ that run so target state can be audited later.
 
 `profile lint` is a schema/safety gate. Implementation readiness still requires
 the operational gates for the selected slice, such as `push --dry-run`, `verify`,
-and `health`.
+`health`, and `report`.
 
 ### Discovery Is Not Trust
 
@@ -98,6 +99,8 @@ go run ./cmd/supermover push --profile <path> --session <session-id>
 go run ./cmd/supermover verify --profile <path> --session <session-id>
 go run ./cmd/supermover deleted list --profile <path>
 go run ./cmd/supermover health --profile <path>
+go run ./cmd/supermover report --profile <path>
+go run ./cmd/supermover report --profile <path> --session <session-id>
 go run ./cmd/supermover recover --profile <path> --session <session-id>
 ```
 

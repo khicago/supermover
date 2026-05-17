@@ -563,7 +563,7 @@ func (r Runner) runReport(args []string, stdout io.Writer, stderr io.Writer) int
 
 func hasHelpFlag(args []string) bool {
 	for _, arg := range args {
-		if arg == "-h" || arg == "--help" {
+		if arg == "-h" || arg == "-help" || arg == "--help" {
 			return true
 		}
 	}

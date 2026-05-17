@@ -298,6 +298,48 @@ func TestBuildReportFlagsSoftDeleteScopeMismatch(t *testing.T) {
 	}
 }
 
+func TestBuildReportSoftDeleteScopeMismatchUsesActualArtifactPath(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "ok.txt", []byte("ok"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "ok.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok")), TargetPath: "ok.txt"}},
+	})
+	writePublishedReceipt(t, target, "session")
+	record := control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "session-del_bad",
+		SessionID:          "session",
+		ProfileID:          "other-profile",
+		TargetID:           "target-local",
+		RootID:             "root",
+		PreviousSessionID:  "previous",
+		PreviousManifestID: "manifest-previous",
+		SourcePath:         "gone.txt",
+		TargetPath:         "gone.txt",
+		Kind:               "file",
+		DetectedAt:         "2026-05-16T00:00:00Z",
+	}
+	actualPath := filepath.Join(target, control.DirName, "deleted", "custom-soft-delete-name.json")
+	if err := control.WriteFile(actualPath, record); err != nil {
+		t.Fatalf("control.WriteFile(%q, softDelete) error = %v, want nil", actualPath, err)
+	}
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if len(got.ArtifactProblems) != 1 {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want one soft-delete scope problem", target, got.ArtifactProblems)
+	}
+	if got.ArtifactProblems[0].Path != filepath.ToSlash(actualPath) {
+		t.Fatalf("BuildReport(%q).ArtifactProblems[0].Path = %q, want actual artifact path %q", target, got.ArtifactProblems[0].Path, filepath.ToSlash(actualPath))
+	}
+}
+
 func TestBuildReportFlagsSoftDeleteRootMismatch(t *testing.T) {
 	target := t.TempDir()
 	writeTargetFile(t, target, "ok.txt", []byte("ok"))
@@ -709,6 +751,31 @@ func TestBuildReportRecordsMalformedPublishedGlobalArtifact(t *testing.T) {
 	}
 	if len(got.ArtifactProblems) != 1 {
 		t.Fatalf("BuildReport(%q).ArtifactProblems length = %d, want 1", target, len(got.ArtifactProblems))
+	}
+}
+
+func TestBuildReportSessionFilterKeepsUnscopedArtifactProblems(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "selected.txt", []byte("ok"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-selected",
+		SessionID: "selected",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries:   []control.ManifestEntry{{Path: "selected.txt", Kind: "file", Size: 2, Digest: digest([]byte("ok"))}},
+	})
+	writePublishedReceipt(t, target, "selected")
+	writeRawArtifact(t, target, "warnings", "bad-global.json", `{"version":1`)
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "selected"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, selected) error = %v, want nil", target, err)
+	}
+	if len(got.ArtifactProblems) != 1 {
+		t.Fatalf("BuildReport(%q, selected).ArtifactProblems = %#v, want unscoped global artifact problem retained", target, got.ArtifactProblems)
+	}
+	if got.ArtifactProblems[0].SessionID != "" || !strings.Contains(got.ArtifactProblems[0].Path, "bad-global.json") {
+		t.Fatalf("BuildReport(%q, selected).ArtifactProblems = %#v, want unscoped bad-global problem", target, got.ArtifactProblems)
 	}
 }
 

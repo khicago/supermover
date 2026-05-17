@@ -333,6 +333,32 @@ func TestBuildReportSessionFilterIgnoresOtherSessionArtifactProblem(t *testing.T
 	}
 }
 
+func TestBuildReportSessionFilterKeepsUnscopedArtifactProblem(t *testing.T) {
+	target := t.TempDir()
+	writeCompleteSession(t, target, "session-selected", "docs/a.txt", []byte("hello"))
+	badPath := filepath.Join(control.ControlDir(target), "warnings", "bad-global.json")
+	if err := os.MkdirAll(filepath.Dir(badPath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(badPath), err)
+	}
+	if err := os.WriteFile(badPath, []byte("{"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", badPath, err)
+	}
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local", SessionID: "session-selected"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, selected) error = %v, want nil", target, err)
+	}
+	if got.Overall.Status != StatusUnhealthy {
+		t.Fatalf("BuildReport(%q, selected).Overall.Status = %q, artifact_problems=%#v, want %q", target, got.Overall.Status, got.ArtifactProblems, StatusUnhealthy)
+	}
+	if len(got.ArtifactProblems) != 1 || got.ArtifactProblems[0].SessionID != "" || got.ArtifactProblems[0].Path != filepath.ToSlash(badPath) {
+		t.Fatalf("BuildReport(%q, selected).ArtifactProblems = %#v, want unscoped bad-global problem", target, got.ArtifactProblems)
+	}
+	if len(got.Health.ArtifactIssues) != 1 || got.Health.ArtifactIssues[0].SessionID != "" {
+		t.Fatalf("BuildReport(%q, selected).Health.ArtifactIssues = %#v, want unscoped health artifact retained", target, got.Health.ArtifactIssues)
+	}
+}
+
 func TestBuildReportAggregateIncludesOlderSessionArtifactProblem(t *testing.T) {
 	target := t.TempDir()
 	writeCompleteSession(t, target, "session-new", "docs/new.txt", []byte("new"))
