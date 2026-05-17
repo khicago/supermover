@@ -17,17 +17,21 @@ optimization.
 
 ## Control Plane
 
-The target-side `.supermover` area is a first-class artifact surface:
+The target-side `.supermover` area is a first-class artifact surface. The
+current local slice writes:
 
 - profile snapshots
-- pairing receipts
 - session receipts
 - manifests
 - audit warnings
-- target-drift records
 - soft-delete records
 - history indexes
 - recovery state
+
+Planned network and drift surfaces add:
+
+- pairing receipts
+- target-drift records
 
 The control plane must be machine-readable and stable enough for current
 `verify`, `deleted list`, `health`, `report`, and `recover` commands plus
