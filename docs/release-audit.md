@@ -13,7 +13,8 @@ Current completed slice:
 - One-way local push from one source root to a trusted local or mounted target.
 - Hidden files are included by default.
 - Regular files are copied into session staging with source stability checks,
-  SHA-256 manifests, no-replace final publish, and post-run verification.
+  SHA-256 manifests, and no-replace final publish. The separate `verify`
+  command performs post-run restored-state verification.
 - Publish is conservative: existing target files or symlinks are not overwritten
   unless they are already content-identical to the intended result.
 - Profile JSON remains the SSOT; unsupported profile policies fail before push.

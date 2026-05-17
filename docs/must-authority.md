@@ -11,12 +11,13 @@ Completion claims must be checked against all three:
 3. validation evidence
 
 Do not treat a tested vertical slice as the completed minimum product. For this
-repository, the current local/mounted migration slice is implemented, while LAN
-agent, encrypted communication, traffic-shape protection, changed-file
-incremental sync, compact status UX, and physical prune remain planned or
-partially designed. The read-only local migration `report` command is wired,
-but it is not a substitute for LAN, transport, daemon status, incremental sync,
-or prune support.
+repository, the current local/mounted migration slice is implemented, including
+managed local regular-file updates from previous Supermover evidence. LAN agent,
+encrypted communication, traffic-shape protection, ongoing network sync, compact
+status UX, drift review, and physical prune remain planned or partially
+designed. The read-only local migration `report` command is wired, but it is not
+a substitute for LAN, transport, daemon status, ongoing sync, drift review, or
+prune support.
 
 ## Primary Status Sources
 
@@ -70,16 +71,26 @@ or prune support.
 
 The original broad feature tracker topic began as a full v1 plan and is now
 archived as historical evidence. Active remaining work is split into narrower
-proposal-only features:
+features:
 
 - `f-223nw49qj`: migration audit report UX; `report` is implemented and
   compact `status` remains planned
 - `f-224nw98v7`: reviewed physical prune flow
-- `f-225nwsa3h`: changed-file incremental local sync
+- `f-225nwsa3h`: changed-file incremental local sync; implemented and archived
 - `f-226nwy2vy`: LAN agent discovery and pairing
 - `f-227nw2p2n`: secure resumable transport integration
 - `f-228nws66k`: traffic privacy level 2 implementation
 - `f-229nwwybc`: failure injection and release hardening
+- `f-22bnwggww`: compact local status UX
+- `f-22anw4myc`: target drift review UX
+
+Dependency notes:
+
+- secure resumable transport depends on pairing identity from
+  `f-226nwy2vy`
+- traffic privacy level 2 depends on secure transport from `f-227nw2p2n`
+- release hardening must close the current local-slice gates and leave explicit
+  future gates for LAN, transport, and privacy slices
 
 Before implementation, assign the selected feature to `current_tree` or a
 worktree and start the first task through feature-tracker commands when local

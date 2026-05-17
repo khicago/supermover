@@ -16,11 +16,13 @@ but the table below is the checked-in execution summary:
 | --- | --- |
 | `f-223nw49qj` | Migration audit report UX. `report` is implemented; compact `status` remains planned. |
 | `f-224nw98v7` | Reviewed physical prune flow. |
-| `f-225nwsa3h` | Changed-file incremental local sync. Local regular-file updates are implemented; drift review UX remains separate. |
+| `f-225nwsa3h` | Changed-file incremental local sync. Local regular-file updates are implemented and the feature is archived; drift review UX remains separate. |
 | `f-226nwy2vy` | LAN agent discovery and pairing. |
 | `f-227nw2p2n` | Secure resumable transport integration. |
 | `f-228nws66k` | Traffic privacy level 2 implementation. |
 | `f-229nwwybc` | Failure injection and release hardening. |
+| `f-22bnwggww` | Compact local `status` UX over profile/control-plane evidence. |
+| `f-22anw4myc` | Target drift review UX and `drift list` surface. |
 
 Current checkpoint: `f-223nw49qj` has shipped the `report` command, while
 compact `status` stays in the backlog. `f-225nwsa3h` implements managed
@@ -29,8 +31,20 @@ manifest evidence from the same profile/target/root and rechecking target
 content and metadata before publish or recovery replacement. The implemented
 `report` command closes the main operator visibility gap for warnings, soft
 deletes, recovery state, profile suggestions, and published-manifest
-verification state at report time. Compact `status` remains planned so it is
-not confused with daemon, LAN, or long-running sync status.
+verification state at report time. Compact `status` now has a dedicated
+planning feature and remains planned so it is not confused with daemon, LAN, or
+long-running sync status. Target drift review also has a dedicated planning
+feature separate from managed local changed-file updates and physical prune.
+
+Current feature dependency shape:
+
+- `f-229nwwybc` hardens the current local slice and records separate future
+  gates for network features.
+- `f-22anw4myc` drift review should provide shared target-divergence evidence
+  for report/status/prune surfaces.
+- `f-227nw2p2n` secure resumable transport depends on `f-226nwy2vy` pairing.
+- `f-228nws66k` traffic privacy level 2 depends on `f-227nw2p2n` secure
+  transport.
 
 ## Phase 1: Project Skeleton
 

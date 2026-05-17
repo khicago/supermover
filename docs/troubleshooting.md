@@ -3,6 +3,20 @@
 Use this matrix to choose safe operator actions. Prefer collecting control-plane
 evidence before rerunning or deleting files.
 
+## Scope Boundary
+
+Current troubleshooting applies to the implemented local/mounted migration
+slice: `profile`, `scan`, `push`, `verify`, `deleted list`, `health`, `report`,
+and `recover`. Those commands operate from the profile SSOT and target
+`.supermover` evidence.
+
+LAN agents, discovery trust decisions, pairing receipts, encrypted network
+transport, resumable network transfer, network privacy/traffic-shape protection,
+drift review, compact status, and physical prune are planned surfaces unless a
+future release gate records command-level evidence for them. Treat references
+to `serve`, `discover`, `pair`, `drift`, `status`, and `prune` as future
+network/review guidance, not current operator procedures.
+
 | Symptom | Likely cause | Evidence to collect | Safe action |
 | --- | --- | --- | --- |
 | `profile init: ... already exists` | A profile already exists at the chosen path. | Existing profile path and desired source/target. | Edit the existing profile deliberately, then run `profile lint`. Do not overwrite it to change policy silently. |
@@ -37,6 +51,55 @@ evidence before rerunning or deleting files.
 
 ## Evidence Commands
 
+Local/mounted release gate commands:
+
+```bash
+go mod tidy -diff
+go test -count=1 ./...
+go test -race -count=1 ./...
+go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+go vet ./...
+staticcheck ./...
+golangci-lint run ./...
+git diff --check
+go run ./cmd/supermover help
+go run ./cmd/supermover version
+go run ./cmd/supermover profile help
+go run ./cmd/supermover push --help
+go run ./cmd/supermover verify --help
+go run ./cmd/supermover deleted help
+go run ./cmd/supermover health --help
+go run ./cmd/supermover report --help
+go run ./cmd/supermover recover --help
+```
+
+Manual local smoke commands:
+
+```bash
+SMOKE_ROOT="$(mktemp -d)"
+SRC="$SMOKE_ROOT/source"
+DST="$SMOKE_ROOT/target"
+PROFILE="$SMOKE_ROOT/supermover.profile.json"
+SESSION="smoke-local"
+mkdir -p "$SRC/subdir" "$DST"
+printf 'hello\n' > "$SRC/subdir/file.txt"
+printf 'hidden\n' > "$SRC/.hidden"
+
+go run ./cmd/supermover profile init --profile "$PROFILE" --source "$SRC" --target "$DST"
+go run ./cmd/supermover profile lint --profile "$PROFILE"
+go run ./cmd/supermover push --profile "$PROFILE" --dry-run
+go run ./cmd/supermover push --profile "$PROFILE" --session "$SESSION"
+go run ./cmd/supermover verify --profile "$PROFILE" --session "$SESSION"
+rm "$SRC/subdir/file.txt"
+go run ./cmd/supermover push --profile "$PROFILE" --session "${SESSION}-delete"
+go run ./cmd/supermover deleted list --profile "$PROFILE"
+go run ./cmd/supermover health --profile "$PROFILE"
+go run ./cmd/supermover report --profile "$PROFILE" --session "${SESSION}-delete" || test $? -eq 1
+go run ./cmd/supermover recover --profile "$PROFILE" --dry-run
+```
+
+Operational evidence commands:
+
 ```bash
 go run ./cmd/supermover profile lint --profile ./supermover.profile.json
 go run ./cmd/supermover profile set-target --profile ./supermover.profile.json --target /path/to/target
@@ -60,6 +123,14 @@ go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 Planned commands, not implemented in the current CLI:
 
 ```bash
+go run ./cmd/supermover serve --profile ./target.profile.json
+go run ./cmd/supermover discover
+go run ./cmd/supermover pair --profile ./supermover.profile.json --target <address-or-advertisement-id>
 go run ./cmd/supermover drift list --target /path/to/target --profile ./supermover.profile.json
 go run ./cmd/supermover prune --target /path/to/target --profile ./supermover.profile.json --dry-run
 ```
+
+Future network release gates must stay separate from the local gate. They need
+evidence for authenticated pairing, encrypted transport, resumable transfer and
+receiver recovery, low-information discovery, and privacy-level traffic-shape
+behavior before network migration can be described as implemented.

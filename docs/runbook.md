@@ -8,6 +8,100 @@ feature is an operator view over the profile SSOT and target control-plane
 artifacts; it does not represent daemon, LAN agent, transport, or prune
 completion.
 
+## Release Gates
+
+Run these gates for the current local/mounted migration slice before cutting a
+release candidate:
+
+```bash
+go mod tidy -diff
+go test -count=1 ./...
+go test -race -count=1 ./...
+go test -covermode=atomic -coverpkg=./... -coverprofile=coverage.out ./...
+go vet ./...
+staticcheck ./...
+golangci-lint run ./...
+git diff --check
+go run ./cmd/supermover help
+go run ./cmd/supermover version
+go run ./cmd/supermover profile help
+go run ./cmd/supermover push --help
+go run ./cmd/supermover verify --help
+go run ./cmd/supermover deleted help
+go run ./cmd/supermover health --help
+go run ./cmd/supermover report --help
+go run ./cmd/supermover recover --help
+```
+
+The current release gate is local-only. Passing it means the wired CLI supports
+profile-driven one-way migration to a trusted local or mounted target, plus
+local audit, health, report, verify, deleted-review, and conservative recovery
+surfaces. It does not mean LAN discovery, pairing, encrypted transport,
+resumable network transfer, network daemon operation, privacy-preserving traffic
+shape protection, drift review, status, or physical prune are implemented.
+
+Keep separate future gates for the network slice. Do not mark these gates
+passed until the commands are wired end to end and have their own validation
+evidence:
+
+```bash
+go run ./cmd/supermover serve --profile ./target.profile.json
+go run ./cmd/supermover discover
+go run ./cmd/supermover pair --profile ./supermover.profile.json --target <address-or-advertisement-id>
+go run ./cmd/supermover push --profile ./supermover.profile.json
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session <network-session-id>
+```
+
+Future network acceptance must also prove authenticated pairing, encrypted
+transport, resumable transfer across interruption, receiver-side recovery,
+bounded metadata leakage for the selected privacy level, and audit artifacts
+that distinguish discovery hints from trusted target identity.
+
+## Manual Smoke
+
+Use a disposable source and target so the smoke can exercise publication,
+verification, soft-delete review, health, report, and recovery dry-run without
+touching production data:
+
+```bash
+SMOKE_ROOT="$(mktemp -d)"
+SRC="$SMOKE_ROOT/source"
+DST="$SMOKE_ROOT/target"
+PROFILE="$SMOKE_ROOT/supermover.profile.json"
+SESSION="smoke-local"
+mkdir -p "$SRC/subdir" "$DST"
+printf 'hello\n' > "$SRC/subdir/file.txt"
+printf 'hidden\n' > "$SRC/.hidden"
+
+go run ./cmd/supermover profile init --profile "$PROFILE" --source "$SRC" --target "$DST"
+go run ./cmd/supermover profile lint --profile "$PROFILE"
+go run ./cmd/supermover push --profile "$PROFILE" --dry-run
+go run ./cmd/supermover push --profile "$PROFILE" --session "$SESSION"
+go run ./cmd/supermover verify --profile "$PROFILE" --session "$SESSION"
+rm "$SRC/subdir/file.txt"
+go run ./cmd/supermover push --profile "$PROFILE" --session "${SESSION}-delete"
+go run ./cmd/supermover deleted list --profile "$PROFILE"
+go run ./cmd/supermover health --profile "$PROFILE"
+go run ./cmd/supermover report --profile "$PROFILE" --session "${SESSION}-delete" || test $? -eq 1
+go run ./cmd/supermover recover --profile "$PROFILE" --dry-run
+```
+
+Expected smoke evidence:
+
+- the profile is created and linted from the profile SSOT;
+- the first push publishes files, including `.hidden`, to the local/mounted
+  target;
+- `verify` succeeds for the first session;
+- the second push records the source-side deletion as a soft-delete review item;
+- `deleted list` shows the deleted source path without physically pruning the
+  target;
+- `health` has no recovery work for a clean local run;
+- `report` summarizes warnings, soft deletes, health, artifact, and verify
+  state from the target `.supermover` evidence and returns non-zero because the
+  smoke intentionally creates a soft-delete review item;
+- `recover --dry-run` reports intended recovery actions without mutating target
+  state.
+
 ## Preflight
 
 1. Confirm the source and target paths:
