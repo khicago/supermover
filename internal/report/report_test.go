@@ -288,6 +288,61 @@ func TestBuildReportHealthIssuesAndDamagedArtifact(t *testing.T) {
 	}
 }
 
+func TestBuildReportShowsReceiptSessionMismatch(t *testing.T) {
+	target := t.TempDir()
+	writeCompleteSession(t, target, "session-crash", "docs/a.txt", []byte("hello"))
+	writeSessionRecord(t, target, "session-crash", transaction.StateStaged)
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Overall.Status != StatusUnhealthy {
+		t.Fatalf("BuildReport(%q).Overall.Status = %q, want %q", target, got.Overall.Status, StatusUnhealthy)
+	}
+	if got.Summary.RecoveryIssues != 1 || got.Summary.ArtifactProblems == 0 {
+		t.Fatalf("BuildReport(%q).Summary = %+v, want recovery and artifact issue", target, got.Summary)
+	}
+	found := false
+	for _, problem := range got.ArtifactProblems {
+		if problem.Source == "health" && problem.SessionID == "session-crash" && strings.Contains(problem.Error, "receipt status") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want receipt/session mismatch", target, got.ArtifactProblems)
+	}
+}
+
+func TestBuildReportShowsPartialControlArtifact(t *testing.T) {
+	target := t.TempDir()
+	writeSessionRecord(t, target, "session-partial", transaction.StateReceived)
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session-partial",
+		SessionID: "session-partial",
+		RootID:    "root",
+		CreatedAt: "2026-05-16T00:00:00Z",
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, ProfileID: "profile-local", TargetID: "target-local"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if got.Overall.Status != StatusUnhealthy {
+		t.Fatalf("BuildReport(%q).Overall.Status = %q, want %q", target, got.Overall.Status, StatusUnhealthy)
+	}
+	found := false
+	for _, problem := range got.ArtifactProblems {
+		if problem.Source == "health" && problem.SessionID == "session-partial" && strings.Contains(problem.Error, "non-staged session") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("BuildReport(%q).ArtifactProblems = %#v, want partial control artifact", target, got.ArtifactProblems)
+	}
+}
+
 func TestBuildReportDeduplicatesManifestArtifactProblems(t *testing.T) {
 	target := t.TempDir()
 	writePublishedReceipt(t, target, "session-missing-manifest")

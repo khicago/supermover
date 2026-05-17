@@ -136,7 +136,7 @@ func Run(opts Options) (Result, error) {
 	if err := ensureSessionUnused(opts.TargetDir, sessionID); err != nil {
 		return Result{}, err
 	}
-	if err := refuseUnhealthyRecoveryState(opts.TargetDir); err != nil {
+	if err := refuseUnhealthyRecoveryState(opts.Profile, opts.TargetDir); err != nil {
 		return Result{}, err
 	}
 
@@ -422,19 +422,30 @@ func Recover(opts RecoverOptions) (RecoverResult, error) {
 		}
 		switch scanned.Action {
 		case transaction.ActionRecover:
-			if alreadyPublishedByReceipt(opts.Profile, opts.TargetDir, scanned.Record) {
+			if receiptState, err := inspectRecoveryReceipt(opts.TargetDir, scanned.Record.ID); err != nil {
+				var marked error
+				item, marked = addRecoverRepairItem(&result, layout, item, scanned.Record, now, err, opts.DryRun)
+				result.Items = append(result.Items, item)
+				if marked != nil {
+					return result, marked
+				}
+				continue
+			} else if receiptState == recoveryReceiptPublished {
 				if opts.DryRun {
-					item.Status = "would_complete_state"
-					item.Message = "receipt and target already prove published session; session state would be marked published"
+					if err := validatePublishedReceiptEvidence(opts.Profile, opts.TargetDir, scanned.Record); err != nil {
+						item.Status = "would_mark_needs_repair"
+						item.Message = err.Error()
+					} else {
+						item.Status = "would_complete_state"
+						item.Message = "receipt and target already prove published session; session state would be marked published"
+					}
 					result.Skipped++
 					result.Items = append(result.Items, item)
 					continue
 				}
 				if err := completePublishedStateFromReceipt(layout, opts.Profile, opts.TargetDir, scanned.Record, now); err != nil {
-					marked := markSessionNeedsRepair(layout, scanned.Record, now, err)
-					item.Status = "needs_repair"
-					item.Message = err.Error()
-					result.RepairNeeded++
+					var marked error
+					item, marked = addRecoverRepairItem(&result, layout, item, scanned.Record, now, err, false)
 					if marked != nil {
 						return result, marked
 					}
@@ -454,10 +465,8 @@ func Recover(opts RecoverOptions) (RecoverResult, error) {
 				continue
 			}
 			if err := recoverStagedSession(layout, opts.Profile, opts.TargetDir, scanned.Record, now); err != nil {
-				marked := markSessionNeedsRepair(layout, scanned.Record, now, err)
-				item.Status = "needs_repair"
-				item.Message = err.Error()
-				result.RepairNeeded++
+				var marked error
+				item, marked = addRecoverRepairItem(&result, layout, item, scanned.Record, now, err, false)
 				if marked != nil {
 					return result, marked
 				}
@@ -507,11 +516,44 @@ func Recover(opts RecoverOptions) (RecoverResult, error) {
 	return result, nil
 }
 
-func alreadyPublishedByReceipt(p profile.Profile, targetDir string, record transaction.SessionRecord) bool {
-	if record.State != transaction.StateStaged {
-		return false
+type recoveryReceiptState int
+
+const (
+	recoveryReceiptMissing recoveryReceiptState = iota
+	recoveryReceiptPublished
+)
+
+func inspectRecoveryReceipt(targetDir string, sessionID string) (recoveryReceiptState, error) {
+	receiptPath, err := control.Path(targetDir, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		return recoveryReceiptMissing, err
 	}
-	return validatePublishedReceiptEvidence(p, targetDir, record) == nil
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return recoveryReceiptMissing, nil
+		}
+		return recoveryReceiptMissing, fmt.Errorf("read recovery receipt %q: %w", sessionID, err)
+	}
+	if receipt.ID != sessionID {
+		return recoveryReceiptMissing, fmt.Errorf("recovery receipt id %q does not match session %q; refusing to overwrite existing receipt", receipt.ID, sessionID)
+	}
+	if receipt.Status != "published" {
+		return recoveryReceiptMissing, fmt.Errorf("recovery receipt status %q is not published; refusing to overwrite existing receipt", receipt.Status)
+	}
+	return recoveryReceiptPublished, nil
+}
+
+func addRecoverRepairItem(result *RecoverResult, layout transaction.Layout, item RecoverItem, record transaction.SessionRecord, now time.Time, cause error, dryRun bool) (RecoverItem, error) {
+	item.Message = cause.Error()
+	if dryRun {
+		item.Status = "would_mark_needs_repair"
+		result.Skipped++
+		return item, nil
+	}
+	item.Status = "needs_repair"
+	result.RepairNeeded++
+	return item, markSessionNeedsRepair(layout, record, now, cause)
 }
 
 func completePublishedStateFromReceipt(layout transaction.Layout, p profile.Profile, targetDir string, record transaction.SessionRecord, now time.Time) error {
@@ -945,6 +987,15 @@ func validateStagedManifestFile(layout transaction.Layout, sessionID string, ent
 	if strings.TrimSpace(entry.Digest) == "" {
 		return fmt.Errorf("staged file %q is missing digest", entry.Path)
 	}
+	if !entry.HasSizeEvidence() {
+		return fmt.Errorf("staged file %q is missing size evidence", entry.Path)
+	}
+	if !entry.HasModeEvidence() {
+		return fmt.Errorf("staged file %q is missing mode evidence", entry.Path)
+	}
+	if strings.TrimSpace(entry.ModTime) == "" {
+		return fmt.Errorf("staged file %q is missing mod_time evidence", entry.Path)
+	}
 	stagePath, err := pathguard.SafeJoinParent(layout.StagingDir(sessionID), entry.Path)
 	if err != nil {
 		return err
@@ -1177,13 +1228,13 @@ func ensureSessionUnused(targetDir, sessionID string) error {
 	return nil
 }
 
-func refuseUnhealthyRecoveryState(targetDir string) error {
+func refuseUnhealthyRecoveryState(p profile.Profile, targetDir string) error {
 	scan, err := transaction.ScanRecovery(transaction.NewLayout(control.ControlDir(targetDir)))
 	if err != nil {
 		return err
 	}
 	for _, invalid := range scan.Invalid {
-		if isPublishedLegacySession(targetDir, invalid.SessionID, invalid.Err) {
+		if isPublishedLegacySession(p, targetDir, invalid.SessionID, invalid.Err) {
 			continue
 		}
 		return fmt.Errorf("target has invalid recovery state for session %q; run health or recover before starting a new push", invalid.SessionID)
@@ -1195,7 +1246,7 @@ func refuseUnhealthyRecoveryState(targetDir string) error {
 	return nil
 }
 
-func isPublishedLegacySession(targetDir, sessionID string, recordErr error) bool {
+func isPublishedLegacySession(p profile.Profile, targetDir, sessionID string, recordErr error) bool {
 	if !errors.Is(recordErr, os.ErrNotExist) {
 		return false
 	}
@@ -1204,7 +1255,13 @@ func isPublishedLegacySession(targetDir, sessionID string, recordErr error) bool
 		return false
 	}
 	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
-	if err != nil || receipt.ID != sessionID || receipt.Status != "published" {
+	if err != nil {
+		return false
+	}
+	if receipt.ID != sessionID || receipt.Status != "published" {
+		return false
+	}
+	if receipt.ProfileID != p.ProfileID || receipt.TargetID != p.Target.TargetID {
 		return false
 	}
 	manifestPath, err := control.Path(targetDir, control.ArtifactManifest, sessionID)
@@ -1212,7 +1269,57 @@ func isPublishedLegacySession(targetDir, sessionID string, recordErr error) bool
 		return false
 	}
 	manifest, err := control.ReadManifestCompatFile(manifestPath)
-	return err == nil && manifest.SessionID == sessionID
+	if err != nil {
+		return false
+	}
+	if manifest.ID != "manifest-"+sessionID || manifest.SessionID != sessionID {
+		return false
+	}
+	if manifest.RootID != p.Roots[0].ID && !(manifest.RootID == "" && len(p.Roots) == 1) {
+		return false
+	}
+	stamp := manifest.CreatedAt
+	if stamp == "" {
+		stamp = receipt.StartedAt
+	}
+	if _, err := parseArtifactTime(stamp); err != nil {
+		return false
+	}
+	if err := validateLegacyPublishedManifestTargets(targetDir, manifest); err != nil {
+		return false
+	}
+	return true
+}
+
+func validateLegacyPublishedManifestTargets(targetDir string, manifest control.Manifest) error {
+	if err := validateTargetPlan(manifest.Entries, func(entry control.ManifestEntry) (string, string) {
+		return targetPath(entry), entry.Kind
+	}); err != nil {
+		return err
+	}
+	for _, entry := range manifest.Entries {
+		entryTarget := targetPath(entry)
+		if pathguard.IsReservedControlPath(entryTarget) {
+			return fmt.Errorf("manifest target path %q uses reserved control directory", entryTarget)
+		}
+		if _, err := targetPathForManifestEntry(targetDir, entry); err != nil {
+			return err
+		}
+		if entry.Kind == "file" && isSHA256Digest(entry.Digest) && entry.HasSizeEvidence() {
+			finalPath, err := targetPathForManifestEntry(targetDir, entry)
+			if err != nil {
+				return err
+			}
+			same, exists, err := targetFileContentState(finalPath, entry.Size, entry.Digest)
+			if err != nil {
+				return err
+			}
+			if exists && !same {
+				return fmt.Errorf("legacy target file %q does not match manifest evidence", finalPath)
+			}
+		}
+	}
+	return nil
 }
 
 func softDeletesForRun(p profile.Profile, previous control.Manifest, hasPrevious bool, scanResult scan.Result, sessionID string, now time.Time) ([]control.SoftDelete, error) {
@@ -1610,8 +1717,12 @@ func ancestorDirs(root, dir string) []string {
 	return dirs
 }
 
-func publishStaged(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry, existingDirs map[string]existingDirMeta, mode publishMode) error {
-	defer restoreExistingDirs(existingDirs)
+func publishStaged(layout transaction.Layout, targetDir string, sessionID string, entries []control.ManifestEntry, existingDirs map[string]existingDirMeta, mode publishMode) (err error) {
+	defer func() {
+		if restoreErr := restoreExistingDirs(existingDirs); restoreErr != nil {
+			err = errors.Join(err, restoreErr)
+		}
+	}()
 	for _, entry := range entries {
 		entryTarget := targetPath(entry)
 		targetPath, err := targetPathForManifestEntry(targetDir, entry)
@@ -1773,11 +1884,17 @@ func publishNewStagedFile(stagePath, targetDir, targetPath string, entry control
 	return durable.PromoteFileNoReplace(stagePath, targetPath)
 }
 
-func restoreExistingDirs(dirs map[string]existingDirMeta) {
+func restoreExistingDirs(dirs map[string]existingDirMeta) error {
+	var errs []error
 	for path, meta := range dirs {
-		_ = os.Chmod(path, meta.Mode)
-		_ = os.Chtimes(path, meta.ModTime, meta.ModTime)
+		if err := os.Chmod(path, meta.Mode); err != nil {
+			errs = append(errs, fmt.Errorf("restore directory permissions for %q: %w", path, err))
+		}
+		if err := os.Chtimes(path, meta.ModTime, meta.ModTime); err != nil {
+			errs = append(errs, fmt.Errorf("restore directory modification time for %q: %w", path, err))
+		}
 	}
+	return errors.Join(errs...)
 }
 
 func targetPathForManifestEntry(targetDir string, entry control.ManifestEntry) (string, error) {

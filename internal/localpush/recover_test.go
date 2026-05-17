@@ -121,6 +121,103 @@ func TestRecoverCompletesSessionStateAfterReceiptCrash(t *testing.T) {
 	}
 }
 
+func TestRecoverMarksPublishedReceiptMismatchNeedsRepairWithoutReplayingStage(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	entry := control.ManifestEntry{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"}
+	writeStagedLocalSession(t, layout, target, p, "session-crash", []control.ManifestEntry{entry})
+	writeStageFile(t, layout, "session-crash", "file.txt", "payload")
+	writeReceipt(t, target, p, "session-crash", now.Format(time.RFC3339Nano))
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-crash", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(published receipt missing target) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 || got.Recovered != 0 {
+		t.Fatalf("Recover(published receipt missing target) = %#v, want needs_repair", got)
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-crash"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(session-crash) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "published receipt manifest") {
+		t.Fatalf("session-crash record = %#v, want needs_repair with published receipt evidence note", record)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target after receipt mismatch recover) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRecoverMarksNonPublishedReceiptNeedsRepairWithoutOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	entry := control.ManifestEntry{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"}
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{entry})
+	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
+	writeRecoveryReceiptWithStatus(t, target, p, "session-recover", "received", now.Format(time.RFC3339Nano))
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(non-published receipt) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 || got.Recovered != 0 {
+		t.Fatalf("Recover(non-published receipt) = %#v, want needs_repair", got)
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-recover"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(session-recover) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "refusing to overwrite existing receipt") {
+		t.Fatalf("session-recover record = %#v, want needs_repair with receipt overwrite note", record)
+	}
+	receipt := readControlDoc[control.SessionReceipt](t, target, control.ArtifactSessionReceipt, "session-recover")
+	if receipt.Status != "received" {
+		t.Fatalf("receipt status after Recover = %q, want original received", receipt.Status)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target after non-published receipt recover) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestRecoverDryRunDoesNotMarkNonPublishedReceiptNeedsRepair(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	entry := control.ManifestEntry{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Mode: 0o644, Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"}
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{entry})
+	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
+	writeRecoveryReceiptWithStatus(t, target, p, "session-recover", "received", now.Format(time.RFC3339Nano))
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", DryRun: true, Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(non-published receipt dry-run) error = %v, want nil", err)
+	}
+	if got.Skipped != 1 || got.RepairNeeded != 0 || len(got.Items) != 1 || got.Items[0].Status != "would_mark_needs_repair" {
+		t.Fatalf("Recover(non-published receipt dry-run) = %#v, want would_mark_needs_repair skip", got)
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-recover"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(session-recover) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateStaged {
+		t.Fatalf("dry-run record state = %q, want staged", record.State)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target after dry-run) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRecoverRejectsAlreadyPublishedFileWithWrongMetadata(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -208,6 +305,37 @@ func TestRecoverRejectsCorruptStagedPayload(t *testing.T) {
 	}
 	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "digest") {
 		t.Fatalf("corrupt staged repair record = %#v, want needs_repair with digest note", record)
+	}
+}
+
+func TestRecoverRejectsStagedManifestWithoutMetadataEvidence(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	layout := transaction.NewLayout(control.ControlDir(target))
+	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
+	entry := control.ManifestEntry{Path: "file.txt", TargetPath: "file.txt", Kind: "file", Size: 7, ModTime: now.Format(time.RFC3339Nano), Digest: "sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"}
+	entry.SetSizeEvidence(7)
+	writeStagedLocalSession(t, layout, target, p, "session-recover", []control.ManifestEntry{entry})
+	writeStageFile(t, layout, "session-recover", "file.txt", "payload")
+
+	got, err := Recover(RecoverOptions{Profile: p, TargetDir: target, SessionID: "session-recover", Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatalf("Recover(missing metadata evidence) error = %v, want nil result with needs_repair", err)
+	}
+	if got.RepairNeeded != 1 || got.Recovered != 0 {
+		t.Fatalf("Recover(missing metadata evidence) = %#v, want needs_repair", got)
+	}
+	record, err := transaction.ReadSessionRecord(layout.RecordPath("session-recover"))
+	if err != nil {
+		t.Fatalf("transaction.ReadSessionRecord(repair) error = %v, want nil", err)
+	}
+	if record.State != transaction.StateNeedsRepair || !strings.Contains(record.Note, "missing mode evidence") {
+		t.Fatalf("repair record = %#v, want needs_repair with missing metadata evidence", record)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(target after missing metadata evidence) error = %v, want os.ErrNotExist", err)
 	}
 }
 
@@ -566,6 +694,25 @@ func writeStagedLocalSession(t *testing.T, layout transaction.Layout, target str
 	}
 	if err := control.WriteFile(path, manifest); err != nil {
 		t.Fatalf("control.WriteFile(%q) error = %v, want nil", path, err)
+	}
+}
+
+func writeRecoveryReceiptWithStatus(t *testing.T, target string, p profile.Profile, sessionID string, status string, startedAt string) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		t.Fatalf("control.Path(receipt %q) error = %v, want nil", sessionID, err)
+	}
+	receipt := control.SessionReceipt{
+		Version:   control.CurrentVersion,
+		ID:        sessionID,
+		ProfileID: p.ProfileID,
+		TargetID:  p.Target.TargetID,
+		StartedAt: startedAt,
+		Status:    status,
+	}
+	if err := control.WriteFile(path, receipt); err != nil {
+		t.Fatalf("control.WriteFile(%q, receipt) error = %v, want nil", path, err)
 	}
 }
 

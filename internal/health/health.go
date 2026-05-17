@@ -86,7 +86,7 @@ func BuildReport(opts Options) (Report, error) {
 			Error:     invalid.Err.Error(),
 		})
 	}
-	artifactIssues, err := scanPublishedArtifacts(targetRoot)
+	artifactIssues, err := scanSessionArtifacts(targetRoot)
 	if err != nil {
 		return Report{}, err
 	}
@@ -105,7 +105,7 @@ func BuildReport(opts Options) (Report, error) {
 	return report, nil
 }
 
-func scanPublishedArtifacts(targetRoot string) ([]ArtifactIssue, error) {
+func scanSessionArtifacts(targetRoot string) ([]ArtifactIssue, error) {
 	sessionsDir := filepath.Join(control.ControlDir(targetRoot), "sessions")
 	entries, err := os.ReadDir(sessionsDir)
 	if err != nil {
@@ -126,28 +126,72 @@ func scanPublishedArtifacts(targetRoot string) ([]ArtifactIssue, error) {
 		if err != nil {
 			continue
 		}
-		if record.State != transaction.StatePublished {
-			continue
-		}
-		manifestPath, err := control.Path(targetRoot, control.ArtifactManifest, sessionID)
+		sessionIssues, err := scanSessionArtifactEvidence(targetRoot, sessionID, record)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := control.ReadManifestCompatFile(manifestPath); err != nil {
-			issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: manifestPath, Error: err.Error()})
-		}
-		receiptPath, err := control.Path(targetRoot, control.ArtifactSessionReceipt, sessionID)
-		if err != nil {
-			return nil, err
-		}
-		receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
-		if err != nil {
-			issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: err.Error()})
-			continue
-		}
-		if receipt.Status != "published" {
-			issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: fmt.Sprintf("receipt status %q is not published", receipt.Status)})
-		}
+		issues = append(issues, sessionIssues...)
 	}
 	return issues, nil
+}
+
+func scanSessionArtifactEvidence(targetRoot string, sessionID string, record transaction.SessionRecord) ([]ArtifactIssue, error) {
+	var issues []ArtifactIssue
+	manifestPath, err := control.Path(targetRoot, control.ArtifactManifest, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	receiptPath, err := control.Path(targetRoot, control.ArtifactSessionReceipt, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	receipt, receiptErr := control.ReadFile[control.SessionReceipt](receiptPath)
+	receiptPublished := receiptErr == nil && receipt.Status == "published"
+	manifestRequired := record.State == transaction.StatePublished || receiptPublished
+	manifestExists := appendManifestArtifactIssues(&issues, sessionID, manifestPath, manifestRequired)
+
+	if receiptPublished && record.State != transaction.StatePublished {
+		issues = append(issues, ArtifactIssue{
+			SessionID: sessionID,
+			Path:      receiptPath,
+			Error:     fmt.Sprintf("receipt status %q disagrees with session state %q", receipt.Status, record.State),
+		})
+	} else if receiptErr != nil && !os.IsNotExist(receiptErr) && record.State != transaction.StatePublished {
+		issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: receiptErr.Error()})
+	}
+	if manifestExists && (record.State == transaction.StateReceived || record.State == transaction.StateValidated) {
+		issues = append(issues, ArtifactIssue{
+			SessionID: sessionID,
+			Path:      manifestPath,
+			Error:     fmt.Sprintf("manifest exists for non-staged session state %q", record.State),
+		})
+	}
+	if record.State != transaction.StatePublished {
+		return issues, nil
+	}
+	if receiptErr != nil {
+		issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: receiptErr.Error()})
+		return issues, nil
+	}
+	if receipt.Status != "published" {
+		issues = append(issues, ArtifactIssue{SessionID: sessionID, Path: receiptPath, Error: fmt.Sprintf("receipt status %q is not published", receipt.Status)})
+	}
+	return issues, nil
+}
+
+func appendManifestArtifactIssues(issues *[]ArtifactIssue, sessionID string, manifestPath string, required bool) bool {
+	if _, err := os.Stat(manifestPath); err != nil {
+		if os.IsNotExist(err) {
+			if required {
+				*issues = append(*issues, ArtifactIssue{SessionID: sessionID, Path: manifestPath, Error: err.Error()})
+			}
+			return false
+		}
+		*issues = append(*issues, ArtifactIssue{SessionID: sessionID, Path: manifestPath, Error: err.Error()})
+		return false
+	}
+	if _, err := control.ReadManifestCompatFile(manifestPath); err != nil {
+		*issues = append(*issues, ArtifactIssue{SessionID: sessionID, Path: manifestPath, Error: err.Error()})
+	}
+	return true
 }
