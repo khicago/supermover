@@ -846,18 +846,6 @@ func mergePrivacyOverhead(previous, current *control.NetworkTransferPrivacyOverh
 	return &merged
 }
 
-func hasResumeProgress(result protocolclient.Result) bool {
-	if result.Bytes == 0 && result.Chunks == 0 {
-		return false
-	}
-	for _, file := range resultResumeFrom(result) {
-		if file.CommittedSize > 0 && !file.Complete {
-			return true
-		}
-	}
-	return false
-}
-
 func requiresPriorPayloadEvidence(result protocolclient.Result, overhead *control.NetworkTransferPrivacyOverhead) bool {
 	if result.Begin.State == protocol.SessionStatePublished && result.Bytes == 0 && result.Chunks == 0 {
 		return true

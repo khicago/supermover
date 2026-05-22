@@ -2132,6 +2132,37 @@ func TestClientRunUploadsZeroByteRegularFileWithLevel2PrivacyOverhead(t *testing
 	}
 }
 
+func TestClientRunReturnsZeroByteBatchUploadFailureBeforeCommit(t *testing.T) {
+	source, scanResult := scanSingleFileSource(t, "empty.txt", nil)
+	target := t.TempDir()
+	next := receiver.NewHandler(receiver.FileStore{TargetRoot: target})
+	var commits int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chunk-batches":
+			http.Error(w, "batch upload unavailable", http.StatusServiceUnavailable)
+		case "/v1/commit":
+			commits++
+			next.ServeHTTP(w, r)
+		default:
+			next.ServeHTTP(w, r)
+		}
+	}))
+	defer server.Close()
+	req := withLevel2Privacy(validTransferRequest(source, scanResult, "session-empty-batch-failure"))
+	req.PrivacyPolicy.PaddingBucket = 64
+	req.PrivacyPolicy.BatchMaxBytes = 4096
+	req.PrivacyPolicy.BatchMaxCount = 8
+
+	_, err := newZeroJitterClient(server.URL, 16, server.Client()).Run(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "/v1/chunk-batches") {
+		t.Fatalf("Client.Run(level 2 zero byte batch failure) error = %v, want /v1/chunk-batches failure", err)
+	}
+	if commits != 0 {
+		t.Fatalf("commit calls after rejected zero-byte batch = %d, want 0", commits)
+	}
+}
+
 func TestBuildBeginRequestSkipsSpecialAndReservedEntriesWithWarnings(t *testing.T) {
 	source := t.TempDir()
 	result := scan.Result{

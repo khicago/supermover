@@ -80,8 +80,7 @@ func Acknowledge(opts AcknowledgeOptions) (AcknowledgeResult, error) {
 	if err := control.ValidateArtifactLoadBoundary(targetRoot); err != nil {
 		return AcknowledgeResult{}, err
 	}
-	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
-	if err != nil {
+	if _, _, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID); err != nil {
 		return AcknowledgeResult{}, err
 	}
 
@@ -91,7 +90,7 @@ func Acknowledge(opts AcknowledgeOptions) (AcknowledgeResult, error) {
 	}
 	defer unlock()
 
-	path, doc, err = loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
+	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
 	if err != nil {
 		return AcknowledgeResult{}, err
 	}
@@ -156,7 +155,7 @@ func Resolve(opts ResolveOptions) (ResolveResult, error) {
 	if err := control.ValidateArtifactLoadBoundary(targetRoot); err != nil {
 		return ResolveResult{}, err
 	}
-	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
+	_, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -170,7 +169,7 @@ func Resolve(opts ResolveOptions) (ResolveResult, error) {
 	}
 	defer unlock()
 
-	path, doc, err = loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
+	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
 	if err != nil {
 		return ResolveResult{}, err
 	}

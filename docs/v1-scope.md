@@ -108,6 +108,14 @@ magic.
   running daemon process, not OS process supervision. They do not install an OS
   service manager, spawn a detached process, recover crashes, browse LAN
   services, watch files, or run ongoing sync.
+- Local-only read-only `dashboard --profile <path> [--listen <loopback-ip:port>]`.
+  It serves a target-side operator page that runs existing `verify` and live
+  extra-path detection against the latest published manifest on page load or
+  explicit refresh, without digest-reading expected files twice. It refuses
+  overlapping full checks and non-loopback listening, and requires its emitted
+  per-process access-token URL before serving the active page. It does not
+  persist detector output, repair files, execute synchronization, compare a
+  post-publish source tree, or provide a Merkle/tree-root digest.
 - Planned LAN discovery that exposes low-information address hints only.
 - Pairing receipts and pinned device identity as the trust boundary.
 - Internal protocol-client bounded traffic metadata reduction now covers

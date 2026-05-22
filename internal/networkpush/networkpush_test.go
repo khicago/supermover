@@ -86,6 +86,43 @@ func TestRunLoopbackPushesFromProfileOnly(t *testing.T) {
 	}
 }
 
+func TestRunRejectsDivergentTargetAtBeginWithoutUploadingPayload(t *testing.T) {
+	sourceRoot := t.TempDir()
+	targetRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceRoot, "data.txt"), []byte("network replacement\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(source) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(filepath.Join(targetRoot, "data.txt"), []byte("existing target\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(target) error = %v, want nil", err)
+	}
+	sourceCert := newTestCertificate(t, "source", testNow.Add(-time.Hour), testNow.Add(time.Hour))
+	targetCert := newTestCertificate(t, "target", testNow.Add(-time.Hour), testNow.Add(time.Hour))
+	peer := authenticatedPeerForCerts(t, sourceCert, targetCert)
+	prof := pairedProfile(t, sourceRoot, targetRoot, peer)
+	server, counts := newCountingTLSReceiverServer(t, prof, targetCert)
+	defer server.Close()
+	prof.Network = networkConfig(t, sourceCert, server.URL)
+
+	got, err := Run(context.Background(), Options{
+		Profile:   prof,
+		SessionID: "session-networkpush-target-conflict",
+		Now:       func() time.Time { return testNow },
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
+		t.Fatalf("Run(divergent target) error = %v, want overwrite refusal", err)
+	}
+	if got.Bytes != 0 || got.Chunks != 0 {
+		t.Fatalf("Run(divergent target) result = %+v, want no transferred payload", got)
+	}
+	snapshot := counts.snapshot()
+	if snapshot.begin != 1 || snapshot.status != 0 || snapshot.chunkRequests != 0 || snapshot.commits != 0 {
+		t.Fatalf("receiver counts = %+v, want begin-only refusal", snapshot)
+	}
+	if _, err := os.Stat(filepath.Join(control.ControlDir(targetRoot), "sessions", "session-networkpush-target-conflict")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(rejected network session) error = %v, want os.ErrNotExist", err)
+	}
+}
+
 func TestRunGeneratesDeterministicSessionID(t *testing.T) {
 	sourceRoot := t.TempDir()
 	targetRoot := t.TempDir()

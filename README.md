@@ -1,128 +1,204 @@
 # Supermover
 
-Supermover is a Go CLI for one-way, auditable file migration. The long-term
-design includes ongoing incremental synchronization from a source machine to a
-trusted target machine, but the current implementation is not a broad
-incremental sync system or OS-managed background service.
+Supermover is a Go CLI for one-way, auditable file migration from a source
+machine to a trusted target. The product direction includes ongoing
+incremental synchronization, but the current implementation is intentionally
+conservative: profile-driven, target-auditable, and narrower than a broad sync
+daemon.
 
-The current implementation is a local push vertical slice. Available commands
-are `profile`, `scan`, `push`, `verify`, `deleted list`, `prune`, `health`,
-`drift list`, `drift record`, `drift acknowledge`, `drift resolve`,
-`reconcile plan`, `reconcile apply`, `report`, `status`, `recover`, pairing
-`serve`/`pair` surfaces, the profile-backed `serve` receiver surface,
-foreground `daemon` lifecycle state, and a low-information
-explicit-address `discover` adapter. The
-local slice supports first migration, idempotent reruns, additions, managed
+> Current status
+>
+> - Implemented today: local publish/verify/recover, prune approval workflow,
+>   durable drift record/acknowledge/resolve, narrow persisted-drift
+>   reconcile, paired profile-backed network push, foreground daemon lifecycle,
+>   and a loopback-only read-only dashboard.
+> - Not implemented today: LAN browsing, OS-managed background service
+>   installation, broad arbitrary interruption recovery, broad automatic
+>   repair/reconcile, ongoing sync, and anonymity.
+
+## What You Can Do Today
+
+- Define migration intent in a profile and treat that profile as the SSOT.
+- Run first migration, idempotent reruns, additions, and managed changed-file
+  updates for previously published regular files.
+- Verify target state with `verify`, `report`, `status`, and a local-only
+  `dashboard`.
+- Review source-side deletions through `prune --dry-run`, author approval
+  artifacts, inspect approval inventory, supersede old approvals, and physically
+  prune only through `prune --apply --approval <id>`.
+- Persist, acknowledge, resolve, and narrowly reconcile drift records.
+- Pair a source and target, run `serve`, and execute profile-backed
+  `push --network`.
+- Run the current foreground daemon lifecycle surface as a supervisor-friendly
+  wrapper over `serve`.
+
+## Product Boundaries
+
+- One-way `source -> trusted target`, not bidirectional sync.
+- Profile files are the configuration SSOT; there are no runtime policy or
+  target-identity overrides that bypass the audit trail.
+- Audit evidence lives under target-side `.supermover` control-plane artifacts.
+- Network transfer is profile-backed TLS 1.3 mTLS, not anonymity. Residual
+  leakage still includes total bytes, duration, peer IPs, LAN presence, and
+  Supermover use.
+- A new network session is conservative: the receiver refuses already-divergent
+  target files, symlinks, or incompatible directories at begin, before payload
+  upload. This is fail-fast conflict rejection, not changed-file network sync.
+- The loopback-only `dashboard` verifies against the latest published manifest
+  snapshot, not against post-publish source changes. It does not expose a
+  Merkle/tree-root digest or execute synchronization.
+- `daemon` is a foreground lifecycle surface only. It does not install
+  launchd/systemd/Windows services, spawn a detached process, browse LAN
+  services, watch files, or run ongoing sync.
+
+## Current Workflows
+
+### Local Publish
+
+The local slice supports first migration, idempotent reruns, additions, managed
 changed-file updates for previously published regular files, warning records,
 soft-delete records, read-only operator reports, and conservative recovery.
+
+Use an empty target directory for first migration. Current publish code refuses
+to overwrite unrelated existing target files or symlinks. Changed regular files
+are replaced only when the latest published manifest for the same
+profile/target/root proves Supermover published the previous target content and
+the target still matches that previous SHA-256, size, mode, and modification
+time evidence. Concurrent external writes to the same target path are outside
+the current safety contract.
+
+### Dashboard
+
+`dashboard --profile <path>` serves a target-side read-only HTML view on a
+loopback-only listener. The page runs `verify` plus live detection of target
+paths outside the selected manifest once when opened and on explicit refresh.
+It refuses overlapping full-check requests and avoids re-reading declared file
+content twice in the same integrity pass.
+
+Open only the emitted access-token URL. Use SSH port forwarding rather than
+exposing the page on a LAN interface.
+
+### Pairing, Discover, and Serve
+
 `serve` validates a target profile and, for valid pairing-only profiles, binds a
-low-information pairing HTTP listener that prints an operator verification code
-and returns pairing bootstrap material only after that code is presented. When
-the profile is already paired and has complete `network.receiver_url` plus
+low-information pairing listener that prints an operator verification code and
+returns pairing bootstrap material only after that code is presented.
+
+When the profile is already paired and has complete `network.receiver_url` plus
 `network.local_tls_identity` material, `serve` also binds the receiver endpoint
 from the profile and exposes upload routes over pinned mutual TLS. With no
 receiver material, `serve` stays pairing-only. Once a paired profile has any
 receiver material, `serve` refuses to start until the network receiver material
-is complete and auditable. `pair` requires the verification code before it
-writes a durable pairing receipt under the profile's target control plane and
-pins target device identity in the profile. `discover` can emit untrusted
-explicit address hints with `--address` and returns no results on timeout when
-no source is configured.
-An explicit address is operator-provided hint material and still reveals peer
-address metadata; it does not browse LAN services or transfer files.
-`daemon install`, `daemon run --foreground`, `daemon status`, `daemon logs`,
-`daemon restart`, and `daemon stop` persist lifecycle evidence under the target
-`.supermover/daemon` control-plane directory and wrap the same profile-backed
-serve behavior. The current daemon slice is a foreground/supervisor-friendly
-lifecycle surface with durable status, redacted lifecycle events, stop intent,
-and restart intent; restart is consumed only by a running foreground daemon and
-restarts serve listeners in that same process. It does not install
-launchd/systemd/Windows services, spawn a detached process, provide crash
-supervision, browse LAN services, watch files, or run ongoing sync.
+is complete and auditable.
+
+`pair` requires the verification code before it writes a durable pairing
+receipt under the target control plane and pins target device identity in the
+profile. `discover` emits untrusted explicit address hints only; it does not
+browse LAN services or transfer files.
+
+### Network Transfer
+
 Profiles now have a network SSOT shape for the operator network path:
 `network.receiver_url` and `network.local_tls_identity` name the
-profile-selected receiver endpoint and local certificate/key references. A
-non-dry-run `push --network` uses that profile material with pairing receipt
-pins to connect to the profile-selected TLS 1.3 mTLS receiver, stream files
-through `networkpush`/`networkrun`/`protocolclient`, and write receiver-side
-network transfer outcome evidence after receiver begin creates a session.
+profile-selected receiver endpoint and local certificate/key references.
+
 `push --network --dry-run` is preflight-only: it validates profile, pairing,
 profile network material, local TLS identity files and pins, scan, and manifest
 shape without contacting the receiver, writing target artifacts, or copying
 files.
-The `prune --dry-run` surface validates the profile prune policy, reads
-published soft-delete records, and emits review-only candidates, refusals, and
-artifact problems without deleting target files or writing prune approvals.
-Active `delete_policy.retention_days` windows remain review-visible as
+
+Non-dry-run `push --network` uses the profile material plus pairing receipt
+pins to connect to the profile-selected TLS 1.3 mTLS receiver, stream files
+through `networkpush`/`networkrun`/`protocolclient`, and write receiver-side
+network transfer outcome evidence after receiver begin creates a session.
+
+The current recovery evidence is bounded, not broad. Same-profile, same-session
+reruns can recover from authenticated receiver status only when prior
+payload-overhead evidence remains auditable. Current acceptance evidence covers:
+
+- receiver listener restart over the same profile-selected target control plane
+- published-session retry that uploads no chunks
+- fail-closed missing-prior-evidence handling with `payload_overhead_missing`
+- deterministic `networkrun` source-stop-after-progress resume
+
+This does not make `recover` a network recovery command and does not complete
+LAN browsing, daemon sync, broad resume acceptance, arbitrary process-kill
+recovery, OS crash recovery, or anonymity.
+
+### Prune Review and Apply
+
+`prune --dry-run` validates the profile prune policy, reads published
+soft-delete records, and emits review-only candidates, refusals, and artifact
+problems without deleting target files or writing prune approvals. Active
+`delete_policy.retention_days` windows remain visible as
 `retention_window_active` refusals rather than approval candidates.
+
 `prune approve --profile <path> --id <approval-id> --soft-delete <id>
 [--soft-delete <id>...] --reason <text> --reviewer <id>` authors a durable
 approval artifact under `.supermover/prune/approvals/<id>.json` from fresh
-dry-run candidate evidence, accepts `--approved-by` as an alias for
-`--reviewer`, can set `--expires-at <RFC3339>`, and supports
-`--format text|json`; it does not delete target files or write prune receipts,
-and the fresh dry-run must be free of refusals or artifact problems before any
-approval is written.
+dry-run candidate evidence. `--approved-by` is an alias for `--reviewer`,
+`--expires-at <RFC3339>` is optional, and `--format text|json` is supported.
+It does not delete target files or write prune receipts.
+
 `prune approvals --profile <path>` lists current-scope approval artifacts
 without mutating them. `prune supersede --profile <path> --id <approval-id>
 --reason <text> --reviewer <id>` updates one existing approval artifact to a
 durable `superseded` review state without deleting target files or writing
 prune receipts.
-`prune --apply --approval <id>` remains the only physical prune path: it writes
+
+`prune --apply --approval <id>` remains the only physical prune path. It writes
 a started prune receipt before target mutation, re-runs the current prune plan,
-rechecks target evidence, and then records the final
-applied/partial/failed status in the same receipt path when finalization
-succeeds. If finalization is interrupted, the durable `started` receipt remains
-review evidence. `prune review --profile <path>` is a focused read-only release
-review surface over current prune candidates, approval inventory, and receipts.
-`report` is also read-only and surfaces current profile/target prune approval
-evidence from durable `.supermover/prune/approvals/*.json` artifacts, while
-`status` exposes compact prune release counts, prune review status/action, and
-artifact-problem source breakdown. That evidence helps review
-authored-but-unapplied approvals, stale or expired approvals, consumed
-approvals, and receipt-attention states; the read-only surfaces do not author
-approvals, supersede approvals, apply prune decisions, write receipts, delete files or
-symlinks, repair or reconcile drift, make the target clean, automatically
-release a migration, or close v1. Broader recovery reconciliation,
-LAN browsing, OS service-manager daemon installation, detached background
-daemon process management, ongoing incremental sync, broad network resume
-acceptance, broad automatic repair/reconcile, and broader prune release
-workflow remain planned or unimplemented; anonymity is not claimed.
-`drift record` can persist current
-live detector findings as durable `.supermover/drift/<id>.json` review records,
-`drift acknowledge` is wired only for existing persisted drift records with
-operator reason evidence, and `drift resolve` can close an existing persisted
-drift record only after a fresh profile-scoped live detector no longer reports
-the same path and expected baseline.
-`reconcile plan/apply` is a separate narrow persisted-drift repair slice:
-`plan` is non-mutating, and `apply` requires selected persisted drift IDs,
-explicit `--apply`, and `--reason`. It derives source and target only from the
-profile SSOT, has no `--target` or `--state-dir` override, and currently
-handles only missing regular-file restores from published manifest plus current
-source evidence and resolve-noop cases where the target is already restored or
-already absent. Broad automatic reconcile, durable repair receipts,
-conflict-class taxonomy beyond current refusals, retry policy, background
-scans, live-only repair, manifest rewrite, daemon sync, and ongoing sync remain
-planned.
-Profile-backed encrypted transfer is wired for
-non-dry-run `push --network`, including zero-byte regular files through an
-explicit final empty completion path in the protocol client/network runner/CLI.
-The bounded source-interruption evidence is narrower than broad recovery:
-during a profile-backed non-dry-run `push --network` attempt, after receiver
-begin and accepted payload bytes, Supermover may persist in-flight
-`network-transfer.json` evidence for a same-profile, same-session rerun. The
-rerun can recover from authenticated receiver status only when the prior
-payload-overhead evidence remains auditable. Current acceptance evidence also
-covers a receiver listener restart over the same profile-selected target
-control plane, a published-session retry that uploads no chunks, and a
-missing-prior-evidence path that fails closed with `payload_overhead_missing`
-instead of fabricating recovery. Internal `networkrun` acceptance covers a
-deterministic source stop immediately after durable in-flight chunk progress
-evidence, followed by same-session receiver-status resume and merged
-privacy-overhead evidence. That support does not make `recover` a network
-recovery command, and it does not complete LAN browsing, daemon behavior,
-ongoing sync, broad arbitrary interruption recovery, broad resume acceptance,
-arbitrary process-kill recovery, OS crash recovery, or anonymity.
+rechecks target evidence, and records final `applied` / `partial` / `failed`
+status in the same receipt path. If finalization is interrupted, the durable
+`started` receipt remains review evidence.
+
+`prune review --profile <path>` is the focused read-only release-review surface
+over current prune candidates, approval inventory, and receipts. `report` is
+also read-only and surfaces current profile/target prune approval evidence from
+durable `.supermover/prune/approvals/*.json` artifacts, while `status` exposes
+compact prune release counts, prune review status/action, and artifact-problem
+source breakdown.
+
+### Drift and Narrow Reconcile
+
+`drift list` is read-only. It compares published manifest evidence to the
+target filesystem and exits non-zero when drift, artifact problems, or no
+published manifest require review.
+
+`drift record` persists current live detector findings as durable
+`.supermover/drift/<id>.json` review records. It records evidence only: it does
+not resolve, repair, prune, suppress future detector output, or run background
+scans.
+
+`drift acknowledge` and `drift resolve` operate only on existing persisted
+drift records. `drift resolve` closes a record only after a fresh
+profile-scoped live detector no longer reports drift for the same path and
+expected baseline.
+
+`reconcile plan/apply` is a separate narrow persisted-drift repair slice.
+`plan` is non-mutating. `apply` requires selected persisted drift IDs, explicit
+`--apply`, and `--reason`. It derives source and target only from the profile
+SSOT, has no `--target` or `--state-dir` override, and currently handles only:
+
+- missing regular-file restores from published manifest plus current source
+  evidence
+- resolve-noop cases where the target is already restored
+- resolve-noop cases where an expected-absent target path is already absent
+
+Broad automatic reconcile, durable repair receipts, conflict-class taxonomy
+beyond current refusals, retry policy, background scans, live-only repair,
+manifest rewrite, daemon sync, and ongoing sync remain planned.
+
+### Daemon
+
+`daemon install`, `daemon run --foreground`, `daemon status`, `daemon logs`,
+`daemon restart`, and `daemon stop` persist lifecycle evidence under
+`.supermover/daemon` and wrap the same profile-backed `serve` behavior.
+
+The current daemon slice is a foreground/supervisor-friendly lifecycle surface
+with durable status, redacted lifecycle events, stop intent, and restart
+intent. Restart is consumed only by a running foreground daemon and restarts
+serve listeners in that same process.
 
 ## Quickstart
 
@@ -132,6 +208,7 @@ go run ./cmd/supermover profile lint --profile ./supermover.profile.json
 go run ./cmd/supermover push --profile ./supermover.profile.json --dry-run
 go run ./cmd/supermover push --profile ./supermover.profile.json --session session-001
 go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover dashboard --profile ./supermover.profile.json
 go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
 go run ./cmd/supermover drift list --profile ./supermover.profile.json
@@ -143,6 +220,8 @@ go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 go run ./cmd/supermover daemon install --profile ./supermover.profile.json
 go run ./cmd/supermover daemon status --profile ./supermover.profile.json
 ```
+
+### Drift Follow-Up
 
 If `verify --format json` or `report --format json` shows persisted
 `target_drifts`, or `drift record --format json` returns `records[].id`,
@@ -174,6 +253,8 @@ current source file still match; it can also resolve already-restored or
 already-absent persisted records without additional target content mutation.
 It is not a broad reconcile daemon and it does not rewrite manifests.
 
+### Publish Safety
+
 Use an empty target directory for first migration. Current publish code refuses
 to overwrite an unrelated existing target file or symlink. Reruns are
 idempotent when the existing object is content-identical. Changed regular files
@@ -191,6 +272,8 @@ target only after rechecking previous evidence, and publishes the staged
 replacement with no-replace semantics. Recovery can complete a held replacement
 only when the target is absent and both holds still match previous evidence;
 divergent target/hold state is marked `needs_repair`.
+
+### Review Surfaces
 
 `push --dry-run` reports counts only; full warning JSON is written after a
 published run. Source scanner `scan_error` findings block push instead of being
@@ -222,6 +305,9 @@ network override; use `report --session` for historical session-scoped review.
 Prune approval evidence in `status` is limited to current profile/target counts
 and source breakdown from `.supermover/prune/approvals/*.json`; it does not list
 full approval artifacts and is not prune authorization or target cleanup.
+
+### Drift Commands
+
 `drift list` is also read-only. It derives the target from the profile only,
 compares published manifest evidence to the target filesystem, supports
 `--session <id>` and `--format text|json`, and exits non-zero when drift,
@@ -253,6 +339,9 @@ make `verify`, `health`, `report`, or `status` review-required, but live
 detector output remains read-only review evidence. Resolve does not repair
 target files, rewrite manifests, authorize prune, suppress future detector
 findings, or perform broad reconcile.
+
+### Narrow Reconcile
+
 `reconcile plan/apply` is narrower than the roadmap reconcile feature. It works
 only from persisted `.supermover/drift/<id>.json` evidence selected through the
 profile, keeps `plan` non-mutating, and requires selected `--id` values plus
@@ -265,69 +354,28 @@ drift IDs, perform broad automatic repair, write durable repair-receipt
 artifacts, rewrite manifests, run background scans, or participate in daemon or
 ongoing sync.
 
-The v1 direction is intentionally conservative:
+## Roadmap Truth
 
-- one-way `source -> trusted target`
-- profile files as the configuration SSOT
-- `.supermover` control-plane artifacts for receipts, manifests, warnings,
-  previous-manifest evidence, soft deletes, target-drift refusal records,
-  recovery, and network transfer outcomes from non-dry-run `push --network`
-  attempts that reach the network runner; `report` and `drift list` can run the
-  live detector without persisting their observations, `drift record` can
-  persist current live detector findings as `.supermover/drift` review records,
-  and `status` exposes
-  compact current profile/target evidence without persisting live detector
-  output; `report` also exposes prune candidates, refusals, current-scope
-  approval evidence, existing receipts, and receipt issues as read-only review
-  evidence. `prune review` exposes the same prune review evidence as a focused
-  read-only release-review surface. `status` narrows that surface to compact
-  counts plus prune review status/action, including active/stale/expired/
-  consumed approval counts and receipt-issue counts. Approval evidence is
-  scoped to the current profile/target and helps review authored-but-unapplied
-  approvals and receipt-attention states only; the read-only surfaces do not
-  author approvals, supersede approvals, apply prune decisions, write receipts, delete files or
-  symlinks, repair/reconcile drift, make the target clean, automatically
-  release a migration, or close v1.
-  `drift acknowledge` can add
-  operator review evidence to existing persisted drift records only, and
-  `drift resolve` can close existing persisted drift records only after a fresh
-  detector no longer reports the same path and expected baseline.
-  `reconcile plan/apply` adds a narrow selected-ID persisted drift repair path
-  for missing regular-file restores and already-restored/absent resolve-noop
-  cases only, while history writers, broad drift reconcile/repair, repair
-  receipts, retry policy, background scans, drift-to-prune integration, and
-  broader release workflow surfaces remain planned; wired
-  `prune --dry-run` is a non-mutating soft-delete candidate/refusal review
-  surface with retention-window refusals, `prune review` is a focused read-only
-  prune release-review surface, `prune approve` authors durable approval
-  artifacts only for current dry-run candidates without deleting target files or
-  writing receipts, and `prune --apply --approval <id>` is the
-  conservative physical prune apply path that rechecks retention and target
-  state before deletion
-- low-information explicit address discovery hints plus verification-code
-  pairing that writes local receipts/profile pins; discovery is not trust, LAN
-  browsing remains planned, and `serve` can mount authenticated receiver upload
-  routes only from paired profile network material
-- profile-backed `push --network` transfer over pinned TLS 1.3 mTLS for
-  non-dry-run attempts, including zero-byte regular files through explicit
-  final empty completion evidence; dry-run remains preflight-only and
-  non-mutating
-- bounded same-session `push --network` source-interruption evidence after
-  accepted payload bytes, persisted in-flight network-transfer evidence, and a
-  same-profile/same-session rerun, plus receiver-listener restart over
-  preserved target state, published-session retry, missing-prior-evidence
-  fail-closed behavior, and deterministic `networkrun`
-  source-stop-after-progress resume evidence; broad arbitrary interruption
-  recovery, network `recover`, broad resume acceptance, OS-managed daemon
-  restart recovery, automatic crash restart, arbitrary process-kill recovery,
-  and power-loss recovery remain planned or unwired
-- traffic privacy level 2 overhead evidence from bounded padding, batching,
-  and timing jitter on the protocol-client network path; this is not anonymity
-  and does not hide total bytes, transfer duration, peer IP addresses, LAN
-  presence, or Supermover use
-- ordinary file-tree fidelity with auditable supplemental migration records
-- agent knowledge files migrated as files and cataloged without semantic
-  rewriting
+The current implementation is intentionally narrower than the product
+direction. Still planned:
+
+- LAN browsing beyond explicit address hints
+- OS-managed or detached daemon lifecycle and ongoing incremental sync
+- broad arbitrary interruption recovery, broad resume acceptance, and network
+  `recover`
+- broad automatic repair/reconcile, repair receipts, background scans, and
+  richer drift-to-prune integration
+- broader operator-facing traffic privacy acceptance beyond the current
+  profile-backed level 2 evidence path
+
+The current non-claims matter just as much:
+
+- `discover` is not trust and not LAN browsing
+- traffic privacy level 2 is not anonymity
+- `dashboard` is read-only target verification against the latest published
+  snapshot, not post-publish source comparison or synchronization
+- `status` is compact review evidence, not release authorization, daemon
+  supervision, or network-sync status
 
 The tracked implementation outline lives in [docs/plan.md](docs/plan.md).
 Local Bagakit planning and research artifacts may also exist under `.bagakit/`,

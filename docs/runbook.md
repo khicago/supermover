@@ -165,6 +165,32 @@ the source protocol client; a clean publish should produce the target file,
 receipt, and `network-transfer.json` evidence like other published network
 files. Transport setup failures and begin-auth refusal can still leave no
 network-transfer artifact.
+
+Before starting a large first network run, ensure that the trusted target is
+empty or intentionally contains only byte-identical payload. A new receiver
+session fails at begin, before accepting chunks or creating session state, when
+it can already see divergent target files, symlinks, or incompatible
+directories. Commit still rechecks targets to catch changes during transfer.
+This is a fail-fast conflict guard, not changed-file network synchronization;
+do not use a new network session to update previously migrated files.
+
+For target-side visual verification after a published migration, run the
+loopback-only operator page on the target device:
+
+```bash
+go run ./cmd/supermover dashboard --profile ./target.profile.json
+```
+
+Open the emitted access-token URL on the target, or reach it through an SSH
+local port forward while preserving that URL. The page is read-only and
+performs one full `verify` plus a live scan for target paths outside the
+selected manifest on page open and whenever the operator presses refresh.
+This may read every regular target file, so it deliberately does not poll
+continuously during a large transfer and refuses overlapping full-check
+requests. A green page means the target matches its
+latest published manifest snapshot and has no detected extra target paths or
+review evidence; it does not prove that the source tree has not changed since
+that publish, and it is not a Merkle-root comparison.
 Command output keeps `resume=receiver_status` for compatibility and adds
 `resume_authority=receiver_status` plus `resume_outcome=fresh`, `resumed`, or
 `published_retry`. Only `resume_outcome=resumed` with nonzero `resumed_bytes`

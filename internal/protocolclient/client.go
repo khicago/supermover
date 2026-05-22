@@ -540,9 +540,9 @@ func (c Client) streamFile(ctx context.Context, doer Doer, endpoint *url.URL, so
 		if !batchChunks {
 			nextOffset, _, err = sendSingleChunk(ctx, doer, endpoint, sessionID, manifest, entry, file, fullHash, chunkReq, 0, 0, statusRefreshes, paddingCfg, padChunks, &stats, progress)
 		} else {
-			recordSize, err := encodedChunkSize(chunkReq)
-			if err != nil {
-				return stats, err
+			recordSize, encodeErr := encodedChunkSize(chunkReq)
+			if encodeErr != nil {
+				return stats, encodeErr
 			}
 			pending.append(chunkReq, recordSize)
 			nextOffset, _, err = sendPendingChunkBatch(ctx, doer, endpoint, manifest, entry, file, fullHash, pending, 0, statusRefreshes, paddingCfg, padChunks, &stats, progress)

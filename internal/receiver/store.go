@@ -103,13 +103,12 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 	defer unlock()
 
 	layout := s.layout()
-	if err := layout.EnsureSessionDirs(req.SessionID); err != nil {
-		return protocol.BeginSessionResponse{}, err
-	}
-
 	if existing, err := readMeta(s.metaPath(req.SessionID)); err == nil {
 		if !sameManifest(existing, req) {
 			return protocol.BeginSessionResponse{}, fmt.Errorf("%w: session %q already exists with different metadata", ErrConflict, req.SessionID)
+		}
+		if err := layout.EnsureSessionDirs(req.SessionID); err != nil {
+			return protocol.BeginSessionResponse{}, err
 		}
 		if err := s.reconcileBegin(existing); err != nil {
 			return protocol.BeginSessionResponse{}, err
@@ -120,6 +119,13 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		}
 		return protocol.BeginSessionResponse{SessionID: req.SessionID, State: status.State, ResumeFrom: status.Files}, nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
+		return protocol.BeginSessionResponse{}, err
+	}
+
+	if err := s.preflightNewSessionTargets(req.Manifest.Entries); err != nil {
+		return protocol.BeginSessionResponse{}, err
+	}
+	if err := layout.EnsureSessionDirs(req.SessionID); err != nil {
 		return protocol.BeginSessionResponse{}, err
 	}
 
@@ -153,6 +159,43 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		return protocol.BeginSessionResponse{}, err
 	}
 	return protocol.BeginSessionResponse{SessionID: req.SessionID, State: protocol.SessionStateValidated}, nil
+}
+
+// preflightNewSessionTargets avoids receiving payload that is already known to
+// be unpublishable. Commit still repeats conflict checks because targets can
+// change after this check while a transfer is in progress.
+func (s FileStore) preflightNewSessionTargets(entries []protocol.ManifestEntry) error {
+	for _, entry := range entries {
+		final, err := s.finalPath(entry)
+		if err != nil {
+			return err
+		}
+		switch entry.Kind {
+		case protocol.FileKindDir:
+			if _, _, err := finalDirectoryState(final); err != nil {
+				return err
+			}
+		case protocol.FileKindSymlink:
+			same, exists, err := symlinkTargetState(final, entry.SymlinkTarget)
+			if err != nil {
+				return err
+			}
+			if exists && !same {
+				return fmt.Errorf("%w: target symlink %q already exists with different target; refusing to overwrite", ErrConflict, publishPath(entry))
+			}
+		case protocol.FileKindFile:
+			same, exists, err := finalFileState(final, entry.Size, entry.Digest)
+			if err != nil {
+				return err
+			}
+			if exists && !same {
+				return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
+			}
+		default:
+			return fmt.Errorf("%w: manifest entry %q uses unsupported kind %q", ErrConflict, entry.Path, entry.Kind)
+		}
+	}
+	return nil
 }
 
 func (s FileStore) Status(sessionID string) (protocol.SessionStatusResponse, error) {

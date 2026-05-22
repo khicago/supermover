@@ -33,6 +33,7 @@ import (
 	"github.com/khicago/supermover/internal/incrementalsync"
 	"github.com/khicago/supermover/internal/localpush"
 	"github.com/khicago/supermover/internal/networkpush"
+	"github.com/khicago/supermover/internal/operatorui"
 	"github.com/khicago/supermover/internal/pairing"
 	"github.com/khicago/supermover/internal/pairserve"
 	"github.com/khicago/supermover/internal/profile"
@@ -67,6 +68,7 @@ type Runner struct {
 	ServeReady         func(address string)
 	ServePairingReady  func(pairserve.ReadyInfo)
 	ServeReceiverReady func(receiverserve.ReadyInfo)
+	DashboardReady     func(operatorui.ReadyInfo)
 	DaemonReady        func(agentdaemon.State)
 	// DaemonRestartConsumed lets tests synchronize with the narrow foreground restart window.
 	DaemonRestartConsumed func(agentdaemon.State)
@@ -104,6 +106,8 @@ func (r Runner) Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return r.runPush(args[1:], stdout, stderr)
 	case "verify":
 		return r.runVerify(args[1:], stdout, stderr)
+	case "dashboard":
+		return r.runDashboard(args[1:], stdout, stderr)
 	case "drift":
 		return r.runDrift(args[1:], stdout, stderr)
 	case "deleted":
@@ -674,6 +678,72 @@ func (r Runner) runVerify(args []string, stdout io.Writer, stderr io.Writer) int
 		return 1
 	}
 	if report.Summary.ManifestCount == 0 {
+		return 1
+	}
+	return 0
+}
+
+func (r Runner) runDashboard(args []string, stdout io.Writer, stderr io.Writer) int {
+	fs := newFlagSet("dashboard", stderr)
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), `Usage of dashboard:
+  supermover dashboard --profile <path> [--listen <loopback-ip:port>]
+
+Serves a local-only read-only operator page that verifies the profile-selected
+target against the latest published manifest and scans for extra target paths.
+Full verification reads target file content on page load or explicit refresh.
+Open only the emitted access-token URL. Remote access must use a trusted local
+forwarding mechanism such as SSH while preserving its token query.`)
+		fs.PrintDefaults()
+	}
+	profilePath := fs.String("profile", "", "target profile path")
+	listen := fs.String("listen", operatorui.DefaultListen, "loopback dashboard listen address")
+	if hasHelpFlag(args) {
+		fs.SetOutput(stdout)
+		fs.Usage()
+		return 0
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if strings.TrimSpace(*profilePath) == "" {
+		fmt.Fprintln(stderr, "dashboard: --profile is required")
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(stderr, "dashboard: unexpected arguments: %s\n", formatDiagnosticArgs(fs.Args()))
+		return 2
+	}
+	p, err := profile.ReadFile(*profilePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "dashboard: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	if _, err := targetDirFromProfile(p); err != nil {
+		fmt.Fprintf(stderr, "dashboard: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	server, err := operatorui.New(operatorui.Options{
+		Profile: p,
+		Listen:  *listen,
+		Now:     r.nowFunc(),
+		Ready: func(info operatorui.ReadyInfo) {
+			fmt.Fprintf(stderr, "dashboard: url=%s loopback_only=true read_only=true check=latest_published_snapshot\n", info.URL)
+			if r.DashboardReady != nil {
+				r.DashboardReady(info)
+			}
+		},
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "dashboard: %s\n", safeDiagnosticLine(err.Error()))
+		return 2
+	}
+	ctx := r.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := server.ListenAndServe(ctx); err != nil {
+		fmt.Fprintf(stderr, "dashboard: %s\n", safeDiagnosticLine(err.Error()))
 		return 1
 	}
 	return 0
@@ -3087,23 +3157,6 @@ func withLockedTarget(targetDir string, fn func() error) error {
 	}
 	defer unlock()
 	return fn()
-}
-
-func updateLockedDaemonState(targetDir string, update func(agentdaemon.State) (agentdaemon.State, bool, error)) error {
-	return withLockedTarget(targetDir, func() error {
-		state, err := agentdaemon.ReadState(targetDir)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		next, write, err := update(state)
-		if err != nil || !write {
-			return err
-		}
-		return agentdaemon.WriteState(targetDir, next)
-	})
 }
 
 func readDaemonProfile(profilePath string) (profile.Profile, string, string, error) {
@@ -5844,6 +5897,7 @@ Available commands:
   scan        Scan configured profile roots without writing target state
   push        Push source roots; --network uses paired profile-backed mTLS
   verify      Verify manifests and restored files
+  dashboard   Serve local-only read-only target verification page
   drift       List target-local drift from published evidence
   deleted     Review source-side soft-delete records
   prune       Review soft-delete prune candidates; inspect/author/apply prune approval artifacts

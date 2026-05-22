@@ -657,10 +657,6 @@ func validateStateWithOptions(state State, opts stateValidationOptions) error {
 	return nil
 }
 
-func validateEntry(entry QueueEntry) error {
-	return validateEntryWithOptions(entry, stateValidationOptions{})
-}
-
 func validateEntryWithOptions(entry QueueEntry, opts stateValidationOptions) error {
 	if strings.TrimSpace(entry.ID) == "" {
 		return errors.New("entry id is required")

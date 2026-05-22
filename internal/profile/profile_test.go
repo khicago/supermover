@@ -13,6 +13,11 @@ func sampleAbsolutePath(parts ...string) string {
 	return filepath.Join(all...)
 }
 
+func sampleUncleanAbsolutePath(parts ...string) string {
+	all := append([]string{"opt", "sample"}, parts...)
+	return string(filepath.Separator) + strings.Join(all, string(filepath.Separator))
+}
+
 func sampleTargetPath() string {
 	return filepath.Join(string(filepath.Separator), "var", "tmp", "sample-target")
 }
@@ -261,7 +266,7 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			mutate: func(p *Profile) {
 				p.Network.LocalTLSIdentity = TLSIdentityRef{
 					CertificatePath: sampleAbsolutePath(".config", "supermover", "source.crt"),
-					PrivateKeyPath:  sampleAbsolutePath(".config", "..", "source.key"),
+					PrivateKeyPath:  sampleUncleanAbsolutePath(".config", "..", "source.key"),
 				}
 			},
 			wantErr: "must not contain parent traversal",
@@ -300,7 +305,7 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			name: "network tls identity rejects cleaned parent traversal",
 			mutate: func(p *Profile) {
 				p.Network.LocalTLSIdentity = TLSIdentityRef{
-					CertificatePath: sampleAbsolutePath(".config", "supermover", "..", "source.crt"),
+					CertificatePath: sampleUncleanAbsolutePath(".config", "supermover", "..", "source.crt"),
 					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
 				}
 			},

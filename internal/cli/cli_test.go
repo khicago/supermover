@@ -30,6 +30,7 @@ import (
 
 	"github.com/khicago/supermover/internal/agentdaemon"
 	"github.com/khicago/supermover/internal/control"
+	"github.com/khicago/supermover/internal/operatorui"
 	"github.com/khicago/supermover/internal/pairing"
 	"github.com/khicago/supermover/internal/pairserve"
 	"github.com/khicago/supermover/internal/profile"
@@ -1117,6 +1118,96 @@ func TestServeStartsPairingOnlyServerAndCancelsCleanly(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(target, ".supermover")); !os.IsNotExist(err) {
 		t.Fatalf("serve .supermover state error = %v, want not exist", err)
+	}
+}
+
+func TestDashboardStartsLoopbackReadOnlyPageAndCancelsCleanly(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	p := profile.NewDefault("profile-local", "Target Dashboard", source, target)
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan operatorui.ReadyInfo, 1)
+	done := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	runner := Runner{
+		Context: ctx,
+		DashboardReady: func(info operatorui.ReadyInfo) {
+			ready <- info
+		},
+	}
+	go func() {
+		done <- runner.Run([]string{"dashboard", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	}()
+	var info operatorui.ReadyInfo
+	select {
+	case info = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("dashboard did not report ready; stderr=%q", stderr.String())
+	}
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(info.URL)
+	if err != nil {
+		t.Fatalf("GET dashboard page error = %v, want nil", err)
+	}
+	body := readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Run full verification") {
+		t.Fatalf("GET dashboard page status/body = %d/%q, want page", resp.StatusCode, body)
+	}
+	integrityURL := strings.Replace(info.URL, "/?token=", "/api/integrity?token=", 1)
+	req, err := http.NewRequest(http.MethodGet, integrityURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest(dashboard integrity) error = %v, want nil", err)
+	}
+	req.Header.Set("X-Supermover-Dashboard", "1")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET dashboard integrity error = %v, want nil", err)
+	}
+	body = readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"read_only":true`) || !strings.Contains(body, `"status":"review_required"`) {
+		t.Fatalf("GET dashboard integrity status/body = %d/%q, want read-only no-manifest review", resp.StatusCode, body)
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got != 0 {
+			t.Fatalf("dashboard exit = %d stderr = %q, want 0", got, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("dashboard did not exit after cancel; stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "dashboard: url=http://") || !strings.Contains(stderr.String(), "loopback_only=true") {
+		t.Fatalf("dashboard stderr = %q, want loopback operator URL", stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(target, control.DirName)); !os.IsNotExist(err) {
+		t.Fatalf("dashboard .supermover state error = %v, want no read-only artifact writes", err)
+	}
+}
+
+func TestDashboardRejectsNonLoopbackListener(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	if err := profile.WriteFile(profilePath, profile.NewDefault("profile-local", "Target Dashboard", source, target)); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"dashboard", "--profile", profilePath, "--listen", "0.0.0.0:8787"}, &stdout, &stderr)
+	if got != 2 || !strings.Contains(stderr.String(), "loopback") {
+		t.Fatalf("dashboard non-loopback exit/stderr = %d/%q, want setup refusal", got, stderr.String())
 	}
 }
 
@@ -8460,18 +8551,6 @@ func fileSizeForCLI(t *testing.T, path string) int64 {
 		t.Fatalf("os.Stat(%q) error = %v, want nil", path, err)
 	}
 	return info.Size()
-}
-
-func readFilePrefixForCLI(t *testing.T, path string, size int) []byte {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("os.ReadFile(%q) error = %v, want nil", path, err)
-	}
-	if len(data) < size {
-		t.Fatalf("file %q size = %d, want at least %d", path, len(data), size)
-	}
-	return append([]byte(nil), data[:size]...)
 }
 
 func writePatternFileForCLI(t *testing.T, path string, size int) {

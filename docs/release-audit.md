@@ -110,7 +110,12 @@ Current completed slice:
   certificate, privacy, or recovery runtime overrides, and it does not make
   `recover` a network recovery command.
 - Receiver protocol library supports resumable chunk upload, integrity checks,
-  idempotent begin/commit, and conservative publish semantics.
+  idempotent begin/commit, and conservative publish semantics. For new
+  receiver sessions it rejects already-visible divergent target files,
+  symlinks, and incompatible directories at begin before storing session state
+  or accepting payload chunks; commit retains the later conflict gate for
+  target changes during transfer. This fail-fast gate prevents known-conflict
+  payload waste but does not implement changed-file network sync.
 - Internal TLS/mTLS transport adapters exist and now back the `serve` receiver
   mode. They
   configure TLS 1.3 mutual authentication, derive peer identity from leaf SPKI
@@ -389,6 +394,9 @@ network `recover`, arbitrary process-kill recovery, or anonymity.
 - The current migration-ready path assumes an empty trusted target or an
   idempotent rerun where existing target content already matches the source.
 - Divergent existing target files are refused rather than overwritten.
+  For a new network session, conflicts already visible at receiver begin are
+  rejected before payload upload; target changes after begin remain protected
+  by commit-time preflight.
 - Soft-delete records are review markers only. Current commands delete target
   files only through `prune --apply --approval <id>` over a durable approval
   artifact; source absence alone never triggers physical deletion.

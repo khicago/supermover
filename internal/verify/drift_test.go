@@ -276,6 +276,31 @@ func TestDetectTargetDriftExplicitLatestRecordsExtras(t *testing.T) {
 	assertDriftSummary(t, got, 1, 0)
 }
 
+func TestDetectTargetDriftExtraPathsOnlySkipsDeclaredEntryChecks(t *testing.T) {
+	target := t.TempDir()
+	writeTargetFile(t, target, "keep.txt", []byte("changed"))
+	writeTargetFile(t, target, "extra.txt", []byte("extra"))
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		RootID:    "root",
+		CreatedAt: "2026-05-16T00:00:00Z",
+		Entries: []control.ManifestEntry{
+			{Path: "keep.txt", Kind: "file", Size: 4, Digest: digest([]byte("keep")), TargetPath: "keep.txt"},
+		},
+	})
+	writePublishedReceipt(t, target, "session")
+
+	got, err := DetectTargetDrift(DriftOptions{TargetRoot: target, SessionID: "session", Now: fixedDriftNow(t), ExtraPathsOnly: true})
+	if err != nil {
+		t.Fatalf("DetectTargetDrift(%q, extra paths only) error = %v, want nil", target, err)
+	}
+	assertDrift(t, got.Drifts, "extra.txt", "extra")
+	assertNoDriftPath(t, got.Drifts, "keep.txt")
+	assertDriftSummary(t, got, 1, 0)
+}
+
 func TestDetectTargetDriftDoesNotDuplicateSoftDeletedTargetPaths(t *testing.T) {
 	target := t.TempDir()
 	writeTargetFile(t, target, "keep.txt", []byte("keep"))

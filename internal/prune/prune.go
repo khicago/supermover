@@ -1726,7 +1726,7 @@ func planRecord(targetRoot string, record control.SoftDelete, manifestBySession 
 
 func retentionWindowRefusal(record control.SoftDelete, policy profile.DeletePolicy, now time.Time, previous *PreviousManifestEvidence, observed control.PruneObservedTargetState) *Refusal {
 	if policy.RetentionDays < 0 {
-		return recordRefusal(record, ReasonRetentionWindowActive, fmt.Sprintf("profile delete_policy.retention_days is invalid: retention_days cannot be negative"), previous, observed)
+		return recordRefusal(record, ReasonRetentionWindowActive, "profile delete_policy.retention_days is invalid: retention_days cannot be negative", previous, observed)
 	}
 	if policy.RetentionDays == 0 {
 		return nil
