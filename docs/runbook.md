@@ -1,13 +1,16 @@
 # Operations Runbook
 
-This runbook gives repeatable steps for a local push migration and the evidence
-operators should preserve. It separates currently implemented commands from
-planned mainline commands so acceptance work can proceed without implying LAN
-agent, OS-managed daemon, detached background process, or ongoing sync features
-are complete. The read-only `report` and compact local
-`status` commands are operator views over the profile SSOT and target
-control-plane artifacts; they do not represent daemon lifecycle, LAN agent,
-transport, or prune completion.
+This runbook is the operator procedure for the current Supermover checkpoint.
+Use it to run the wired local and bounded network paths, capture evidence, and
+avoid turning planned product surface into accidental release claims.
+
+The document assumes three boundaries throughout:
+
+- `report`, `status`, and `dashboard` are read-only review surfaces
+- `daemon` is foreground lifecycle evidence around `serve`, not detached service
+  management
+- `push --network` is a bounded profile-backed transfer path, not LAN browsing,
+  ongoing sync, or broad recovery
 
 ## Release Gates
 

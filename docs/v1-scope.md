@@ -1,8 +1,12 @@
 # v1 Scope And Non-Goals
 
-Supermover v1 is a conservative one-way migration tool. The design favors
+Supermover v1 is a conservative one-way migration tool. The product favors
 reviewable state, explicit trust, and recoverable operations over broad sync
 magic.
+
+Read this document as a scope contract, not a roadmap pitch. If a behavior is
+not listed in scope, or is listed only as planned, it should not be described
+elsewhere as implemented.
 
 ## In Scope
 

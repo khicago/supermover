@@ -1,7 +1,8 @@
 # Troubleshooting Matrix
 
-Use this matrix to choose safe operator actions. Prefer collecting control-plane
-evidence before rerunning or deleting files.
+Use this matrix to choose the next safe operator action. Prefer collecting
+control-plane evidence before rerunning, recovering, pruning, or deleting
+anything.
 
 ## Scope Boundary
 

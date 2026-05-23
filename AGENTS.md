@@ -112,6 +112,10 @@ Continue using global skills when they apply, especially `go-testing`,
   enough information to know conflicts.
 - For safety-critical flows, add a behavior test before or with the fix.
 - Keep docs and README honest about wired behavior versus roadmap.
+- Never delete, prune, clean, rewrite, or otherwise remove `.codex` session
+  state, including any session/runtime/history material under `.codex`. Treat
+  these sessions as user-owned operational evidence unless the user gives an
+  explicit, path-specific deletion instruction in the current conversation.
 
 ## Validation
 
