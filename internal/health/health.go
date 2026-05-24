@@ -153,7 +153,8 @@ func BuildReport(opts Options) (Report, error) {
 func unresolvedTargetDrifts(records []control.TargetDrift) []control.TargetDrift {
 	out := make([]control.TargetDrift, 0, len(records))
 	for _, record := range records {
-		if strings.TrimSpace(record.ReviewState) == "resolved" {
+		switch strings.TrimSpace(record.ReviewState) {
+		case "resolved", "expired":
 			continue
 		}
 		out = append(out, record)

@@ -173,6 +173,39 @@ func TestResolveAcceptsExtraDriftAfterPathRemoved(t *testing.T) {
 	}
 }
 
+func TestExpireMarksPersistedDriftExpiredWithoutTargetMutation(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	p := profile.NewDefault("profile-local", "Local profile", filepath.Join(dir, "source"), target)
+	now := time.Date(2026, 5, 21, 12, 0, 0, 0, time.UTC)
+	drift := validTargetDrift()
+	writePublishedSession(t, target, drift.SessionID, p.ProfileID, p.Target.TargetID, drift.RootID)
+	writeTargetDrift(t, target, drift)
+
+	got, err := Expire(ExpireOptions{
+		Profile:  p,
+		ID:       drift.ID,
+		Reason:   "stale review evidence superseded by newer detector workflow",
+		Reviewer: "ops@example.com",
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("Expire() error = %v, want nil", err)
+	}
+	if got.ID != drift.ID || got.Path != drift.Path || got.PreviousState != "needs_review" || got.ReviewState != "expired" || got.ReviewedAt != now.Format(time.RFC3339Nano) || got.Reviewer != "ops@example.com" || got.Reason != "stale review evidence superseded by newer detector workflow" {
+		t.Fatalf("Expire() = %+v, want expired review evidence for persisted drift", got)
+	}
+
+	path := targetDriftPath(t, target, drift.ID)
+	persisted, err := control.ReadFile[control.TargetDrift](path)
+	if err != nil {
+		t.Fatalf("control.ReadFile(%q) error = %v, want nil", path, err)
+	}
+	if persisted.ReviewState != "expired" || persisted.ReviewAction != "expire" || persisted.ReviewedAt != now.Format(time.RFC3339Nano) || persisted.ReviewedBy != "ops@example.com" || persisted.ReviewReason != "stale review evidence superseded by newer detector workflow" {
+		t.Fatalf("persisted drift review metadata = %+v, want expire fields", persisted)
+	}
+}
+
 func TestAcknowledgeAcceptsFailedAttemptDriftWithPublishedExpectedBaseline(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")

@@ -26,21 +26,24 @@ const (
 // ErrArtifactExists reports a refused no-replace control artifact write.
 var ErrArtifactExists = errors.New("control artifact already exists")
 
+var artifactBoundaryLstat = os.Lstat
+
 type ArtifactType string
 
 const (
-	ArtifactProfileSnapshot ArtifactType = "profile_snapshot"
-	ArtifactPairingReceipt  ArtifactType = "pairing_receipt"
-	ArtifactSessionReceipt  ArtifactType = "session_receipt"
-	ArtifactManifest        ArtifactType = "manifest"
-	ArtifactWarning         ArtifactType = "warning"
-	ArtifactTargetDrift     ArtifactType = "target_drift"
-	ArtifactSoftDelete      ArtifactType = "soft_delete"
-	ArtifactPruneApproval   ArtifactType = "prune_approval"
-	ArtifactPruneReceipt    ArtifactType = "prune_receipt"
-	ArtifactHistoryIndex    ArtifactType = "history_index"
-	ArtifactRecoveryState   ArtifactType = "recovery_state"
-	ArtifactNetworkTransfer ArtifactType = "network_transfer"
+	ArtifactProfileSnapshot  ArtifactType = "profile_snapshot"
+	ArtifactPairingReceipt   ArtifactType = "pairing_receipt"
+	ArtifactSessionReceipt   ArtifactType = "session_receipt"
+	ArtifactManifest         ArtifactType = "manifest"
+	ArtifactWarning          ArtifactType = "warning"
+	ArtifactTargetDrift      ArtifactType = "target_drift"
+	ArtifactSoftDelete       ArtifactType = "soft_delete"
+	ArtifactPruneApproval    ArtifactType = "prune_approval"
+	ArtifactPruneReceipt     ArtifactType = "prune_receipt"
+	ArtifactReconcileReceipt ArtifactType = "reconcile_receipt"
+	ArtifactHistoryIndex     ArtifactType = "history_index"
+	ArtifactRecoveryState    ArtifactType = "recovery_state"
+	ArtifactNetworkTransfer  ArtifactType = "network_transfer"
 )
 
 type ProfileSnapshot struct {
@@ -566,6 +569,8 @@ type PruneApproval struct {
 	Status                string              `json:"status"`
 	ApprovalReason        string              `json:"approval_reason,omitempty"`
 	RefusalReason         string              `json:"refusal_reason,omitempty"`
+	SupersededBy          string              `json:"superseded_by,omitempty"`
+	SupersededAt          string              `json:"superseded_at,omitempty"`
 }
 
 type PruneApprovalItem struct {
@@ -766,6 +771,8 @@ const (
 	NetworkTransferNeedsRepair   NetworkTransferStatus = "needs_repair"
 	NetworkTransferPublishFailed NetworkTransferStatus = "publish_failed"
 	NetworkTransferFailed        NetworkTransferStatus = "failed"
+
+	NetworkTransferEncryptedTLS13MTLS = "tls13_mtls"
 )
 
 type NetworkTransferAttempt struct {
@@ -903,6 +910,7 @@ type NetworkTransfer struct {
 	SourceDeviceID  string                          `json:"source_device_id"`
 	TargetDeviceID  string                          `json:"target_device_id"`
 	ProtocolVersion string                          `json:"protocol_version"`
+	EncryptedTransfer string                        `json:"encrypted_transfer,omitempty"`
 	PrivacyPolicy   transport.PrivacyPolicy         `json:"privacy_policy,omitempty"`
 	PrivacyOverhead *NetworkTransferPrivacyOverhead `json:"privacy_overhead,omitempty"`
 	Status          NetworkTransferStatus           `json:"status"`
@@ -927,7 +935,7 @@ func EnsureControlDir(targetRoot string) error {
 }
 
 func ValidateArtifactLoadBoundary(targetRoot string) error {
-	info, err := os.Lstat(targetRoot)
+	info, err := artifactBoundaryLstat(targetRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -942,7 +950,7 @@ func ValidateArtifactLoadBoundary(targetRoot string) error {
 	}
 
 	controlDir := ControlDir(targetRoot)
-	info, err = os.Lstat(controlDir)
+	info, err = artifactBoundaryLstat(controlDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -969,6 +977,9 @@ func ValidateArtifactLoadBoundary(targetRoot string) error {
 	if err := validatePruneArtifactSurface(filepath.Join(controlDir, "prune")); err != nil {
 		return err
 	}
+	if err := validateReconcileArtifactSurface(filepath.Join(controlDir, "reconcile")); err != nil {
+		return err
+	}
 	if err := validateDaemonArtifactSurface(filepath.Join(controlDir, "daemon")); err != nil {
 		return err
 	}
@@ -979,7 +990,7 @@ func ValidateArtifactLoadBoundary(targetRoot string) error {
 }
 
 func validateSessionArtifactSurface(sessionsDir string) error {
-	info, err := os.Lstat(sessionsDir)
+	info, err := artifactBoundaryLstat(sessionsDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1004,7 +1015,7 @@ func validateSessionArtifactSurface(sessionsDir string) error {
 			continue
 		}
 		sessionDir := filepath.Join(sessionsDir, session.Name())
-		info, err := os.Lstat(sessionDir)
+		info, err := artifactBoundaryLstat(sessionDir)
 		if err != nil {
 			return fmt.Errorf("inspect control artifact path %s: %w", sessionDir, err)
 		}
@@ -1021,7 +1032,7 @@ func validateSessionArtifactSurface(sessionsDir string) error {
 }
 
 func validateFlatArtifactSurface(root string) error {
-	info, err := os.Lstat(root)
+	info, err := artifactBoundaryLstat(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1040,15 +1051,28 @@ func validateFlatArtifactSurface(root string) error {
 	}
 	for _, entry := range entries {
 		path := filepath.Join(root, entry.Name())
-		info, err := os.Lstat(path)
+		info, err := artifactBoundaryLstat(path)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && isDaemonEventTempFile(root, entry.Name()) {
+				continue
+			}
 			return fmt.Errorf("inspect control artifact path %s: %w", path, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("control artifact path must not be a symlink: %s", path)
 		}
+		if isDaemonEventTempFile(root, entry.Name()) {
+			continue
+		}
 	}
 	return nil
+}
+
+func isDaemonEventTempFile(root, name string) bool {
+	return filepath.Base(root) == "events" &&
+		filepath.Base(filepath.Dir(root)) == "daemon" &&
+		strings.HasPrefix(name, ".daemon-event-") &&
+		strings.HasSuffix(name, ".tmp")
 }
 
 func validateProfileArtifactSurface(root string) error {
@@ -1056,7 +1080,7 @@ func validateProfileArtifactSurface(root string) error {
 }
 
 func validatePruneArtifactSurface(root string) error {
-	info, err := os.Lstat(root)
+	info, err := artifactBoundaryLstat(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1077,8 +1101,25 @@ func validatePruneArtifactSurface(root string) error {
 	return nil
 }
 
+func validateReconcileArtifactSurface(root string) error {
+	info, err := artifactBoundaryLstat(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("inspect control artifact path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("control artifact path must not be a symlink: %s", root)
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	return validateFlatArtifactSurface(filepath.Join(root, "receipts"))
+}
+
 func validateDaemonArtifactSurface(root string) error {
-	info, err := os.Lstat(root)
+	info, err := artifactBoundaryLstat(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1103,7 +1144,7 @@ func validateDaemonArtifactSurface(root string) error {
 }
 
 func validateIncrementalSyncArtifactSurface(root string) error {
-	info, err := os.Lstat(root)
+	info, err := artifactBoundaryLstat(root)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1118,7 +1159,7 @@ func validateIncrementalSyncArtifactSurface(root string) error {
 	}
 
 	profilesDir := filepath.Join(root, "profiles")
-	info, err = os.Lstat(profilesDir)
+	info, err = artifactBoundaryLstat(profilesDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1143,7 +1184,7 @@ func validateIncrementalSyncArtifactSurface(root string) error {
 		if !profile.IsDir() {
 			continue
 		}
-		info, err := os.Lstat(profileDir)
+		info, err := artifactBoundaryLstat(profileDir)
 		if err != nil {
 			return fmt.Errorf("inspect control artifact path %s: %w", profileDir, err)
 		}
@@ -1151,7 +1192,7 @@ func validateIncrementalSyncArtifactSurface(root string) error {
 			return fmt.Errorf("control artifact path must not be a symlink: %s", profileDir)
 		}
 		targetsDir := filepath.Join(profileDir, "targets")
-		info, err = os.Lstat(targetsDir)
+		info, err = artifactBoundaryLstat(targetsDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
@@ -1176,7 +1217,7 @@ func validateIncrementalSyncArtifactSurface(root string) error {
 			if !target.IsDir() {
 				continue
 			}
-			info, err := os.Lstat(targetDir)
+			info, err := artifactBoundaryLstat(targetDir)
 			if err != nil {
 				return fmt.Errorf("inspect control artifact path %s: %w", targetDir, err)
 			}
@@ -1186,13 +1227,16 @@ func validateIncrementalSyncArtifactSurface(root string) error {
 			if err := validateOptionalControlArtifactFile(filepath.Join(targetDir, "queue.json")); err != nil {
 				return err
 			}
+			if err := validateFlatArtifactSurface(filepath.Join(targetDir, "runs")); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
 func validateOptionalControlArtifactFile(path string) error {
-	info, err := os.Lstat(path)
+	info, err := artifactBoundaryLstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -1235,6 +1279,8 @@ func Path(targetRoot string, artifact ArtifactType, id string) (string, error) {
 		return filepath.Join(base, "prune", "approvals", id+".json"), nil
 	case ArtifactPruneReceipt:
 		return filepath.Join(base, "prune", "receipts", id+".json"), nil
+	case ArtifactReconcileReceipt:
+		return filepath.Join(base, "reconcile", "receipts", id+".json"), nil
 	case ArtifactHistoryIndex:
 		return filepath.Join(base, "history", "index.json"), nil
 	case ArtifactRecoveryState:
@@ -1663,7 +1709,7 @@ func (d TargetDrift) Validate() error {
 	}
 	require("change", d.Change, &errs)
 	if strings.TrimSpace(d.ReviewState) != "" && !targetDriftReviewStateValid(d.ReviewState) {
-		errs = append(errs, fmt.Errorf("review_state must be one of needs_review, acknowledged, resolved"))
+		errs = append(errs, fmt.Errorf("review_state must be one of needs_review, acknowledged, resolved, expired"))
 	}
 	if strings.TrimSpace(d.ReviewedAt) != "" {
 		if _, err := time.Parse(time.RFC3339Nano, d.ReviewedAt); err != nil {
@@ -1671,7 +1717,7 @@ func (d TargetDrift) Validate() error {
 		}
 	}
 	if strings.TrimSpace(d.ReviewAction) != "" && !targetDriftReviewActionValid(d.ReviewAction) {
-		errs = append(errs, fmt.Errorf("review_action must be one of acknowledge, resolve"))
+		errs = append(errs, fmt.Errorf("review_action must be one of acknowledge, resolve, expire"))
 	}
 	validateTargetDriftReviewEvidence(d, &errs)
 	for i, event := range d.ReviewHistory {
@@ -1691,6 +1737,9 @@ func validateTargetDriftReviewEvidence(d TargetDrift, errs *[]error) {
 	if reviewAction == "" && reviewedAt == "" && reviewedBy == "" && reviewReason == "" {
 		if reviewState == "resolved" {
 			*errs = append(*errs, errors.New(`review_action "resolve" is required when review_state is "resolved"`))
+		}
+		if reviewState == "expired" {
+			*errs = append(*errs, errors.New(`review_action "expire" is required when review_state is "expired"`))
 		}
 		return
 	}
@@ -1713,6 +1762,10 @@ func validateTargetDriftReviewEvidence(d TargetDrift, errs *[]error) {
 		if reviewState != "resolved" {
 			*errs = append(*errs, errors.New(`review_state must be "resolved" when review_action is "resolve"`))
 		}
+	case "expire":
+		if reviewState != "expired" {
+			*errs = append(*errs, errors.New(`review_state must be "expired" when review_action is "expire"`))
+		}
 	}
 }
 
@@ -1722,10 +1775,10 @@ func validateTargetDriftReviewEvent(index int, event TargetDriftReviewEvent, err
 	if reviewState == "" {
 		*errs = append(*errs, fmt.Errorf("%s.review_state is required", prefix))
 	} else if !targetDriftReviewStateValid(reviewState) {
-		*errs = append(*errs, fmt.Errorf("%s.review_state must be one of needs_review, acknowledged, resolved", prefix))
+		*errs = append(*errs, fmt.Errorf("%s.review_state must be one of needs_review, acknowledged, resolved, expired", prefix))
 	}
 	if strings.TrimSpace(event.ReviewAction) != "" && !targetDriftReviewActionValid(event.ReviewAction) {
-		*errs = append(*errs, fmt.Errorf("%s.review_action must be one of acknowledge, resolve", prefix))
+		*errs = append(*errs, fmt.Errorf("%s.review_action must be one of acknowledge, resolve, expire", prefix))
 	}
 	if strings.TrimSpace(event.ReviewedAt) != "" {
 		if _, err := time.Parse(time.RFC3339Nano, event.ReviewedAt); err != nil {
@@ -1909,6 +1962,26 @@ func (d PruneApproval) Validate() error {
 	require("status", d.Status, &errs)
 	if strings.TrimSpace(d.Status) != "" && !pruneApprovalStatusValid(d.Status) {
 		errs = append(errs, errors.New("status must be one of approved, refused, superseded"))
+	}
+	var supersededAt time.Time
+	var supersededAtOK bool
+	if d.Status == "superseded" {
+		require("superseded_by", d.SupersededBy, &errs)
+		supersededAt, supersededAtOK = requireRFC3339("superseded_at", d.SupersededAt, &errs)
+	} else {
+		supersededAt, supersededAtOK = parseOptionalRFC3339("superseded_at", d.SupersededAt, &errs)
+		if strings.TrimSpace(d.SupersededBy) != "" {
+			errs = append(errs, errors.New("superseded_by is only valid when status is superseded"))
+		}
+		if strings.TrimSpace(d.SupersededAt) != "" {
+			errs = append(errs, errors.New("superseded_at is only valid when status is superseded"))
+		}
+	}
+	if approvedAtOK && supersededAtOK && supersededAt.Before(approvedAt) {
+		errs = append(errs, errors.New("superseded_at must be greater than or equal to approved_at"))
+	}
+	if createdAtOK && supersededAtOK && supersededAt.Before(createdAt) {
+		errs = append(errs, errors.New("superseded_at must be greater than or equal to created_at"))
 	}
 	if d.Status == "approved" && strings.TrimSpace(d.RefusalReason) != "" {
 		errs = append(errs, errors.New("refusal_reason must be empty when status is approved"))
@@ -2292,6 +2365,9 @@ func (d NetworkTransfer) Validate() error {
 			errs = append(errs, fmt.Errorf("protocol_version is invalid: %w", err))
 		}
 	}
+	if strings.TrimSpace(d.EncryptedTransfer) != "" && d.EncryptedTransfer != NetworkTransferEncryptedTLS13MTLS {
+		errs = append(errs, fmt.Errorf("encrypted_transfer must be %q when present", NetworkTransferEncryptedTLS13MTLS))
+	}
 	if d.PrivacyPolicy.Level != 0 {
 		if err := d.PrivacyPolicy.Validate(); err != nil {
 			errs = append(errs, fmt.Errorf("privacy_policy is invalid: %w", err))
@@ -2515,7 +2591,7 @@ func requireSafeControlRelativePath(name string, value string, errs *[]error) {
 
 func targetDriftReviewStateValid(state string) bool {
 	switch state {
-	case "needs_review", "acknowledged", "resolved":
+	case "needs_review", "acknowledged", "resolved", "expired":
 		return true
 	default:
 		return false
@@ -2524,7 +2600,7 @@ func targetDriftReviewStateValid(state string) bool {
 
 func targetDriftReviewActionValid(action string) bool {
 	switch action {
-	case "acknowledge", "resolve":
+	case "acknowledge", "resolve", "expire":
 		return true
 	default:
 		return false

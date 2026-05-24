@@ -1046,6 +1046,112 @@ func TestDriftResolveRefusesLiveOnlyIDAndStillDetectedDrift(t *testing.T) {
 	}
 }
 
+func TestDriftExpireClearsReviewCountsWithoutClaimingRepair(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	writeDefaultProfile(t, profilePath, source, target)
+	drift := cliTargetDrift("drift-expire")
+	writeEmptyPublishedSessionForCLI(t, target, drift.SessionID)
+	writeTargetFileForCLIDrift(t, target, "file.txt", []byte("bbbbbbbbb"), 0o644)
+	writeTargetDriftArtifact(t, target, drift)
+
+	runner := Runner{Now: time.Date(2026, 5, 20, 10, 11, 12, 0, time.UTC)}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runner.Run([]string{"drift", "expire", "--profile", profilePath, "--id", drift.ID, "--reason", "stale review evidence", "--reviewer", "ops", "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("drift expire exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var result struct {
+		ID            string `json:"id"`
+		Path          string `json:"path"`
+		PreviousState string `json:"previous_state"`
+		ReviewState   string `json:"review_state"`
+		ReviewedAt    string `json:"reviewed_at"`
+		Reviewer      string `json:"reviewer"`
+		Reason        string `json:"reason"`
+		ProfileID     string `json:"profile_id"`
+		TargetID      string `json:"target_id"`
+		SessionID     string `json:"session_id"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(drift expire stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if result.ID != drift.ID || result.Path != drift.Path || result.PreviousState != "needs_review" || result.ReviewState != "expired" || result.ReviewedAt != "2026-05-20T10:11:12Z" || result.Reviewer != "ops" || result.Reason != "stale review evidence" || result.ProfileID != "profile-local" || result.TargetID != "local:profile-local" || result.SessionID != drift.SessionID {
+		t.Fatalf("drift expire JSON = %+v, want durable expired review evidence", result)
+	}
+	persisted, err := control.ReadFile[control.TargetDrift](targetDriftArtifactPath(t, target, drift.ID))
+	if err != nil {
+		t.Fatalf("control.ReadFile(target drift) error = %v, want nil", err)
+	}
+	if persisted.ReviewState != "expired" || persisted.ReviewAction != "expire" || persisted.ReviewedBy != "ops" || persisted.ReviewReason != "stale review evidence" {
+		t.Fatalf("persisted drift = %+v, want expired metadata", persisted)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("drift expire stderr = %q, want empty", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = runner.Run([]string{"status", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("status after drift expire exit = %d, stderr = %q, stdout = %q, want 1 for live drift and unrelated review evidence", got, stderr.String(), stdout.String())
+	}
+	var statusReport status.Report
+	if err := json.Unmarshal(stdout.Bytes(), &statusReport); err != nil {
+		t.Fatalf("json.Unmarshal(status after expire) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if statusReport.Counts.TargetDrifts != 0 || statusReport.Counts.LiveTargetDrifts != 1 || !statusReport.ReviewRequired {
+		t.Fatalf("status after expire = %+v, want persisted drift cleared but live drift still review-required", statusReport)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = runner.Run([]string{"verify", "--profile", profilePath, "--session", drift.SessionID, "--format", "json"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("verify after drift expire exit = %d, stderr = %q, stdout = %q, want 1 for live detector failure while persisted drift is expired", got, stderr.String(), stdout.String())
+	}
+	var verifyReport verify.Report
+	if err := json.Unmarshal(stdout.Bytes(), &verifyReport); err != nil {
+		t.Fatalf("json.Unmarshal(verify after expire) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if verifyReport.Summary.TargetDrifts != 0 || len(verifyReport.TargetDrifts) != 0 {
+		t.Fatalf("verify after expire target drifts=%+v/%#v, want expired persisted drift excluded", verifyReport.Summary, verifyReport.TargetDrifts)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = runner.Run([]string{"health", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("health after drift expire exit = %d, stderr = %q, stdout = %q, want 1 for live drift and artifact issues", got, stderr.String(), stdout.String())
+	}
+	var healthReport health.Report
+	if err := json.Unmarshal(stdout.Bytes(), &healthReport); err != nil {
+		t.Fatalf("json.Unmarshal(health after expire) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if healthReport.Healthy || healthReport.Summary.TargetDrifts != 0 || len(healthReport.TargetDrifts) != 0 {
+		t.Fatalf("health after expire = %+v, want persisted drift cleared but health still not healthy", healthReport)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = runner.Run([]string{"report", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("report after drift expire exit = %d, stderr = %q, stdout = %q, want 1 for live drift and other review-required evidence", got, stderr.String(), stdout.String())
+	}
+	var reportJSON report.Report
+	if err := json.Unmarshal(stdout.Bytes(), &reportJSON); err != nil {
+		t.Fatalf("json.Unmarshal(report after expire) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if reportJSON.Summary.TargetDrifts != 0 || len(reportJSON.TargetDrifts) != 0 || reportJSON.Summary.LiveTargetDrifts != 1 || reportJSON.Overall.Status == report.StatusVerified {
+		t.Fatalf("report after expire = %+v target_drifts=%#v live=%+v, want persisted drift cleared but live drift still surfaced", reportJSON.Summary, reportJSON.TargetDrifts, reportJSON.LiveTargetDrift)
+	}
+}
+
 func TestBareResolvedTargetDriftArtifactRequiresReviewAcrossSurfaces(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")

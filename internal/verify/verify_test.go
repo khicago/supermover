@@ -195,6 +195,41 @@ func TestBuildReportIgnoresResolvedTargetDriftArtifacts(t *testing.T) {
 	}
 }
 
+func TestBuildReportIgnoresExpiredTargetDriftArtifacts(t *testing.T) {
+	target := t.TempDir()
+	writeManifest(t, target, control.Manifest{
+		Version:   control.CurrentVersion,
+		ID:        "manifest-session",
+		SessionID: "session",
+		CreatedAt: "2026-05-16T00:00:00Z",
+	})
+	writePublishedReceipt(t, target, "session")
+	writeTargetDrift(t, target, control.TargetDrift{
+		Version:      control.CurrentVersion,
+		ID:           "session-drift-expired",
+		SessionID:    "session",
+		ProfileID:    "profile-local",
+		TargetID:     "target-local",
+		RootID:       "root",
+		Path:         "file.txt",
+		DetectedAt:   "2026-05-16T00:01:00Z",
+		Change:       "content_mismatch",
+		ReviewState:  "expired",
+		ReviewAction: "expire",
+		ReviewedAt:   "2026-05-20T00:00:00Z",
+		ReviewReason: "stale review evidence",
+		Evidence:     []string{"target content differed from staged manifest"},
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target, SessionID: "session"})
+	if err != nil {
+		t.Fatalf("BuildReport(%q, session) error = %v, want nil", target, err)
+	}
+	if got.Summary.TargetDrifts != 0 || len(got.TargetDrifts) != 0 {
+		t.Fatalf("BuildReport(%q).TargetDrifts = %#v summary=%+v, want expired drift excluded from review count", target, got.TargetDrifts, got.Summary)
+	}
+}
+
 func TestBuildReportReportsBareResolvedTargetDriftAsArtifactProblem(t *testing.T) {
 	target := t.TempDir()
 	writeManifest(t, target, control.Manifest{

@@ -163,7 +163,8 @@ func readCompatibleExisting(item PlanItem) (control.TargetDrift, error) {
 }
 
 func reconcileExisting(existing control.TargetDrift, detected control.TargetDrift) (control.TargetDrift, bool) {
-	if ReviewState(existing) != "resolved" {
+	reviewState := ReviewState(existing)
+	if reviewState != "resolved" && reviewState != "expired" {
 		return existing, false
 	}
 	reconciled := detected
@@ -171,7 +172,7 @@ func reconcileExisting(existing control.TargetDrift, detected control.TargetDrif
 	reconciled.LastDetectedAt = detected.DetectedAt
 	reconciled.ReviewHistory = append([]control.TargetDriftReviewEvent(nil), existing.ReviewHistory...)
 	reconciled.ReviewHistory = append(reconciled.ReviewHistory, control.TargetDriftReviewEvent{
-		ReviewState:     existing.ReviewState,
+		ReviewState:     reviewState,
 		ReviewAction:    existing.ReviewAction,
 		ReviewedAt:      existing.ReviewedAt,
 		ReviewedBy:      existing.ReviewedBy,

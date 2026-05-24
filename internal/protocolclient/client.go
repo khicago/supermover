@@ -540,9 +540,9 @@ func (c Client) streamFile(ctx context.Context, doer Doer, endpoint *url.URL, so
 		if !batchChunks {
 			nextOffset, _, err = sendSingleChunk(ctx, doer, endpoint, sessionID, manifest, entry, file, fullHash, chunkReq, 0, 0, statusRefreshes, paddingCfg, padChunks, &stats, progress)
 		} else {
-			recordSize, err := encodedChunkSize(chunkReq)
-			if err != nil {
-				return stats, err
+			recordSize, encodeErr := encodedChunkSize(chunkReq)
+			if encodeErr != nil {
+				return stats, encodeErr
 			}
 			pending.append(chunkReq, recordSize)
 			nextOffset, _, err = sendPendingChunkBatch(ctx, doer, endpoint, manifest, entry, file, fullHash, pending, 0, statusRefreshes, paddingCfg, padChunks, &stats, progress)
@@ -1416,12 +1416,18 @@ func manifestEntry(entry scan.Entry) (protocol.ManifestEntry, bool, audit.Record
 			digest = protocol.EmptySHA256Digest
 		}
 		return protocol.ManifestEntry{
-			Path:    entry.Path,
-			Kind:    protocol.FileKindFile,
-			Mode:    uint32(entry.Mode.Perm()),
-			Size:    entry.Size,
-			Digest:  digest,
-			ModTime: entry.ModTime,
+			Path:               entry.Path,
+			Kind:               protocol.FileKindFile,
+			Mode:               uint32(entry.Mode.Perm()),
+			Size:               entry.Size,
+			Digest:             digest,
+			ModTime:            entry.ModTime,
+			PreviousSessionID:  entry.PreviousSessionID,
+			PreviousManifestID: entry.PreviousManifestID,
+			PreviousSize:       entry.PreviousSize,
+			PreviousDigest:     entry.PreviousDigest,
+			PreviousMode:       entry.PreviousMode,
+			PreviousModTime:    entry.PreviousModTime,
 		}, true, audit.Record{}, nil
 	case scan.KindSymlink:
 		return protocol.ManifestEntry{

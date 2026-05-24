@@ -1066,7 +1066,8 @@ func filterTargetDrifts(records []control.TargetDrift, sessionID string) []contr
 	if sessionID == "" {
 		out := make([]control.TargetDrift, 0, len(records))
 		for _, record := range records {
-			if strings.TrimSpace(record.ReviewState) == "resolved" {
+			switch strings.TrimSpace(record.ReviewState) {
+			case "resolved", "expired":
 				continue
 			}
 			out = append(out, record)
@@ -1075,7 +1076,8 @@ func filterTargetDrifts(records []control.TargetDrift, sessionID string) []contr
 	}
 	var out []control.TargetDrift
 	for _, record := range records {
-		if strings.TrimSpace(record.ReviewState) == "resolved" {
+		switch strings.TrimSpace(record.ReviewState) {
+		case "resolved", "expired":
 			continue
 		}
 		if record.SessionID == "" || record.SessionID == sessionID {

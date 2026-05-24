@@ -37,6 +37,11 @@ const (
 	ResultRefused = "refused"
 	ResultNoop    = "noop"
 
+	ReceiptStatusStarted = "started"
+	ReceiptStatusApplied = "applied"
+	ReceiptStatusPartial = "partial"
+	ReceiptStatusFailed  = "failed"
+
 	ReasonAlreadyResolved       = "already_resolved"
 	ReasonMissingApplyIntent    = "missing_apply_intent"
 	ReasonProfileScopeMismatch  = "profile_scope_mismatch"
@@ -53,6 +58,25 @@ const (
 	ReasonSourceMismatch        = "source_evidence_mismatch"
 	ReasonTargetChanged         = "target_changed_before_apply"
 	ReasonMutationFailed        = "mutation_failed"
+
+	ConflictClassOperatorIntent    = "operator_intent"
+	ConflictClassScopeMismatch     = "scope_mismatch"
+	ConflictClassUnsafePath        = "unsafe_path"
+	ConflictClassUnsupportedDrift  = "unsupported_drift"
+	ConflictClassTargetState       = "target_state_conflict"
+	ConflictClassArtifactIntegrity = "artifact_integrity"
+	ConflictClassPublishedEvidence = "published_evidence"
+	ConflictClassSourceEvidence    = "source_evidence"
+	ConflictClassMutationFailure   = "mutation_failure"
+
+	RetryAdviceFixCommand                = "fix_command_and_retry"
+	RetryAdviceSelectMatchingScope       = "select_matching_profile_or_record"
+	RetryAdviceManualReview              = "manual_review_required"
+	RetryAdviceReviewTargetState         = "review_target_state_before_retry"
+	RetryAdviceRepairArtifacts           = "repair_artifacts_before_retry"
+	RetryAdviceRestorePublishedEvidence  = "restore_published_evidence_or_republish"
+	RetryAdviceRestoreSourceEvidence     = "restore_source_evidence_before_retry"
+	RetryAdviceInspectMutationThenReplan = "inspect_mutation_result_then_replan"
 )
 
 var (
@@ -82,11 +106,16 @@ type ApplyOptions struct {
 
 type Receipt struct {
 	Schema           string            `json:"schema"`
+	ID               string            `json:"id,omitempty"`
+	Status           string            `json:"status,omitempty"`
 	TargetRoot       string            `json:"target_root"`
 	ProfileID        string            `json:"profile_id"`
 	TargetID         string            `json:"target_id"`
 	SessionID        string            `json:"session_id,omitempty"`
 	GeneratedAt      string            `json:"generated_at"`
+	StartedAt        string            `json:"started_at,omitempty"`
+	EndedAt          string            `json:"ended_at,omitempty"`
+	ReceiptPath      string            `json:"receipt_path,omitempty"`
 	ApplyIntent      bool              `json:"apply_intent"`
 	Summary          Summary           `json:"summary"`
 	Actions          []Action          `json:"actions,omitempty"`
@@ -122,8 +151,11 @@ type Refusal struct {
 	DriftID        string        `json:"drift_id,omitempty"`
 	Path           string        `json:"path,omitempty"`
 	Change         string        `json:"change,omitempty"`
+	SessionID      string        `json:"session_id,omitempty"`
 	Action         string        `json:"action,omitempty"`
 	ReasonCode     string        `json:"reason_code"`
+	ConflictClass  string        `json:"conflict_class,omitempty"`
+	RetryAdvice    string        `json:"retry_advice,omitempty"`
 	Message        string        `json:"message"`
 	ObservedBefore ObservedState `json:"observed_before,omitempty"`
 }
@@ -196,7 +228,7 @@ func Apply(opts ApplyOptions) (Receipt, error) {
 	if opts.Apply && len(selectedDriftIDs(opts.IDs)) == 0 {
 		return Receipt{}, errors.New("at least one persisted target drift id is required when apply intent is true")
 	}
-	receipt, candidates, err := plan(targetRoot, opts.Profile, opts.IDs, opts.SessionID, now, true)
+	receipt, _, err := plan(targetRoot, opts.Profile, opts.IDs, opts.SessionID, now, true)
 	if err != nil {
 		return Receipt{}, err
 	}
@@ -209,22 +241,26 @@ func Apply(opts ApplyOptions) (Receipt, error) {
 	if strings.TrimSpace(opts.Reason) == "" {
 		return Receipt{}, errors.New("reason is required when apply intent is true")
 	}
-	if refuseApplySetConflicts(&receipt, candidates) {
-		return receipt, nil
-	}
 	unlock, err := targetlock.LockTarget(targetRoot)
 	if err != nil {
 		return Receipt{}, fmt.Errorf("lock target for reconcile apply: %w", err)
 	}
 	defer unlock()
 
-	receipt, candidates, err = plan(targetRoot, opts.Profile, opts.IDs, opts.SessionID, now, true)
+	receipt, candidates, err := plan(targetRoot, opts.Profile, opts.IDs, opts.SessionID, now, true)
 	if err != nil {
 		return Receipt{}, err
 	}
 	receipt.Schema = SchemaApplyReceipt
 	receipt.ApplyIntent = true
+	receiptPath, err := writeStartedApplyReceipt(targetRoot, opts.Profile, opts.IDs, opts.SessionID, now, &receipt)
+	if err != nil {
+		return Receipt{}, err
+	}
 	if refuseApplySetConflicts(&receipt, candidates) {
+		if err := writeFinalApplyReceipt(receiptPath, now, &receipt); err != nil {
+			return Receipt{}, err
+		}
 		return receipt, nil
 	}
 	for _, item := range candidates {
@@ -240,6 +276,9 @@ func Apply(opts ApplyOptions) (Receipt, error) {
 	}
 	sortReceipt(&receipt)
 	summarize(&receipt)
+	if err := writeFinalApplyReceipt(receiptPath, now, &receipt); err != nil {
+		return Receipt{}, err
+	}
 	return receipt, nil
 }
 
@@ -282,8 +321,10 @@ func plan(targetRoot string, p profile.Profile, ids []string, sessionID string, 
 	}
 	if len(receipt.ArtifactProblems) > 0 {
 		receipt.Refusals = append(receipt.Refusals, Refusal{
-			ReasonCode: ReasonArtifactProblems,
-			Message:    "target control artifacts have load problems; reconcile planning is refused until artifacts are readable",
+			ReasonCode:    ReasonArtifactProblems,
+			ConflictClass: conflictClassForReason(ReasonArtifactProblems),
+			RetryAdvice:   retryAdviceForReason(ReasonArtifactProblems),
+			Message:       "target control artifacts have load problems; reconcile planning is refused until artifacts are readable",
 		})
 		summarize(&receipt)
 		return receipt, nil, nil
@@ -361,9 +402,10 @@ func classify(targetRoot string, p profile.Profile, drift control.TargetDrift, m
 		Expected:  expectedState(drift.Expected),
 	}
 	item.refusal = Refusal{
-		DriftID: drift.ID,
-		Path:    drift.Path,
-		Change:  drift.Change,
+		DriftID:   drift.ID,
+		Path:      drift.Path,
+		Change:    drift.Change,
+		SessionID: drift.SessionID,
 	}
 	if drift.ProfileID != p.ProfileID || drift.TargetID != p.Target.TargetID {
 		return refused(item, ReasonProfileScopeMismatch, fmt.Sprintf("drift scope %q/%q does not match profile scope %q/%q", drift.ProfileID, drift.TargetID, p.ProfileID, p.Target.TargetID))
@@ -387,7 +429,8 @@ func classify(targetRoot string, p profile.Profile, drift control.TargetDrift, m
 	item.action.ObservedBefore = observed
 	item.refusal.ObservedBefore = observed
 
-	if driftstore.ReviewState(drift) == "resolved" {
+	switch driftstore.ReviewState(drift) {
+	case "resolved", "expired":
 		item.action.Action = ActionAlreadyResolved
 		item.action.Result = ResultNoop
 		item.action.ReviewedAt = drift.ReviewedAt
@@ -670,7 +713,8 @@ func resolveDrift(targetRoot string, item candidate, opts ApplyOptions, now time
 	if current.ID != item.drift.ID || current.ProfileID != item.drift.ProfileID || current.TargetID != item.drift.TargetID || current.RootID != item.drift.RootID || current.Path != item.drift.Path || current.Change != item.drift.Change {
 		return Action{}, applyRefusal(item, ReasonTargetChanged, "drift artifact changed before apply", item.targetObserved)
 	}
-	if driftstore.ReviewState(current) == "resolved" {
+	switch driftstore.ReviewState(current) {
+	case "resolved", "expired":
 		applied := item.action
 		applied.Result = ResultNoop
 		applied.ReviewedAt = current.ReviewedAt
@@ -721,8 +765,11 @@ func refuseApplySetConflicts(receipt *Receipt, candidates []candidate) bool {
 				DriftID:        item.drift.ID,
 				Path:           item.drift.Path,
 				Change:         item.drift.Change,
+				SessionID:      item.drift.SessionID,
 				Action:         item.action.Action,
 				ReasonCode:     ReasonAmbiguousState,
+				ConflictClass:  conflictClassForReason(ReasonAmbiguousState),
+				RetryAdvice:    retryAdviceForReason(ReasonAmbiguousState),
 				Message:        "multiple selected drift records target the same path; reconcile apply refuses the whole plan before mutation",
 				ObservedBefore: item.action.ObservedBefore,
 			})
@@ -748,6 +795,8 @@ func refused(item candidate, code string, message string) candidate {
 	item.refused = true
 	item.refusal.Action = ActionRefuseUnsupported
 	item.refusal.ReasonCode = code
+	item.refusal.ConflictClass = conflictClassForReason(code)
+	item.refusal.RetryAdvice = retryAdviceForReason(code)
 	item.refusal.Message = message
 	return item
 }
@@ -757,10 +806,62 @@ func applyRefusal(item candidate, code string, message string, observed Observed
 		DriftID:        item.drift.ID,
 		Path:           item.drift.Path,
 		Change:         item.drift.Change,
+		SessionID:      item.drift.SessionID,
 		Action:         item.action.Action,
 		ReasonCode:     code,
+		ConflictClass:  conflictClassForReason(code),
+		RetryAdvice:    retryAdviceForReason(code),
 		Message:        message,
 		ObservedBefore: observed,
+	}
+}
+
+func conflictClassForReason(reason string) string {
+	switch reason {
+	case ReasonMissingApplyIntent:
+		return ConflictClassOperatorIntent
+	case ReasonProfileScopeMismatch, ReasonRootScopeMismatch:
+		return ConflictClassScopeMismatch
+	case ReasonControlPlanePath, ReasonUnsafeTargetPath, ReasonUnsafeTargetParent:
+		return ConflictClassUnsafePath
+	case ReasonUnsupportedChange, ReasonUnsupportedKind:
+		return ConflictClassUnsupportedDrift
+	case ReasonAlreadyResolved, ReasonAmbiguousState, ReasonTargetChanged:
+		return ConflictClassTargetState
+	case ReasonArtifactProblems:
+		return ConflictClassArtifactIntegrity
+	case ReasonPublishedEvidence:
+		return ConflictClassPublishedEvidence
+	case ReasonSourceEvidenceMissing, ReasonSourceMismatch:
+		return ConflictClassSourceEvidence
+	case ReasonMutationFailed:
+		return ConflictClassMutationFailure
+	default:
+		return ConflictClassOperatorIntent
+	}
+}
+
+func retryAdviceForReason(reason string) string {
+	switch reason {
+	case ReasonMissingApplyIntent:
+		return RetryAdviceFixCommand
+	case ReasonProfileScopeMismatch, ReasonRootScopeMismatch:
+		return RetryAdviceSelectMatchingScope
+	case ReasonControlPlanePath, ReasonUnsafeTargetPath, ReasonUnsafeTargetParent,
+		ReasonUnsupportedChange, ReasonUnsupportedKind, ReasonAlreadyResolved:
+		return RetryAdviceManualReview
+	case ReasonAmbiguousState, ReasonTargetChanged:
+		return RetryAdviceReviewTargetState
+	case ReasonArtifactProblems:
+		return RetryAdviceRepairArtifacts
+	case ReasonPublishedEvidence:
+		return RetryAdviceRestorePublishedEvidence
+	case ReasonSourceEvidenceMissing, ReasonSourceMismatch:
+		return RetryAdviceRestoreSourceEvidence
+	case ReasonMutationFailed:
+		return RetryAdviceInspectMutationThenReplan
+	default:
+		return RetryAdviceManualReview
 	}
 }
 
@@ -772,12 +873,15 @@ func refusePlannedForMissingIntent(receipt *Receipt) {
 			continue
 		}
 		receipt.Refusals = append(receipt.Refusals, Refusal{
-			DriftID:    action.DriftID,
-			Path:       action.Path,
-			Change:     action.Change,
-			Action:     action.Action,
-			ReasonCode: ReasonMissingApplyIntent,
-			Message:    "apply intent is required before target mutation",
+			DriftID:       action.DriftID,
+			Path:          action.Path,
+			Change:        action.Change,
+			SessionID:     action.SessionID,
+			Action:        action.Action,
+			ReasonCode:    ReasonMissingApplyIntent,
+			ConflictClass: conflictClassForReason(ReasonMissingApplyIntent),
+			RetryAdvice:   retryAdviceForReason(ReasonMissingApplyIntent),
+			Message:       "apply intent is required before target mutation",
 		})
 	}
 	receipt.Actions = kept
@@ -1003,6 +1107,58 @@ func digestOpenFile(file *os.File) (string, error) {
 	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+func writeStartedApplyReceipt(targetRoot string, p profile.Profile, ids []string, sessionID string, now time.Time, receipt *Receipt) (string, error) {
+	id := reconcileReceiptID(p, ids, sessionID, now)
+	path, err := control.Path(targetRoot, control.ArtifactReconcileReceipt, id)
+	if err != nil {
+		return "", err
+	}
+	receipt.ID = id
+	receipt.Status = ReceiptStatusStarted
+	receipt.StartedAt = now.Format(time.RFC3339Nano)
+	receipt.EndedAt = ""
+	receipt.ReceiptPath = filepath.ToSlash(path)
+	if err := control.WriteNewFile(path, *receipt); err != nil {
+		return "", fmt.Errorf("write started reconcile receipt: %w", err)
+	}
+	return path, nil
+}
+
+func writeFinalApplyReceipt(path string, now time.Time, receipt *Receipt) error {
+	receipt.EndedAt = now.Format(time.RFC3339Nano)
+	switch {
+	case receipt.Summary.Applied > 0 && (receipt.Summary.Refused > 0 || receipt.Summary.ArtifactProblems > 0):
+		receipt.Status = ReceiptStatusPartial
+	case receipt.Summary.Refused > 0 || receipt.Summary.ArtifactProblems > 0:
+		receipt.Status = ReceiptStatusFailed
+	default:
+		receipt.Status = ReceiptStatusApplied
+	}
+	if err := control.WriteFile(path, *receipt); err != nil {
+		return fmt.Errorf("write final reconcile receipt: %w", err)
+	}
+	return nil
+}
+
+func reconcileReceiptID(p profile.Profile, ids []string, sessionID string, now time.Time) string {
+	selected := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			selected = append(selected, trimmed)
+		}
+	}
+	sort.Strings(selected)
+	payload := strings.Join([]string{
+		p.ProfileID,
+		p.Target.TargetID,
+		strings.TrimSpace(sessionID),
+		now.Format(time.RFC3339Nano),
+		strings.Join(selected, "\x00"),
+	}, "\x1f")
+	sum := sha256.Sum256([]byte(payload))
+	return fmt.Sprintf("reconcile-%s-%s", now.Format("20060102T150405.000000000Z"), hex.EncodeToString(sum[:])[:16])
+}
+
 func observeTarget(targetRoot string, rel string, includeDigest bool) (ObservedState, error) {
 	if err := safeDataPath(rel); err != nil {
 		return ObservedState{}, err
@@ -1208,6 +1364,368 @@ func kindFromInfo(info fs.FileInfo) string {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func (r Receipt) Validate() error {
+	var errs []error
+	if r.Schema != SchemaApplyReceipt {
+		errs = append(errs, fmt.Errorf("schema must be %q for durable reconcile receipts", SchemaApplyReceipt))
+	}
+	if strings.TrimSpace(r.ID) == "" {
+		errs = append(errs, errors.New("id is required"))
+	} else if err := control.ValidateArtifactID(r.ID); err != nil {
+		errs = append(errs, fmt.Errorf("id is unsafe: %w", err))
+	}
+	if !receiptStatusValid(r.Status) {
+		errs = append(errs, errors.New("status must be one of started, applied, partial, failed"))
+	}
+	if strings.TrimSpace(r.TargetRoot) == "" {
+		errs = append(errs, errors.New("target_root is required"))
+	}
+	if strings.TrimSpace(r.ProfileID) == "" {
+		errs = append(errs, errors.New("profile_id is required"))
+	}
+	if strings.TrimSpace(r.TargetID) == "" {
+		errs = append(errs, errors.New("target_id is required"))
+	}
+	if strings.TrimSpace(r.SessionID) != "" {
+		if err := control.ValidateArtifactID(r.SessionID); err != nil {
+			errs = append(errs, fmt.Errorf("session_id is unsafe: %w", err))
+		}
+	}
+	generatedAt, generatedOK := parseReconcileTime("generated_at", r.GeneratedAt, true, &errs)
+	startedAt, startedOK := parseReconcileTime("started_at", r.StartedAt, true, &errs)
+	endedAt, endedOK := parseReconcileTime("ended_at", r.EndedAt, r.Status != ReceiptStatusStarted, &errs)
+	if generatedOK && startedOK && startedAt.Before(generatedAt) {
+		errs = append(errs, errors.New("started_at must be greater than or equal to generated_at"))
+	}
+	if startedOK && endedOK && endedAt.Before(startedAt) {
+		errs = append(errs, errors.New("ended_at must be greater than or equal to started_at"))
+	}
+	if r.Status == ReceiptStatusStarted && strings.TrimSpace(r.EndedAt) != "" {
+		errs = append(errs, errors.New("started receipts must not include ended_at"))
+	}
+	if strings.TrimSpace(r.ReceiptPath) == "" {
+		errs = append(errs, errors.New("receipt_path is required"))
+	}
+	if !r.ApplyIntent {
+		errs = append(errs, errors.New("apply_intent must be true for durable reconcile receipts"))
+	}
+	if len(r.Actions) == 0 && len(r.Refusals) == 0 && len(r.ArtifactProblems) == 0 {
+		errs = append(errs, errors.New("receipt must contain actions, refusals, or artifact problems"))
+	}
+	for i, action := range r.Actions {
+		validateReceiptAction(i, action, &errs)
+	}
+	for i, refusal := range r.Refusals {
+		validateReceiptRefusal(i, refusal, &errs)
+	}
+	for i, problem := range r.ArtifactProblems {
+		validateReceiptArtifactProblem(i, problem, &errs)
+	}
+	if r.Summary != summarizeCopy(r) {
+		errs = append(errs, errors.New("summary does not match receipt contents"))
+	}
+	validateReceiptStatusOutcome(r, &errs)
+	return errors.Join(errs...)
+}
+
+func receiptStatusValid(status string) bool {
+	switch status {
+	case ReceiptStatusStarted, ReceiptStatusApplied, ReceiptStatusPartial, ReceiptStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func parseReconcileTime(name string, value string, required bool, errs *[]error) (time.Time, bool) {
+	if strings.TrimSpace(value) == "" {
+		if required {
+			*errs = append(*errs, fmt.Errorf("%s is required", name))
+		}
+		return time.Time{}, false
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s must be RFC3339 timestamp: %w", name, err))
+		return time.Time{}, false
+	}
+	return parsed, true
+}
+
+func validateReceiptAction(index int, action Action, errs *[]error) {
+	prefix := fmt.Sprintf("actions[%d]", index)
+	requireReconcileArtifactID(prefix+".drift_id", action.DriftID, errs)
+	requireReconcileDataPath(prefix+".path", action.Path, errs)
+	requireReconcileValue(prefix+".change", action.Change, errs)
+	requireReconcileValue(prefix+".action", action.Action, errs)
+	if action.Action != "" && !receiptActionValid(action.Action) {
+		*errs = append(*errs, fmt.Errorf("%s.action must be one of resolve_noop, restore_file_from_source, already_resolved_noop", prefix))
+	}
+	requireReconcileValue(prefix+".result", action.Result, errs)
+	if action.Result != "" && !receiptActionResultValid(action.Result) {
+		*errs = append(*errs, fmt.Errorf("%s.result must be one of planned, applied, noop", prefix))
+	}
+	if action.SessionID != "" {
+		requireReconcileArtifactID(prefix+".session_id", action.SessionID, errs)
+	}
+	validateExpectedState(prefix+".expected", action.Expected, errs)
+	validateObservedState(prefix+".observed_before", action.ObservedBefore, errs)
+	if action.SourceEvidence != nil {
+		validateSourceEvidence(prefix+".source_evidence", *action.SourceEvidence, errs)
+	}
+	if action.ReviewedAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, action.ReviewedAt); err != nil {
+			*errs = append(*errs, fmt.Errorf("%s.reviewed_at must be RFC3339 timestamp: %w", prefix, err))
+		}
+	}
+}
+
+func validateReceiptRefusal(index int, refusal Refusal, errs *[]error) {
+	prefix := fmt.Sprintf("refusals[%d]", index)
+	if refusal.DriftID != "" {
+		requireReconcileArtifactID(prefix+".drift_id", refusal.DriftID, errs)
+	}
+	if refusal.Path != "" {
+		requireReconcileDataPath(prefix+".path", refusal.Path, errs)
+	}
+	if refusal.SessionID != "" {
+		requireReconcileArtifactID(prefix+".session_id", refusal.SessionID, errs)
+	}
+	if refusal.Action != "" && refusal.Action != ActionRefuseUnsupported && !receiptActionValid(refusal.Action) {
+		*errs = append(*errs, fmt.Errorf("%s.action must be a known reconcile action", prefix))
+	}
+	requireReconcileValue(prefix+".reason_code", refusal.ReasonCode, errs)
+	if refusal.ReasonCode != "" {
+		requireReconcileArtifactID(prefix+".reason_code", refusal.ReasonCode, errs)
+	}
+	if refusal.ConflictClass != "" && !conflictClassValid(refusal.ConflictClass) {
+		*errs = append(*errs, fmt.Errorf("%s.conflict_class must be a known reconcile conflict class", prefix))
+	}
+	if refusal.RetryAdvice != "" && !retryAdviceValid(refusal.RetryAdvice) {
+		*errs = append(*errs, fmt.Errorf("%s.retry_advice must be a known reconcile retry advice", prefix))
+	}
+	requireReconcileValue(prefix+".message", refusal.Message, errs)
+	validateObservedState(prefix+".observed_before", refusal.ObservedBefore, errs)
+}
+
+func validateReceiptArtifactProblem(index int, problem ArtifactProblem, errs *[]error) {
+	prefix := fmt.Sprintf("artifact_problems[%d]", index)
+	if problem.SessionID != "" {
+		requireReconcileArtifactID(prefix+".session_id", problem.SessionID, errs)
+	}
+	requireReconcileValue(prefix+".path", problem.Path, errs)
+	requireReconcileValue(prefix+".error", problem.Error, errs)
+}
+
+func validateExpectedState(prefix string, state ExpectedState, errs *[]error) {
+	if state.SessionID != "" {
+		requireReconcileArtifactID(prefix+".session_id", state.SessionID, errs)
+	}
+	if state.ManifestID != "" {
+		requireReconcileValue(prefix+".manifest_id", state.ManifestID, errs)
+	}
+	if state.Kind != "" && !receiptKindValid(state.Kind) {
+		*errs = append(*errs, fmt.Errorf("%s.kind must be one of file, dir, symlink, special, missing, other", prefix))
+	}
+	if state.Path != "" {
+		requireReconcileDataPath(prefix+".path", state.Path, errs)
+	}
+	if state.Size < 0 {
+		*errs = append(*errs, fmt.Errorf("%s.size cannot be negative", prefix))
+	}
+	if state.Digest != "" && !receiptDigestValid(state.Digest) {
+		*errs = append(*errs, fmt.Errorf("%s.digest must be sha256 hex", prefix))
+	}
+	if state.ModTime != "" {
+		if _, err := time.Parse(time.RFC3339Nano, state.ModTime); err != nil {
+			*errs = append(*errs, fmt.Errorf("%s.mod_time must be RFC3339 timestamp: %w", prefix, err))
+		}
+	}
+}
+
+func validateObservedState(prefix string, state ObservedState, errs *[]error) {
+	if state.Present == nil && state.Kind == "" && state.Path == "" && state.Size == 0 && state.Digest == "" && state.Mode == 0 && state.ModTime == "" {
+		return
+	}
+	if state.Present == nil {
+		*errs = append(*errs, fmt.Errorf("%s.present is required", prefix))
+	}
+	if state.Kind == "" {
+		*errs = append(*errs, fmt.Errorf("%s.kind is required", prefix))
+	} else if !receiptKindValid(state.Kind) {
+		*errs = append(*errs, fmt.Errorf("%s.kind must be one of file, dir, symlink, special, missing, other", prefix))
+	}
+	if state.Path != "" {
+		requireReconcileDataPath(prefix+".path", state.Path, errs)
+	}
+	if state.Size < 0 {
+		*errs = append(*errs, fmt.Errorf("%s.size cannot be negative", prefix))
+	}
+	if state.Digest != "" && !receiptDigestValid(state.Digest) {
+		*errs = append(*errs, fmt.Errorf("%s.digest must be sha256 hex", prefix))
+	}
+	if state.ModTime != "" {
+		if _, err := time.Parse(time.RFC3339Nano, state.ModTime); err != nil {
+			*errs = append(*errs, fmt.Errorf("%s.mod_time must be RFC3339 timestamp: %w", prefix, err))
+		}
+	}
+}
+
+func validateSourceEvidence(prefix string, source SourceEvidence, errs *[]error) {
+	requireReconcileValue(prefix+".root_id", source.RootID, errs)
+	requireReconcileDataPath(prefix+".path", source.Path, errs)
+	if source.Size < 0 {
+		*errs = append(*errs, fmt.Errorf("%s.size cannot be negative", prefix))
+	}
+	requireReconcileValue(prefix+".digest", source.Digest, errs)
+	if source.Digest != "" && !receiptDigestValid(source.Digest) {
+		*errs = append(*errs, fmt.Errorf("%s.digest must be sha256 hex", prefix))
+	}
+}
+
+func validateReceiptStatusOutcome(receipt Receipt, errs *[]error) {
+	switch receipt.Status {
+	case ReceiptStatusStarted:
+		return
+	case ReceiptStatusApplied:
+		if receipt.Summary.Refused > 0 || receipt.Summary.ArtifactProblems > 0 {
+			*errs = append(*errs, errors.New("status applied cannot include refusals or artifact problems"))
+		}
+		if len(receipt.Actions) == 0 {
+			*errs = append(*errs, errors.New("status applied requires at least one action"))
+		}
+	case ReceiptStatusPartial:
+		if receipt.Summary.Applied == 0 || (receipt.Summary.Refused+receipt.Summary.ArtifactProblems) == 0 {
+			*errs = append(*errs, errors.New("status partial requires applied action plus refusal or artifact problem"))
+		}
+	case ReceiptStatusFailed:
+		if receipt.Summary.Applied > 0 {
+			*errs = append(*errs, errors.New("status failed cannot include applied actions"))
+		}
+		if receipt.Summary.Refused == 0 && receipt.Summary.ArtifactProblems == 0 {
+			*errs = append(*errs, errors.New("status failed requires refusal or artifact problem"))
+		}
+	}
+}
+
+func receiptActionValid(action string) bool {
+	switch action {
+	case ActionResolveNoop, ActionRestoreFile, ActionAlreadyResolved:
+		return true
+	default:
+		return false
+	}
+}
+
+func receiptActionResultValid(result string) bool {
+	switch result {
+	case ResultPlanned, ResultApplied, ResultNoop:
+		return true
+	default:
+		return false
+	}
+}
+
+func receiptKindValid(kind string) bool {
+	switch kind {
+	case "file", "dir", "symlink", "special", "missing", "other":
+		return true
+	default:
+		return false
+	}
+}
+
+func conflictClassValid(value string) bool {
+	switch value {
+	case ConflictClassOperatorIntent,
+		ConflictClassScopeMismatch,
+		ConflictClassUnsafePath,
+		ConflictClassUnsupportedDrift,
+		ConflictClassTargetState,
+		ConflictClassArtifactIntegrity,
+		ConflictClassPublishedEvidence,
+		ConflictClassSourceEvidence,
+		ConflictClassMutationFailure:
+		return true
+	default:
+		return false
+	}
+}
+
+func retryAdviceValid(value string) bool {
+	switch value {
+	case RetryAdviceFixCommand,
+		RetryAdviceSelectMatchingScope,
+		RetryAdviceManualReview,
+		RetryAdviceReviewTargetState,
+		RetryAdviceRepairArtifacts,
+		RetryAdviceRestorePublishedEvidence,
+		RetryAdviceRestoreSourceEvidence,
+		RetryAdviceInspectMutationThenReplan:
+		return true
+	default:
+		return false
+	}
+}
+
+func receiptDigestValid(value string) bool {
+	if !strings.HasPrefix(value, "sha256:") || len(value) != len("sha256:")+64 {
+		return false
+	}
+	for _, r := range strings.TrimPrefix(value, "sha256:") {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func requireReconcileValue(name string, value string, errs *[]error) {
+	if strings.TrimSpace(value) == "" {
+		*errs = append(*errs, fmt.Errorf("%s is required", name))
+	}
+}
+
+func requireReconcileArtifactID(name string, id string, errs *[]error) {
+	requireReconcileValue(name, id, errs)
+	if strings.TrimSpace(id) == "" {
+		return
+	}
+	if err := control.ValidateArtifactID(id); err != nil {
+		*errs = append(*errs, fmt.Errorf("%s is unsafe: %w", name, err))
+	}
+}
+
+func requireReconcileDataPath(name string, rel string, errs *[]error) {
+	requireReconcileValue(name, rel, errs)
+	if strings.TrimSpace(rel) == "" {
+		return
+	}
+	if err := safeDataPath(rel); err != nil {
+		*errs = append(*errs, fmt.Errorf("%s is unsafe: %w", name, err))
+	}
+}
+
+func summarizeCopy(receipt Receipt) Summary {
+	out := Summary{
+		Records:          len(receipt.Actions) + len(receipt.Refusals),
+		Refused:          len(receipt.Refusals),
+		ArtifactProblems: len(receipt.ArtifactProblems),
+	}
+	for _, action := range receipt.Actions {
+		switch action.Result {
+		case ResultApplied:
+			out.Applied++
+		case ResultNoop:
+			out.Noop++
+		default:
+			out.Planned++
+		}
+	}
+	return out
 }
 
 func CanonicalJSON(receipt Receipt) ([]byte, error) {

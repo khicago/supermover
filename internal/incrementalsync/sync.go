@@ -2,6 +2,7 @@ package incrementalsync
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,18 +18,27 @@ import (
 
 	"github.com/khicago/supermover/internal/audit"
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/filelock"
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/scan"
+	"github.com/khicago/supermover/internal/transaction"
 )
 
 const (
 	SchemaV1       = "supermover.incremental_sync.queue/v1"
+	RunSchemaV1    = "supermover.incremental_sync.run/v1"
 	StateFileName  = "queue.json"
 	StatusQueued   = "queued"
+	StatusInFlight = "in_flight"
 	StatusBackoff  = "backoff"
 	StatusCanceled = "canceled"
 	StatusDone     = "done"
+	StatusFailed   = "failed"
+
+	RunStatusIdle      = "idle"
+	RunStatusPublished = "published"
+	RunStatusRetrying  = "retrying"
 )
 
 var ErrCorruptQueue = errors.New("corrupt incremental sync queue")
@@ -90,6 +100,7 @@ type QueueEntry struct {
 	NextDueAt     string    `json:"next_due_at,omitempty"`
 	CanceledAt    string    `json:"canceled_at,omitempty"`
 	DoneAt        string    `json:"done_at,omitempty"`
+	FailedAt      string    `json:"failed_at,omitempty"`
 	UpdatedAt     string    `json:"updated_at"`
 	hadSize       bool
 	hadMode       bool
@@ -114,6 +125,7 @@ type queueEntryJSON struct {
 	NextDueAt     string    `json:"next_due_at,omitempty"`
 	CanceledAt    string    `json:"canceled_at,omitempty"`
 	DoneAt        string    `json:"done_at,omitempty"`
+	FailedAt      string    `json:"failed_at,omitempty"`
 	UpdatedAt     string    `json:"updated_at"`
 }
 
@@ -135,6 +147,7 @@ func (e QueueEntry) MarshalJSON() ([]byte, error) {
 		NextDueAt:     e.NextDueAt,
 		CanceledAt:    e.CanceledAt,
 		DoneAt:        e.DoneAt,
+		FailedAt:      e.FailedAt,
 		UpdatedAt:     e.UpdatedAt,
 	}
 	if e.hadSize || e.Size != 0 {
@@ -175,6 +188,7 @@ func (e *QueueEntry) UnmarshalJSON(data []byte) error {
 		NextDueAt:     wire.NextDueAt,
 		CanceledAt:    wire.CanceledAt,
 		DoneAt:        wire.DoneAt,
+		FailedAt:      wire.FailedAt,
 		UpdatedAt:     wire.UpdatedAt,
 		hadSize:       wire.Size != nil,
 		hadMode:       wire.Mode != nil,
@@ -199,9 +213,11 @@ type Summary struct {
 	ProfileID    string         `json:"profile_id"`
 	TargetID     string         `json:"target_id"`
 	Queued       int            `json:"queued"`
+	InFlight     int            `json:"in_flight"`
 	Backoff      int            `json:"backoff"`
 	Canceled     int            `json:"canceled"`
 	Done         int            `json:"done"`
+	Failed       int            `json:"failed"`
 	Ready        int            `json:"ready"`
 	Total        int            `json:"total"`
 	Roots        []RootSummary  `json:"roots,omitempty"`
@@ -215,9 +231,11 @@ type Summary struct {
 type RootSummary struct {
 	Root     string `json:"root"`
 	Queued   int    `json:"queued"`
+	InFlight int    `json:"in_flight"`
 	Backoff  int    `json:"backoff"`
 	Canceled int    `json:"canceled"`
 	Done     int    `json:"done"`
+	Failed   int    `json:"failed"`
 	Ready    int    `json:"ready"`
 	Total    int    `json:"total"`
 }
@@ -226,6 +244,37 @@ type RetryOptions struct {
 	EntryID string
 	Err     error
 	Backoff time.Duration
+}
+
+type RunTransfer func(context.Context, []QueueEntry) error
+
+type RunOptions struct {
+	SessionID string
+	Backoff   time.Duration
+	Transfer  RunTransfer
+}
+
+type RunResult struct {
+	Schema     string       `json:"schema"`
+	SessionID  string       `json:"session_id"`
+	Scope      Scope        `json:"scope"`
+	Status     string       `json:"status"`
+	StartedAt  string       `json:"started_at"`
+	FinishedAt string       `json:"finished_at"`
+	StatePath  string       `json:"state_path"`
+	RunPath    string       `json:"run_path"`
+	Ready      []QueueEntry `json:"ready,omitempty"`
+	InFlight   []QueueEntry `json:"in_flight,omitempty"`
+	Published  []QueueEntry `json:"published,omitempty"`
+	Retried    []QueueEntry `json:"retried,omitempty"`
+	Error      string       `json:"error,omitempty"`
+	Recovered  int          `json:"recovered_in_flight,omitempty"`
+	Summary    Summary      `json:"summary"`
+}
+
+type ArtifactProblem struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
 }
 
 func New(opts Options) (*Scheduler, error) {
@@ -321,57 +370,54 @@ func (s *Scheduler) Enqueue(snapshot Snapshot) (EnqueueResult, error) {
 	if err != nil {
 		return EnqueueResult{}, err
 	}
-	state, statePath, err := s.loadOrInit(scope)
+
+	now := canonicalTime(s.clock())
+	result := EnqueueResult{
+		Scope:     scope,
+		Audit:     append([]audit.Record(nil), snapshot.Scan.Audit...),
+	}
+	state, statePath, err := s.withLockedState(scope, true, func(state State) (State, bool, error) {
+		index := indexEntries(state.Entries)
+		for _, entry := range snapshot.Scan.Entries {
+			if entry.Path == "." {
+				continue
+			}
+			decision, reason, err := enqueueDecision(scope, rootID, entry)
+			if err != nil {
+				return State{}, false, err
+			}
+			if !decision {
+				result.Skipped = append(result.Skipped, SkippedEntry{Root: rootID, Path: entry.Path, Reason: reason})
+				continue
+			}
+			next := queueEntry(scope, rootID, entry, now)
+			current, ok := index[next.ID]
+			if ok && sameObservedChange(current, next) {
+				result.Skipped = append(result.Skipped, SkippedEntry{Root: rootID, Path: entry.Path, Reason: "unchanged"})
+				continue
+			}
+			if ok {
+				next.EnqueuedAt = current.EnqueuedAt
+				if current.Status == StatusBackoff {
+					next.Attempts = current.Attempts
+					next.LastError = current.LastError
+					next.NextDueAt = current.NextDueAt
+					next.Status = StatusBackoff
+				}
+			}
+			index[next.ID] = next
+			result.Enqueued = append(result.Enqueued, next)
+		}
+		var dropped []SkippedEntry
+		state.Entries, dropped = dropLegacyTargetlessSymlinks(sortedEntries(index))
+		result.Skipped = append(result.Skipped, dropped...)
+		state.UpdatedAt = formatTime(now)
+		return state, true, nil
+	})
 	if err != nil {
 		return EnqueueResult{}, err
 	}
-
-	now := canonicalTime(s.clock())
-	index := indexEntries(state.Entries)
-	result := EnqueueResult{
-		Scope:     scope,
-		StatePath: statePath,
-		Audit:     append([]audit.Record(nil), snapshot.Scan.Audit...),
-	}
-
-	for _, entry := range snapshot.Scan.Entries {
-		if entry.Path == "." {
-			continue
-		}
-		decision, reason, err := enqueueDecision(scope, rootID, entry)
-		if err != nil {
-			return EnqueueResult{}, err
-		}
-		if !decision {
-			result.Skipped = append(result.Skipped, SkippedEntry{Root: rootID, Path: entry.Path, Reason: reason})
-			continue
-		}
-		next := queueEntry(scope, rootID, entry, now)
-		current, ok := index[next.ID]
-		if ok && sameObservedChange(current, next) {
-			result.Skipped = append(result.Skipped, SkippedEntry{Root: rootID, Path: entry.Path, Reason: "unchanged"})
-			continue
-		}
-		if ok {
-			next.EnqueuedAt = current.EnqueuedAt
-			next.Attempts = current.Attempts
-			next.LastError = current.LastError
-			next.NextDueAt = current.NextDueAt
-			if current.Status == StatusBackoff {
-				next.Status = StatusBackoff
-			}
-		}
-		index[next.ID] = next
-		result.Enqueued = append(result.Enqueued, next)
-	}
-
-	var dropped []SkippedEntry
-	state.Entries, dropped = dropLegacyTargetlessSymlinks(sortedEntries(index))
-	result.Skipped = append(result.Skipped, dropped...)
-	state.UpdatedAt = formatTime(now)
-	if err := s.writeState(statePath, state); err != nil {
-		return EnqueueResult{}, err
-	}
+	result.StatePath = statePath
 	result.Summary = buildSummary(state, statePath, now, result.Audit)
 	return result, nil
 }
@@ -396,6 +442,79 @@ func (s *Scheduler) Ready(scope Scope) ([]QueueEntry, error) {
 	return ready, nil
 }
 
+func (s *Scheduler) RequeueInFlight(scope Scope, reason string) ([]QueueEntry, error) {
+	if s == nil {
+		return nil, errors.New("scheduler is nil")
+	}
+	now := canonicalTime(s.clock())
+	requeued := make([]QueueEntry, 0)
+	_, _, err := s.withLockedState(scope, false, func(state State) (State, bool, error) {
+		state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
+		for i := range state.Entries {
+			if state.Entries[i].Status != StatusInFlight {
+				continue
+			}
+			state.Entries[i].Status = StatusQueued
+			state.Entries[i].UpdatedAt = formatTime(now)
+			if strings.TrimSpace(reason) != "" {
+				state.Entries[i].LastError = strings.TrimSpace(reason)
+			}
+			state.Entries[i].NextDueAt = ""
+			requeued = append(requeued, state.Entries[i])
+		}
+		if len(requeued) == 0 {
+			return state, false, nil
+		}
+		state.UpdatedAt = formatTime(now)
+		return state, true, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(requeued) == 0 {
+		return nil, nil
+	}
+	sortQueue(requeued)
+	return requeued, nil
+}
+
+func (s *Scheduler) MarkInFlight(scope Scope, entryID string) (QueueEntry, error) {
+	if s == nil {
+		return QueueEntry{}, errors.New("scheduler is nil")
+	}
+	if strings.TrimSpace(entryID) == "" {
+		return QueueEntry{}, errors.New("entry id is required")
+	}
+	now := canonicalTime(s.clock())
+	var updated QueueEntry
+	_, _, err := s.withLockedState(scope, false, func(state State) (State, bool, error) {
+		state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
+		for i := range state.Entries {
+			if state.Entries[i].ID != entryID {
+				continue
+			}
+			if state.Entries[i].Status != StatusQueued && state.Entries[i].Status != StatusBackoff {
+				return State{}, false, fmt.Errorf("entry %q status %q cannot transition to in_flight", entryID, state.Entries[i].Status)
+			}
+			state.Entries[i].Status = StatusInFlight
+			state.Entries[i].UpdatedAt = formatTime(now)
+			state.Entries[i].LastError = ""
+			state.Entries[i].NextDueAt = ""
+			state.Entries[i].CanceledAt = ""
+			state.Entries[i].DoneAt = ""
+			state.Entries[i].FailedAt = ""
+			state.UpdatedAt = formatTime(now)
+			updated = state.Entries[i]
+			return state, true, nil
+		}
+		return State{}, false, fmt.Errorf("entry %q not found", entryID)
+	})
+	if err != nil {
+		return QueueEntry{}, err
+	}
+	return updated, nil
+}
+
 func (s *Scheduler) RecordRetry(scope Scope, opts RetryOptions) (QueueEntry, error) {
 	if s == nil {
 		return QueueEntry{}, errors.New("scheduler is nil")
@@ -406,28 +525,35 @@ func (s *Scheduler) RecordRetry(scope Scope, opts RetryOptions) (QueueEntry, err
 	if opts.Backoff < 0 {
 		return QueueEntry{}, errors.New("backoff cannot be negative")
 	}
-	state, statePath, err := s.loadExisting(scope)
+	now := canonicalTime(s.clock())
+	var updated QueueEntry
+	_, _, err := s.withLockedState(scope, false, func(state State) (State, bool, error) {
+		state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
+		for i := range state.Entries {
+			if state.Entries[i].ID != opts.EntryID {
+				continue
+			}
+			if state.Entries[i].Status != StatusInFlight && state.Entries[i].Status != StatusQueued {
+				return State{}, false, fmt.Errorf("entry %q status %q cannot transition to backoff", opts.EntryID, state.Entries[i].Status)
+			}
+			state.Entries[i].Status = StatusBackoff
+			state.Entries[i].Attempts++
+			state.Entries[i].LastError = retryError(opts.Err)
+			state.Entries[i].NextDueAt = formatTime(now.Add(opts.Backoff))
+			state.Entries[i].CanceledAt = ""
+			state.Entries[i].DoneAt = ""
+			state.Entries[i].FailedAt = ""
+			state.Entries[i].UpdatedAt = formatTime(now)
+			state.UpdatedAt = formatTime(now)
+			updated = state.Entries[i]
+			return state, true, nil
+		}
+		return State{}, false, fmt.Errorf("entry %q not found", opts.EntryID)
+	})
 	if err != nil {
 		return QueueEntry{}, err
 	}
-	state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
-	now := canonicalTime(s.clock())
-	for i := range state.Entries {
-		if state.Entries[i].ID != opts.EntryID {
-			continue
-		}
-		state.Entries[i].Status = StatusBackoff
-		state.Entries[i].Attempts++
-		state.Entries[i].LastError = retryError(opts.Err)
-		state.Entries[i].NextDueAt = formatTime(now.Add(opts.Backoff))
-		state.Entries[i].UpdatedAt = formatTime(now)
-		state.UpdatedAt = formatTime(now)
-		if err := s.writeState(statePath, state); err != nil {
-			return QueueEntry{}, err
-		}
-		return state.Entries[i], nil
-	}
-	return QueueEntry{}, fmt.Errorf("entry %q not found", opts.EntryID)
+	return updated, nil
 }
 
 func (s *Scheduler) Cancel(scope Scope, entryID, reason string) (QueueEntry, error) {
@@ -437,29 +563,76 @@ func (s *Scheduler) Cancel(scope Scope, entryID, reason string) (QueueEntry, err
 	if strings.TrimSpace(entryID) == "" {
 		return QueueEntry{}, errors.New("entry id is required")
 	}
-	state, statePath, err := s.loadExisting(scope)
+	now := canonicalTime(s.clock())
+	var updated QueueEntry
+	_, _, err := s.withLockedState(scope, false, func(state State) (State, bool, error) {
+		state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
+		for i := range state.Entries {
+			if state.Entries[i].ID != entryID {
+				continue
+			}
+			if state.Entries[i].Status == StatusDone || state.Entries[i].Status == StatusFailed || state.Entries[i].Status == StatusCanceled {
+				return State{}, false, fmt.Errorf("entry %q status %q cannot transition to canceled", entryID, state.Entries[i].Status)
+			}
+			state.Entries[i].Status = StatusCanceled
+			state.Entries[i].CanceledAt = formatTime(now)
+			state.Entries[i].DoneAt = ""
+			state.Entries[i].FailedAt = ""
+			state.Entries[i].NextDueAt = ""
+			state.Entries[i].UpdatedAt = formatTime(now)
+			if strings.TrimSpace(reason) != "" {
+				state.Entries[i].LastError = strings.TrimSpace(reason)
+			}
+			state.UpdatedAt = formatTime(now)
+			updated = state.Entries[i]
+			return state, true, nil
+		}
+		return State{}, false, fmt.Errorf("entry %q not found", entryID)
+	})
 	if err != nil {
 		return QueueEntry{}, err
 	}
-	state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
-	now := canonicalTime(s.clock())
-	for i := range state.Entries {
-		if state.Entries[i].ID != entryID {
-			continue
-		}
-		state.Entries[i].Status = StatusCanceled
-		state.Entries[i].CanceledAt = formatTime(now)
-		state.Entries[i].UpdatedAt = formatTime(now)
-		if strings.TrimSpace(reason) != "" {
-			state.Entries[i].LastError = strings.TrimSpace(reason)
-		}
-		state.UpdatedAt = formatTime(now)
-		if err := s.writeState(statePath, state); err != nil {
-			return QueueEntry{}, err
-		}
-		return state.Entries[i], nil
+	return updated, nil
+}
+
+func (s *Scheduler) MarkFailed(scope Scope, entryID, reason string) (QueueEntry, error) {
+	if s == nil {
+		return QueueEntry{}, errors.New("scheduler is nil")
 	}
-	return QueueEntry{}, fmt.Errorf("entry %q not found", entryID)
+	if strings.TrimSpace(entryID) == "" {
+		return QueueEntry{}, errors.New("entry id is required")
+	}
+	if strings.TrimSpace(reason) == "" {
+		return QueueEntry{}, errors.New("failure reason is required")
+	}
+	now := canonicalTime(s.clock())
+	var updated QueueEntry
+	_, _, err := s.withLockedState(scope, false, func(state State) (State, bool, error) {
+		state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
+		for i := range state.Entries {
+			if state.Entries[i].ID != entryID {
+				continue
+			}
+			if state.Entries[i].Status == StatusDone || state.Entries[i].Status == StatusFailed || state.Entries[i].Status == StatusCanceled {
+				return State{}, false, fmt.Errorf("entry %q status %q cannot transition to failed", entryID, state.Entries[i].Status)
+			}
+			state.Entries[i].Status = StatusFailed
+			state.Entries[i].FailedAt = formatTime(now)
+			state.Entries[i].CanceledAt = ""
+			state.Entries[i].DoneAt = ""
+			state.Entries[i].UpdatedAt = formatTime(now)
+			state.Entries[i].LastError = strings.TrimSpace(reason)
+			state.Entries[i].NextDueAt = ""
+			state.UpdatedAt = formatTime(now)
+			updated = state.Entries[i]
+			return state, true, nil
+		}
+		return State{}, false, fmt.Errorf("entry %q not found", entryID)
+	})
+	if err != nil {
+		return QueueEntry{}, err
+	}
+	return updated, nil
 }
 
 func (s *Scheduler) MarkDone(scope Scope, entryID string) (QueueEntry, error) {
@@ -469,28 +642,34 @@ func (s *Scheduler) MarkDone(scope Scope, entryID string) (QueueEntry, error) {
 	if strings.TrimSpace(entryID) == "" {
 		return QueueEntry{}, errors.New("entry id is required")
 	}
-	state, statePath, err := s.loadExisting(scope)
+	now := canonicalTime(s.clock())
+	var updated QueueEntry
+	_, _, err := s.withLockedState(scope, false, func(state State) (State, bool, error) {
+		state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
+		for i := range state.Entries {
+			if state.Entries[i].ID != entryID {
+				continue
+			}
+			if state.Entries[i].Status != StatusInFlight {
+				return State{}, false, fmt.Errorf("entry %q status %q cannot transition to done", entryID, state.Entries[i].Status)
+			}
+			state.Entries[i].Status = StatusDone
+			state.Entries[i].DoneAt = formatTime(now)
+			state.Entries[i].UpdatedAt = formatTime(now)
+			state.Entries[i].LastError = ""
+			state.Entries[i].NextDueAt = ""
+			state.Entries[i].CanceledAt = ""
+			state.Entries[i].FailedAt = ""
+			state.UpdatedAt = formatTime(now)
+			updated = state.Entries[i]
+			return state, true, nil
+		}
+		return State{}, false, fmt.Errorf("entry %q not found", entryID)
+	})
 	if err != nil {
 		return QueueEntry{}, err
 	}
-	state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
-	now := canonicalTime(s.clock())
-	for i := range state.Entries {
-		if state.Entries[i].ID != entryID {
-			continue
-		}
-		state.Entries[i].Status = StatusDone
-		state.Entries[i].DoneAt = formatTime(now)
-		state.Entries[i].UpdatedAt = formatTime(now)
-		state.Entries[i].LastError = ""
-		state.Entries[i].NextDueAt = ""
-		state.UpdatedAt = formatTime(now)
-		if err := s.writeState(statePath, state); err != nil {
-			return QueueEntry{}, err
-		}
-		return state.Entries[i], nil
-	}
-	return QueueEntry{}, fmt.Errorf("entry %q not found", entryID)
+	return updated, nil
 }
 
 func (s *Scheduler) Summary(scope Scope) (Summary, error) {
@@ -519,6 +698,259 @@ func (s *Scheduler) StatePath(scope Scope) (string, error) {
 		return "", fmt.Errorf("target scope: %w", err)
 	}
 	return filepath.Join(s.dir, "profiles", profileDir, "targets", targetDir, StateFileName), nil
+}
+
+func (s *Scheduler) RunPath(scope Scope, sessionID string) (string, error) {
+	if s == nil {
+		return "", errors.New("scheduler is nil")
+	}
+	scope, err := validateScope(scope)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return "", errors.New("session id is required")
+	}
+	if strings.TrimSpace(sessionID) != sessionID {
+		return "", errors.New("session id must not be padded")
+	}
+	if err := transaction.ValidateSessionID(sessionID); err != nil {
+		return "", err
+	}
+	profileDir, err := scopePathComponent(scope.ProfileID)
+	if err != nil {
+		return "", fmt.Errorf("profile scope: %w", err)
+	}
+	targetDir, err := scopePathComponent(scope.TargetID)
+	if err != nil {
+		return "", fmt.Errorf("target scope: %w", err)
+	}
+	return filepath.Join(s.dir, "profiles", profileDir, "targets", targetDir, "runs", sessionID+".json"), nil
+}
+
+func (s *Scheduler) RunsDir(scope Scope) (string, error) {
+	if s == nil {
+		return "", errors.New("scheduler is nil")
+	}
+	scope, err := validateScope(scope)
+	if err != nil {
+		return "", err
+	}
+	profileDir, err := scopePathComponent(scope.ProfileID)
+	if err != nil {
+		return "", fmt.Errorf("profile scope: %w", err)
+	}
+	targetDir, err := scopePathComponent(scope.TargetID)
+	if err != nil {
+		return "", fmt.Errorf("target scope: %w", err)
+	}
+	return filepath.Join(s.dir, "profiles", profileDir, "targets", targetDir, "runs"), nil
+}
+
+func (s *Scheduler) State(scope Scope) (State, string, error) {
+	if s == nil {
+		return State{}, "", errors.New("scheduler is nil")
+	}
+	state, statePath, err := s.loadExisting(scope)
+	if err != nil {
+		return State{}, statePath, err
+	}
+	state.Entries, _ = dropLegacyTargetlessSymlinks(state.Entries)
+	return state, statePath, nil
+}
+
+func (s *Scheduler) RunResults(scope Scope) ([]RunResult, []ArtifactProblem, error) {
+	if s == nil {
+		return nil, nil, errors.New("scheduler is nil")
+	}
+	var err error
+	scope, err = validateScope(scope)
+	if err != nil {
+		return nil, nil, err
+	}
+	runsDir, err := s.RunsDir(scope)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := pathguard.EnsureDirectory(s.dir, runsDir); err != nil {
+		return nil, []ArtifactProblem{{Path: runsDir, Error: err.Error()}}, nil
+	}
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil, nil
+		}
+		return nil, []ArtifactProblem{{Path: runsDir, Error: err.Error()}}, nil
+	}
+
+	var runs []RunResult
+	var problems []ArtifactProblem
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(runsDir, entry.Name())
+		if entry.IsDir() {
+			problems = append(problems, ArtifactProblem{Path: path, Error: "incremental sync run receipt is not a regular file"})
+			continue
+		}
+		if err := transaction.ValidateSessionID(strings.TrimSuffix(entry.Name(), ".json")); err != nil {
+			problems = append(problems, ArtifactProblem{Path: path, Error: err.Error()})
+			continue
+		}
+		info, err := os.Lstat(path)
+		if err != nil {
+			problems = append(problems, ArtifactProblem{Path: path, Error: err.Error()})
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			problems = append(problems, ArtifactProblem{Path: path, Error: "incremental sync run receipt is a symlink"})
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			problems = append(problems, ArtifactProblem{Path: path, Error: "incremental sync run receipt is not a regular file"})
+			continue
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			problems = append(problems, ArtifactProblem{Path: path, Error: err.Error()})
+			continue
+		}
+		result, err := DecodeRunResult(file)
+		closeErr := file.Close()
+		if err != nil {
+			problems = append(problems, ArtifactProblem{Path: path, Error: err.Error()})
+			continue
+		}
+		if closeErr != nil {
+			problems = append(problems, ArtifactProblem{Path: path, Error: closeErr.Error()})
+			continue
+		}
+		pathID := strings.TrimSuffix(entry.Name(), ".json")
+		if result.SessionID != pathID {
+			problems = append(problems, ArtifactProblem{Path: path, Error: fmt.Sprintf("incremental sync run session_id %q does not match path id %q", result.SessionID, pathID)})
+			continue
+		}
+		if result.Scope != scope {
+			problems = append(problems, ArtifactProblem{Path: path, Error: fmt.Sprintf("incremental sync run scope profile=%q target=%q does not match requested profile=%q target=%q", result.Scope.ProfileID, result.Scope.TargetID, scope.ProfileID, scope.TargetID)})
+			continue
+		}
+		if filepath.Clean(result.RunPath) != filepath.Clean(path) {
+			problems = append(problems, ArtifactProblem{Path: path, Error: fmt.Sprintf("incremental sync run path %q does not match artifact path %q", result.RunPath, path)})
+			continue
+		}
+		runs = append(runs, result)
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].StartedAt == runs[j].StartedAt {
+			return runs[i].SessionID < runs[j].SessionID
+		}
+		return runs[i].StartedAt < runs[j].StartedAt
+	})
+	return runs, problems, nil
+}
+
+func (s *Scheduler) RunOnce(ctx context.Context, scope Scope, opts RunOptions) (RunResult, error) {
+	if s == nil {
+		return RunResult{}, errors.New("scheduler is nil")
+	}
+	if ctx == nil {
+		return RunResult{}, errors.New("context is nil")
+	}
+	if opts.Transfer == nil {
+		return RunResult{}, errors.New("transfer function is required")
+	}
+	if strings.TrimSpace(opts.SessionID) == "" {
+		return RunResult{}, errors.New("session id is required")
+	}
+	if opts.Backoff < 0 {
+		return RunResult{}, errors.New("backoff cannot be negative")
+	}
+	scope, err := validateScope(scope)
+	if err != nil {
+		return RunResult{}, err
+	}
+	statePath, err := s.StatePath(scope)
+	if err != nil {
+		return RunResult{}, err
+	}
+	runPath, err := s.RunPath(scope, opts.SessionID)
+	if err != nil {
+		return RunResult{}, err
+	}
+	if err := validateRunPathUnused(runPath); err != nil {
+		return RunResult{}, err
+	}
+	started := canonicalTime(s.clock())
+	result := RunResult{
+		Schema:    RunSchemaV1,
+		SessionID: opts.SessionID,
+		Scope:     scope,
+		Status:    RunStatusIdle,
+		StartedAt: formatTime(started),
+		StatePath: statePath,
+		RunPath:   runPath,
+	}
+	recovered, err := s.RequeueInFlight(scope, "sync run recovered in-flight entry before transfer")
+	if err != nil {
+		return result, err
+	}
+	result.Recovered = len(recovered)
+	ready, err := s.Ready(scope)
+	if err != nil {
+		return result, err
+	}
+	result.Ready = append([]QueueEntry(nil), ready...)
+	if len(ready) == 0 {
+		result.FinishedAt = formatTime(s.clock())
+		summary, summaryErr := s.Summary(scope)
+		if summaryErr != nil {
+			return result, summaryErr
+		}
+		result.Summary = summary
+		if err := s.writeNewRunResult(runPath, result); err != nil {
+			return result, err
+		}
+		return result, nil
+	}
+
+	for _, entry := range ready {
+		inFlight, err := s.MarkInFlight(scope, entry.ID)
+		if err != nil {
+			return result, err
+		}
+		result.InFlight = append(result.InFlight, inFlight)
+	}
+	result.Status = StatusInFlight
+	result.FinishedAt = ""
+	if err := s.writeNewRunResult(runPath, result); err != nil {
+		return result, err
+	}
+
+	if err := ctx.Err(); err != nil {
+		return s.recordRunRetry(scope, runPath, result, opts.Backoff, err)
+	}
+	if err := opts.Transfer(ctx, append([]QueueEntry(nil), result.InFlight...)); err != nil {
+		return s.recordRunRetry(scope, runPath, result, opts.Backoff, err)
+	}
+	for _, entry := range result.InFlight {
+		done, err := s.MarkDone(scope, entry.ID)
+		if err != nil {
+			return result, err
+		}
+		result.Published = append(result.Published, done)
+	}
+	result.Status = RunStatusPublished
+	result.FinishedAt = formatTime(s.clock())
+	summary, err := s.Summary(scope)
+	if err != nil {
+		return result, err
+	}
+	result.Summary = summary
+	if err := s.writeRunResult(runPath, result); err != nil {
+		return result, err
+	}
+	return result, nil
 }
 
 func (s *Scheduler) loadOrInit(scope Scope) (State, string, error) {
@@ -565,6 +997,57 @@ func (s *Scheduler) loadExisting(scope Scope) (State, string, error) {
 	return state, statePath, nil
 }
 
+func (s *Scheduler) withLockedState(scope Scope, allowInit bool, mutate func(State) (State, bool, error)) (State, string, error) {
+	if s == nil {
+		return State{}, "", errors.New("scheduler is nil")
+	}
+	scope, err := validateScope(scope)
+	if err != nil {
+		return State{}, "", err
+	}
+	statePath, err := s.StatePath(scope)
+	if err != nil {
+		return State{}, "", err
+	}
+	unlock, err := s.lockScope(scope)
+	if err != nil {
+		return State{}, "", err
+	}
+	defer unlock()
+
+	var state State
+	if allowInit {
+		state, _, err = s.loadOrInit(scope)
+	} else {
+		state, _, err = s.loadExisting(scope)
+	}
+	if err != nil {
+		return State{}, statePath, err
+	}
+	next, changed, err := mutate(state)
+	if err != nil {
+		return State{}, statePath, err
+	}
+	if changed {
+		if err := s.writeState(statePath, next); err != nil {
+			return State{}, statePath, err
+		}
+	}
+	return next, statePath, nil
+}
+
+func (s *Scheduler) lockScope(scope Scope) (func(), error) {
+	statePath, err := s.StatePath(scope)
+	if err != nil {
+		return nil, err
+	}
+	lockDir := filepath.Dir(statePath)
+	if err := pathguard.EnsurePlainDirectory(s.dir, lockDir, 0o755); err != nil {
+		return nil, err
+	}
+	return filelock.LockInDir(lockDir, "queue.lock")
+}
+
 func (s *Scheduler) writeState(statePath string, state State) error {
 	if err := validateState(state); err != nil {
 		return err
@@ -600,6 +1083,84 @@ func (s *Scheduler) writeState(statePath string, state State) error {
 	return durable.SyncDirBestEffort(filepath.Dir(statePath))
 }
 
+func (s *Scheduler) recordRunRetry(scope Scope, runPath string, result RunResult, backoff time.Duration, cause error) (RunResult, error) {
+	for _, entry := range result.InFlight {
+		retried, err := s.RecordRetry(scope, RetryOptions{EntryID: entry.ID, Err: cause, Backoff: backoff})
+		if err != nil {
+			return result, err
+		}
+		result.Retried = append(result.Retried, retried)
+	}
+	result.Status = RunStatusRetrying
+	result.Error = retryError(cause)
+	result.FinishedAt = formatTime(s.clock())
+	summary, err := s.Summary(scope)
+	if err != nil {
+		return result, err
+	}
+	result.Summary = summary
+	if err := s.writeRunResult(runPath, result); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func (s *Scheduler) writeNewRunResult(runPath string, result RunResult) error {
+	if err := validateRunPathUnused(runPath); err != nil {
+		return err
+	}
+	return s.writeRunResult(runPath, result)
+}
+
+func validateRunPathUnused(runPath string) error {
+	info, err := os.Lstat(runPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: run receipt %q is a symlink", pathguard.ErrUnsafePath, runPath)
+	}
+	return fmt.Errorf("run receipt already exists: %s", runPath)
+}
+
+func (s *Scheduler) writeRunResult(runPath string, result RunResult) error {
+	if err := validateRunResult(result); err != nil {
+		return err
+	}
+	if err := pathguard.EnsurePlainDirectory(s.dir, filepath.Dir(runPath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	temp, err := os.CreateTemp(filepath.Dir(runPath), ".run-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempName := temp.Name()
+	defer os.Remove(tempName)
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempName, runPath); err != nil {
+		return err
+	}
+	return durable.SyncDirBestEffort(filepath.Dir(runPath))
+}
+
 func decodeState(r io.Reader) (State, error) {
 	decoder := json.NewDecoder(r)
 	decoder.DisallowUnknownFields()
@@ -614,6 +1175,22 @@ func decodeState(r io.Reader) (State, error) {
 		return State{}, err
 	}
 	return state, nil
+}
+
+func DecodeRunResult(r io.Reader) (RunResult, error) {
+	decoder := json.NewDecoder(r)
+	decoder.DisallowUnknownFields()
+	var result RunResult
+	if err := decoder.Decode(&result); err != nil {
+		return RunResult{}, err
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return RunResult{}, err
+	}
+	if err := validateRunResult(result); err != nil {
+		return RunResult{}, err
+	}
+	return result, nil
 }
 
 func validateState(state State) error {
@@ -657,10 +1234,6 @@ func validateStateWithOptions(state State, opts stateValidationOptions) error {
 	return nil
 }
 
-func validateEntry(entry QueueEntry) error {
-	return validateEntryWithOptions(entry, stateValidationOptions{})
-}
-
 func validateEntryWithOptions(entry QueueEntry, opts stateValidationOptions) error {
 	if strings.TrimSpace(entry.ID) == "" {
 		return errors.New("entry id is required")
@@ -686,6 +1259,7 @@ func validateEntryWithOptions(entry QueueEntry, opts stateValidationOptions) err
 		"next_due_at": entry.NextDueAt,
 		"canceled_at": entry.CanceledAt,
 		"done_at":     entry.DoneAt,
+		"failed_at":   entry.FailedAt,
 	} {
 		if value == "" {
 			continue
@@ -695,7 +1269,7 @@ func validateEntryWithOptions(entry QueueEntry, opts stateValidationOptions) err
 		}
 	}
 	switch entry.Status {
-	case StatusQueued, StatusBackoff, StatusCanceled, StatusDone:
+	case StatusQueued, StatusInFlight, StatusBackoff, StatusCanceled, StatusDone, StatusFailed:
 	default:
 		return fmt.Errorf("unsupported status %q", entry.Status)
 	}
@@ -708,6 +1282,48 @@ func validateEntryWithOptions(entry QueueEntry, opts stateValidationOptions) err
 		}
 	} else if strings.TrimSpace(entry.SymlinkTarget) != "" {
 		return errors.New("symlink_target is only valid for symlink entries")
+	}
+	return nil
+}
+
+func validateRunResult(result RunResult) error {
+	if result.Schema != RunSchemaV1 {
+		return fmt.Errorf("run schema %q is not supported", result.Schema)
+	}
+	if strings.TrimSpace(result.SessionID) == "" {
+		return errors.New("session id is required")
+	}
+	if strings.TrimSpace(result.SessionID) != result.SessionID {
+		return errors.New("session id must not be padded")
+	}
+	if err := transaction.ValidateSessionID(result.SessionID); err != nil {
+		return err
+	}
+	if _, err := validateScope(result.Scope); err != nil {
+		return err
+	}
+	switch result.Status {
+	case RunStatusIdle, StatusInFlight, RunStatusPublished, RunStatusRetrying:
+	default:
+		return fmt.Errorf("unsupported run status %q", result.Status)
+	}
+	for name, value := range map[string]string{
+		"started_at":  result.StartedAt,
+		"finished_at": result.FinishedAt,
+	} {
+		if value == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
+			return fmt.Errorf("%s must be RFC3339 timestamp: %w", name, err)
+		}
+	}
+	for _, entries := range [][]QueueEntry{result.Ready, result.InFlight, result.Published, result.Retried} {
+		for _, entry := range entries {
+			if err := validateEntryWithOptions(entry, stateValidationOptions{allowLegacyMissingSymlinkTarget: true}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -800,6 +1416,10 @@ func queueEntry(scope Scope, root string, entry scan.Entry, now time.Time) Queue
 		out.hadSize = true
 		out.hadMode = true
 	}
+	if entry.Kind == scan.KindDir {
+		out.Mode = uint32(entry.Mode.Perm())
+		out.hadMode = true
+	}
 	if entry.Kind == scan.KindSymlink {
 		out.SymlinkTarget = entry.SymlinkTarget
 	}
@@ -889,6 +1509,9 @@ func buildSummary(state State, statePath string, now time.Time, warnings []audit
 		case StatusQueued:
 			summary.Queued++
 			root.Queued++
+		case StatusInFlight:
+			summary.InFlight++
+			root.InFlight++
 		case StatusBackoff:
 			summary.Backoff++
 			root.Backoff++
@@ -898,6 +1521,9 @@ func buildSummary(state State, statePath string, now time.Time, warnings []audit
 		case StatusDone:
 			summary.Done++
 			root.Done++
+		case StatusFailed:
+			summary.Failed++
+			root.Failed++
 		}
 		if isReady(entry, now) {
 			summary.Ready++

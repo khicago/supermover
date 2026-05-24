@@ -224,6 +224,118 @@ func TestFileStoreBeginReplayDifferentMetadataConflicts(t *testing.T) {
 	}
 }
 
+func TestFileStoreManagedReplacementRequiresPreviousPublishedEvidence(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)
+	store := FileStore{TargetRoot: root, Now: func() time.Time { return now }}
+	first := validBeginRequest([]byte("hello"))
+	if _, err := store.Begin(first); err != nil {
+		t.Fatalf("FileStore.Begin(first) error = %v, want nil", err)
+	}
+	if _, err := store.AppendChunk(protocol.ChunkUploadRequest{
+		SessionID: first.SessionID,
+		Path:      "docs/a.txt",
+		Offset:    0,
+		Data:      []byte("hello"),
+		Final:     true,
+	}); err != nil {
+		t.Fatalf("FileStore.AppendChunk(first) error = %v, want nil", err)
+	}
+	if _, err := store.Commit(protocol.CommitSessionRequest{SessionID: first.SessionID, EndedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("FileStore.Commit(first) error = %v, want nil", err)
+	}
+
+	tests := []struct {
+		name      string
+		entryEdit func(protocol.ManifestEntry) protocol.ManifestEntry
+		wantErr   string
+		wantFile  string
+	}{
+		{
+			name:     "missing previous evidence",
+			wantErr:  "refusing to overwrite",
+			wantFile: "hello",
+		},
+		{
+			name: "matching previous evidence",
+			entryEdit: func(entry protocol.ManifestEntry) protocol.ManifestEntry {
+				size := int64(len("hello"))
+				mode := uint32(0o600)
+				entry.PreviousSessionID = first.SessionID
+				entry.PreviousManifestID = first.Manifest.ID
+				entry.PreviousSize = &size
+				entry.PreviousDigest = digest([]byte("hello"))
+				entry.PreviousMode = &mode
+				entry.PreviousModTime = first.Manifest.Entries[1].ModTime.UTC().Format(time.RFC3339Nano)
+				return entry
+			},
+			wantFile: "goodbye",
+		},
+		{
+			name: "tampered previous digest",
+			entryEdit: func(entry protocol.ManifestEntry) protocol.ManifestEntry {
+				size := int64(len("hello"))
+				mode := uint32(0o600)
+				entry.PreviousSessionID = first.SessionID
+				entry.PreviousManifestID = first.Manifest.ID
+				entry.PreviousSize = &size
+				entry.PreviousDigest = digest([]byte("tampered"))
+				entry.PreviousMode = &mode
+				entry.PreviousModTime = first.Manifest.Entries[1].ModTime.UTC().Format(time.RFC3339Nano)
+				return entry
+			},
+			wantErr:  "previous manifest entry",
+			wantFile: "hello",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caseRoot := t.TempDir()
+			if err := copyReceiverFixture(root, caseRoot); err != nil {
+				t.Fatalf("copyReceiverFixture error = %v, want nil", err)
+			}
+			caseStore := FileStore{TargetRoot: caseRoot, Now: func() time.Time { return now.Add(2 * time.Minute) }}
+			req := validBeginRequest([]byte("goodbye"))
+			req.SessionID = "session-" + strings.ReplaceAll(tt.name, " ", "-")
+			req.Manifest.ID = "manifest-" + req.SessionID
+			if tt.entryEdit != nil {
+				req.Manifest.Entries[1] = tt.entryEdit(req.Manifest.Entries[1])
+			}
+			begin, err := caseStore.Begin(req)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("FileStore.Begin(%s) error = %v, want %q", tt.name, err, tt.wantErr)
+				}
+				if got := readReceiverFile(t, caseRoot, "docs/a.txt"); got != tt.wantFile {
+					t.Fatalf("target file after refused begin = %q, want %q", got, tt.wantFile)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("FileStore.Begin(%s) error = %v, want nil", tt.name, err)
+			}
+			if begin.State != protocol.SessionStateValidated {
+				t.Fatalf("FileStore.Begin(%s).State = %q, want validated", tt.name, begin.State)
+			}
+			if _, err := caseStore.AppendChunk(protocol.ChunkUploadRequest{
+				SessionID: req.SessionID,
+				Path:      "docs/a.txt",
+				Offset:    0,
+				Data:      []byte("goodbye"),
+				Final:     true,
+			}); err != nil {
+				t.Fatalf("FileStore.AppendChunk(%s) error = %v, want nil", tt.name, err)
+			}
+			if _, err := caseStore.Commit(protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: now.Add(3 * time.Minute)}); err != nil {
+				t.Fatalf("FileStore.Commit(%s) error = %v, want nil", tt.name, err)
+			}
+			if got := readReceiverFile(t, caseRoot, "docs/a.txt"); got != tt.wantFile {
+				t.Fatalf("target file after managed replacement = %q, want %q", got, tt.wantFile)
+			}
+		})
+	}
+}
+
 func TestFileStoreConcurrentBeginLocksCanonicalTargetRoot(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "target")
@@ -838,9 +950,6 @@ func TestFileStoreNeedsRepairRejectsNormalTraffic(t *testing.T) {
 func TestFileStoreCommitRejectsSymlinkParentEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, "docs")); err != nil {
-		t.Skipf("os.Symlink() unavailable: %v", err)
-	}
 	store := FileStore{TargetRoot: root}
 	req := validBeginRequest([]byte("hello"))
 	if _, err := store.Begin(req); err != nil {
@@ -849,6 +958,9 @@ func TestFileStoreCommitRejectsSymlinkParentEscape(t *testing.T) {
 	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
 	if _, err := store.AppendChunk(chunk); err != nil {
 		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, "docs")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
 	}
 
 	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
@@ -889,6 +1001,29 @@ func TestFileStoreCommitPreflightsAllTargetsBeforePublish(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "a.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("os.Stat(a.txt after failed commit preflight) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestFileStoreBeginRejectsDivergentExistingTargetBeforeCreatingSession(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(existing target) error = %v, want nil", err)
+	}
+	store := FileStore{TargetRoot: root}
+	req := validBeginRequest([]byte("hello"))
+
+	if _, err := store.Begin(req); !errors.Is(err, ErrConflict) {
+		t.Fatalf("FileStore.Begin(existing divergent target) error = %v, want ErrConflict", err)
+	}
+	if _, err := os.Stat(filepath.Join(control.ControlDir(root), "sessions", req.SessionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(rejected begin session) error = %v, want os.ErrNotExist", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "docs", "a.txt"))
+	if err != nil || string(got) != "existing" {
+		t.Fatalf("target file after rejected Begin = (%q, %v), want existing", string(got), err)
 	}
 }
 
@@ -1552,9 +1687,6 @@ func TestFileStoreCommitRefusesDivergentExistingTargetFile(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), []byte("existing"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(existing target) error = %v, want nil", err)
-	}
 	store := FileStore{TargetRoot: root}
 	req := validBeginRequest([]byte("hello"))
 	if _, err := store.Begin(req); err != nil {
@@ -1563,6 +1695,9 @@ func TestFileStoreCommitRefusesDivergentExistingTargetFile(t *testing.T) {
 	chunk := protocol.ChunkUploadRequest{SessionID: req.SessionID, Path: "docs/a.txt", Offset: 0, Data: []byte("hello"), Final: true}
 	if _, err := store.AppendChunk(chunk); err != nil {
 		t.Fatalf("FileStore.AppendChunk(%+v) error = %v, want nil", chunk, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "docs", "a.txt"), []byte("existing"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(existing target) error = %v, want nil", err)
 	}
 
 	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
@@ -1630,9 +1765,6 @@ func TestFileStoreCommitRefusesDivergentExistingTargetSymlink(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("os.MkdirAll(docs) error = %v, want nil", err)
 	}
-	if err := os.Symlink("other.txt", filepath.Join(root, "docs", "link.txt")); err != nil {
-		t.Skipf("os.Symlink() unavailable: %v", err)
-	}
 	store := FileStore{TargetRoot: root}
 	req := validBeginRequest([]byte("hello"))
 	req.Manifest.Entries = []protocol.ManifestEntry{
@@ -1641,6 +1773,9 @@ func TestFileStoreCommitRefusesDivergentExistingTargetSymlink(t *testing.T) {
 	}
 	if _, err := store.Begin(req); err != nil {
 		t.Fatalf("FileStore.Begin(%+v) error = %v, want nil", req, err)
+	}
+	if err := os.Symlink("other.txt", filepath.Join(root, "docs", "link.txt")); err != nil {
+		t.Skipf("os.Symlink() unavailable: %v", err)
 	}
 
 	commitReq := protocol.CommitSessionRequest{SessionID: req.SessionID, EndedAt: time.Date(2026, 5, 16, 8, 1, 0, 0, time.UTC)}
@@ -1843,6 +1978,7 @@ func validNetworkTransferForBegin(req protocol.BeginSessionRequest) control.Netw
 		SourceDeviceID:  req.SourceDeviceID,
 		TargetDeviceID:  req.TargetDeviceID,
 		ProtocolVersion: protocol.Version,
+		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
 		PrivacyPolicy:   req.PrivacyPolicy,
 		Status:          control.NetworkTransferStarted,
 		Stage:           "begin",
@@ -1860,6 +1996,56 @@ func validNetworkTransferForBegin(req protocol.BeginSessionRequest) control.Netw
 func digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func readReceiverFile(t *testing.T, root, rel string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", rel, err)
+	}
+	return string(data)
+}
+
+func copyReceiverFixture(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil || rel == "." {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			return os.Symlink(link, target)
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(target, data, info.Mode().Perm()); err != nil {
+			return err
+		}
+		return os.Chtimes(target, info.ModTime(), info.ModTime())
+	})
 }
 
 func readControlDoc[T control.Document](t *testing.T, target string, artifact control.ArtifactType, id string) T {

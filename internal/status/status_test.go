@@ -1,6 +1,7 @@
 package status
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -18,10 +20,13 @@ import (
 	"time"
 
 	"github.com/khicago/supermover/internal/control"
+	"github.com/khicago/supermover/internal/incrementalsync"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/protocol"
 	"github.com/khicago/supermover/internal/prune"
+	"github.com/khicago/supermover/internal/reconcile"
 	"github.com/khicago/supermover/internal/report"
+	"github.com/khicago/supermover/internal/scan"
 	"github.com/khicago/supermover/internal/transaction"
 	"github.com/khicago/supermover/internal/transport"
 )
@@ -73,6 +78,29 @@ func TestBuildShowsProfileBackedMTLSConfigured(t *testing.T) {
 	}
 	if got.TrafficPrivacy.Status != "blocked" || got.TrafficPrivacy.AnonymityClaim != "not_claimed" || len(got.TrafficPrivacy.Blockers) != 1 || got.TrafficPrivacy.Blockers[0] != "applied_overhead_missing" {
 		t.Fatalf("Build(%q).TrafficPrivacy = %+v, want missing applied overhead blocker without anonymity claim", target, got.TrafficPrivacy)
+	}
+}
+
+func TestBuildSurfacesSourceLocalPairingReceiptEvidence(t *testing.T) {
+	target := t.TempDir()
+	sourceReceiptDir := t.TempDir()
+	p, receipt := testNetworkPairedProfile(t, target)
+	exportPath := filepath.Join(sourceReceiptDir, receipt.ID+".json")
+	if err := control.WriteFile(exportPath, receipt); err != nil {
+		t.Fatalf("control.WriteFile(%q) error = %v, want nil", exportPath, err)
+	}
+	p.Target.LocalPairingReceiptPath = exportPath
+	writeCompleteSession(t, target, "session-clean", "docs/a.txt", []byte("hello"))
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+	if got.Pairing.Status != string(report.PairingStatusValid) || got.Pairing.ReceiptSource != "source_local_export" {
+		t.Fatalf("Build(%q).Pairing = %+v, want valid source-local receipt evidence", target, got.Pairing)
+	}
+	if got.Pairing.ReceiptPath != exportPath || got.Pairing.SourceReceiptPath != exportPath {
+		t.Fatalf("Build(%q).Pairing = %+v, want source-local receipt path", target, got.Pairing)
 	}
 }
 
@@ -194,9 +222,76 @@ func TestBuildWarningAndSoftDeleteRequireReviewWithoutMutatingTarget(t *testing.
 	}
 }
 
+func TestBuildSurfacesIncrementalSyncCounts(t *testing.T) {
+	target := t.TempDir()
+	p := testProfile(t, target)
+	mustWriteStatusFile(t, filepath.Join(p.Roots[0].Path, ".hidden", "note.txt"), []byte("secret"))
+	writeCompleteSession(t, target, "session-clean", "docs/a.txt", []byte("hello"))
+	scheduler := mustStatusIncrementalScheduler(t, target, fixedStatusClock("2026-05-20T01:00:00Z"))
+	queued, err := scheduler.Enqueue(mustStatusSnapshot(t, p, p.Roots[0]))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v, want nil", err)
+	}
+	_, err = scheduler.RunOnce(context.Background(), queued.Scope, incrementalsync.RunOptions{
+		SessionID: "sync-run-status",
+		Backoff:   time.Minute,
+		Transfer: func(context.Context, []incrementalsync.QueueEntry) error {
+			return errors.New("target drift refused publish")
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v, want retrying result without hard error", err)
+	}
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+	if got.Overall.Status != OverallReviewRequired || !got.ReviewRequired || got.ExitCode() != ExitReviewNeeded {
+		t.Fatalf("Build(%q) status=%+v review=%t exit=%d, want incremental sync review", target, got.Overall, got.ReviewRequired, got.ExitCode())
+	}
+	if got.Counts.IncrementalSyncBackoff == 0 || got.Counts.IncrementalSyncRuns != 1 || got.Counts.IncrementalSyncRetryingRuns != 1 {
+		t.Fatalf("Build(%q).Counts = %+v, want incremental sync backoff and retrying run counts", target, got.Counts)
+	}
+	if got.IncrementalSync.Status != string(report.IncrementalSyncReviewRequired) || got.IncrementalSync.Action != "inspect_incremental_sync_queue" {
+		t.Fatalf("Build(%q).IncrementalSync = %+v, want compact incremental sync review action", target, got.IncrementalSync)
+	}
+}
+
+func TestBuildSurfacesFailedIncrementalSyncCounts(t *testing.T) {
+	target := t.TempDir()
+	p := testProfile(t, target)
+	mustWriteStatusFile(t, filepath.Join(p.Roots[0].Path, ".hidden", "note.txt"), []byte("secret"))
+	writeCompleteSession(t, target, "session-clean", ".hidden/note.txt", []byte("secret"))
+	scheduler := mustStatusIncrementalScheduler(t, target, fixedStatusClock("2026-05-20T01:00:00Z"))
+	queued, err := scheduler.Enqueue(mustStatusSnapshot(t, p, p.Roots[0]))
+	if err != nil {
+		t.Fatalf("Enqueue() error = %v, want nil", err)
+	}
+	hidden := findStatusQueuePath(t, queued.Enqueued, ".hidden/note.txt")
+	if _, err := scheduler.MarkFailed(queued.Scope, hidden.ID, "operator terminal failure"); err != nil {
+		t.Fatalf("MarkFailed() error = %v, want nil", err)
+	}
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+	if got.Overall.Status != OverallReviewRequired || !got.ReviewRequired || got.ExitCode() != ExitReviewNeeded {
+		t.Fatalf("Build(%q) status=%+v review=%t exit=%d, want failed incremental sync review", target, got.Overall, got.ReviewRequired, got.ExitCode())
+	}
+	if got.Counts.IncrementalSyncFailed != 1 || got.Counts.IncrementalSyncReady != 1 {
+		t.Fatalf("Build(%q).Counts = %+v, want failed file and still-ready parent directory", target, got.Counts)
+	}
+	if got.IncrementalSync.Status != string(report.IncrementalSyncReviewRequired) || got.IncrementalSync.Action != "inspect_incremental_sync_queue" {
+		t.Fatalf("Build(%q).IncrementalSync = %+v, want compact failed sync review action", target, got.IncrementalSync)
+	}
+}
+
 func TestBuildPruneApprovalInventoryRequiresReviewWithoutMutatingTarget(t *testing.T) {
 	target := t.TempDir()
 	p := testPruneProfile(t, target)
+	p.DeletePolicy.RetentionDays = 0
 	writeCompleteSession(t, target, "session-previous", "gone.txt", []byte("stale"))
 	writeCompleteSession(t, target, "session-prune", "keep.txt", []byte("keep"))
 	record := control.SoftDelete{
@@ -217,7 +312,7 @@ func TestBuildPruneApprovalInventoryRequiresReviewWithoutMutatingTarget(t *testi
 		Reason:             "missing_from_latest_source_scan",
 	}
 	writeSoftDelete(t, target, record)
-	writePruneApproval(t, target, testPruneApproval(t, p, record))
+	writePruneApproval(t, target, freshTestPruneApproval(t, p, record))
 	before := snapshotControlPlane(t, target)
 
 	got, err := Build(Options{TargetRoot: target, Profile: &p})
@@ -232,8 +327,159 @@ func TestBuildPruneApprovalInventoryRequiresReviewWithoutMutatingTarget(t *testi
 	if got.Counts.PruneApprovals != 1 || got.Counts.PruneUnappliedApprovals != 1 {
 		t.Fatalf("Build(%q).Counts = %+v, want one unapplied prune approval", target, got.Counts)
 	}
+	if got.PruneReview.Status != string(report.PruneReviewReviewRequired) || got.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("Build(%q).PruneReview = %+v, want compact prune review action", target, got.PruneReview)
+	}
+	if got.Counts.PruneActiveApprovals != 1 || got.Counts.PruneStaleApprovals != 0 || got.Counts.PruneExpiredApprovals != 0 || got.Counts.PruneConsumedApprovals != 0 || got.Counts.PruneReceipts != 0 || got.Counts.PruneReceiptIssues != 0 {
+		t.Fatalf("Build(%q).Counts = %+v, want active unapplied approval readiness counts", target, got.Counts)
+	}
 	if strings.Join(before, "\n") != strings.Join(after, "\n") {
 		t.Fatalf("Build(%q) mutated control plane\nbefore=%#v\nafter=%#v", target, before, after)
+	}
+}
+
+func TestBuildPruneApprovalStaleCountsSurfaceInCompactStatus(t *testing.T) {
+	target := t.TempDir()
+	p := testPruneProfile(t, target)
+	p.DeletePolicy.RetentionDays = 0
+	writeCompleteSession(t, target, "session-previous", "gone.txt", []byte("stale"))
+	writeCompleteSession(t, target, "session-prune", "keep.txt", []byte("keep"))
+	record := control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "session-prune-del-001",
+		SessionID:          "session-prune",
+		ProfileID:          "profile-local",
+		TargetID:           "target-local",
+		RootID:             "root",
+		PreviousSessionID:  "session-previous",
+		PreviousManifestID: "manifest-session-previous",
+		SourcePath:         "gone.txt",
+		TargetPath:         "gone.txt",
+		Kind:               "file",
+		Size:               int64(len("stale")),
+		Digest:             digest([]byte("stale")),
+		DetectedAt:         "2026-05-16T00:03:00Z",
+		Reason:             "missing_from_latest_source_scan",
+	}
+	writeSoftDelete(t, target, record)
+	writePruneApproval(t, target, freshTestPruneApproval(t, p, record))
+	if err := os.WriteFile(filepath.Join(target, "gone.txt"), []byte("changed"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(changed target) error = %v, want nil", err)
+	}
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+
+	if got.PruneReview.Status != string(report.PruneReviewReviewRequired) || got.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("Build(%q).PruneReview = %+v, want review-required stale approval action", target, got.PruneReview)
+	}
+	if got.Counts.PruneApprovals != 1 || got.Counts.PruneUnappliedApprovals != 1 || got.Counts.PruneActiveApprovals != 0 || got.Counts.PruneStaleApprovals != 1 || got.Counts.PruneExpiredApprovals != 0 || got.Counts.PruneConsumedApprovals != 0 {
+		t.Fatalf("Build(%q).Counts = %+v, want stale approval compact counts", target, got.Counts)
+	}
+}
+
+func TestBuildExpiredTargetDriftDoesNotRequireReview(t *testing.T) {
+	target := t.TempDir()
+	p := testProfile(t, target)
+	writeCompleteSession(t, target, "session-expired", "keep.txt", []byte("keep"))
+	writeTargetDrift(t, target, control.TargetDrift{
+		Version:      control.CurrentVersion,
+		ID:           "session-expired-drift",
+		SessionID:    "session-expired",
+		ProfileID:    "profile-local",
+		TargetID:     "target-local",
+		RootID:       "root",
+		Path:         "keep.txt",
+		DetectedAt:   "2026-05-16T00:01:00Z",
+		Change:       "content_mismatch",
+		ReviewState:  "expired",
+		ReviewAction: "expire",
+		ReviewedAt:   "2026-05-20T00:00:00Z",
+		ReviewReason: "stale review evidence",
+		Evidence:     []string{"target content differed from staged manifest"},
+	})
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+	if got.Overall.Status != OverallClean || got.ReviewRequired || got.ExitCode() != ExitOK {
+		t.Fatalf("Build(%q) status=%+v review=%t exit=%d, want clean expired target drift", target, got.Overall, got.ReviewRequired, got.ExitCode())
+	}
+	if got.Counts.TargetDrifts != 0 || got.Counts.LiveTargetDrifts != 0 {
+		t.Fatalf("Build(%q).Counts = %+v, want expired drift excluded and no live drift", target, got.Counts)
+	}
+}
+
+func TestBuildPruneConsumedApprovalCountsSurfaceInCompactStatus(t *testing.T) {
+	target := t.TempDir()
+	p := testPruneProfile(t, target)
+	p.DeletePolicy.RetentionDays = 0
+	writeCompleteSession(t, target, "session-previous", "gone.txt", []byte("stale"))
+	writeCompleteSession(t, target, "session-prune", "keep.txt", []byte("keep"))
+	record := control.SoftDelete{
+		Version:            control.CurrentVersion,
+		ID:                 "session-prune-del-001",
+		SessionID:          "session-prune",
+		ProfileID:          "profile-local",
+		TargetID:           "target-local",
+		RootID:             "root",
+		PreviousSessionID:  "session-previous",
+		PreviousManifestID: "manifest-session-previous",
+		SourcePath:         "gone.txt",
+		TargetPath:         "gone.txt",
+		Kind:               "file",
+		Size:               int64(len("stale")),
+		Digest:             digest([]byte("stale")),
+		DetectedAt:         "2026-05-16T00:03:00Z",
+		Reason:             "missing_from_latest_source_scan",
+	}
+	writeSoftDelete(t, target, record)
+	approval := freshTestPruneApproval(t, p, record)
+	writePruneApproval(t, target, approval)
+	present := true
+	writePruneReceipt(t, target, control.PruneReceipt{
+		Version:             control.CurrentVersion,
+		ID:                  "approval-status",
+		PruneSessionID:      "approval-status",
+		ApprovalID:          approval.ID,
+		ProfileID:           approval.ProfileID,
+		TargetID:            approval.TargetID,
+		StartedAt:           "2026-05-18T09:30:00Z",
+		EndedAt:             "2026-05-18T09:31:00Z",
+		Status:              control.PruneReceiptApplied,
+		DryRun:              false,
+		ApprovalScopeDigest: approval.ApprovalScopeDigest,
+		Items: []control.PruneReceiptItem{{
+			SoftDeleteID:   record.ID,
+			TargetPath:     record.TargetPath,
+			IntendedAction: "delete_file",
+			PrePruneObserved: control.PruneObservedTargetState{
+				Present: &present,
+				Kind:    "file",
+				Path:    record.TargetPath,
+				Digest:  record.Digest,
+			},
+			Result:   "pruned",
+			PrunedAt: "2026-05-18T09:31:00Z",
+		}},
+	})
+	if err := os.Remove(filepath.Join(target, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(gone target) error = %v, want nil", err)
+	}
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+
+	if got.PruneReview.Status != string(report.PruneReviewNoPendingReview) || got.PruneReview.Action != "no_prune_review_action_required" {
+		t.Fatalf("Build(%q).PruneReview = %+v, want no pending prune review", target, got.PruneReview)
+	}
+	if got.Counts.PruneApprovals != 1 || got.Counts.PruneUnappliedApprovals != 0 || got.Counts.PruneActiveApprovals != 0 || got.Counts.PruneStaleApprovals != 0 || got.Counts.PruneExpiredApprovals != 0 || got.Counts.PruneConsumedApprovals != 1 || got.Counts.PruneReceipts != 1 || got.Counts.PruneReceiptIssues != 0 {
+		t.Fatalf("Build(%q).Counts = %+v, want consumed approval and applied receipt counts", target, got.Counts)
 	}
 }
 
@@ -401,6 +647,25 @@ func TestBuildIgnoresDamagedForeignNetworkTransferArtifact(t *testing.T) {
 	}
 	if got.Counts.ArtifactProblems != 0 || got.Network.Status != NetworkStatusNoEvidence || got.Network.ArtifactProblems != 0 {
 		t.Fatalf("Build(%q) counts=%+v network=%+v, want no current-profile network artifact problem", target, got.Counts, got.Network)
+	}
+}
+
+func TestBuildReconcileReceiptCountsSurfaceInCompactStatus(t *testing.T) {
+	target := t.TempDir()
+	p := testProfile(t, target)
+	writeCompleteSession(t, target, "session-clean", "docs/a.txt", []byte("hello"))
+	writeStatusReconcileReceipt(t, target, "reconcile-status-failed", reconcile.ReceiptStatusFailed, p, "session-clean", reconcile.Summary{Records: 1, Refused: 1})
+
+	got, err := Build(Options{TargetRoot: target, Profile: &p})
+	if err != nil {
+		t.Fatalf("Build(%q) error = %v, want nil", target, err)
+	}
+
+	if got.Counts.ReconcileReceipts != 1 || got.Counts.ReconcileReceiptIssues != 1 {
+		t.Fatalf("Build(%q).Counts = %+v, want reconcile receipt issue counts", target, got.Counts)
+	}
+	if !got.ReviewRequired || got.Overall.Status != OverallReviewRequired {
+		t.Fatalf("Build(%q).Overall = %+v review=%t, want review required", target, got.Overall, got.ReviewRequired)
 	}
 }
 
@@ -704,6 +969,58 @@ func writeCompleteSession(t *testing.T, target, sessionID, rel string, data []by
 	writeSessionRecord(t, target, sessionID, transaction.StatePublished)
 }
 
+func mustStatusIncrementalScheduler(t *testing.T, target string, now incrementalsync.Clock) *incrementalsync.Scheduler {
+	t.Helper()
+	scheduler, err := incrementalsync.New(incrementalsync.Options{
+		StateDir: filepath.Join(control.ControlDir(target), "incremental-sync"),
+		Now:      now,
+	})
+	if err != nil {
+		t.Fatalf("incrementalsync.New() error = %v, want nil", err)
+	}
+	return scheduler
+}
+
+func mustStatusSnapshot(t *testing.T, p profile.Profile, root profile.Root) incrementalsync.Snapshot {
+	t.Helper()
+	scanned, err := scan.Scan(root.Path)
+	if err != nil {
+		t.Fatalf("scan.Scan(%q) error = %v, want nil", root.Path, err)
+	}
+	return incrementalsync.Snapshot{Profile: p, Root: root, Scan: scanned}
+}
+
+func fixedStatusClock(raw string) incrementalsync.Clock {
+	return func() time.Time {
+		t, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			panic(err)
+		}
+		return t
+	}
+}
+
+func mustWriteStatusFile(t *testing.T, path string, data []byte) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
+	}
+}
+
+func findStatusQueuePath(t *testing.T, entries []incrementalsync.QueueEntry, path string) incrementalsync.QueueEntry {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.Path == path {
+			return entry
+		}
+	}
+	t.Fatalf("queue path %q not found in entries %+v", path, entries)
+	return incrementalsync.QueueEntry{}
+}
+
 func writeTargetFile(t *testing.T, target string, rel string, data []byte) {
 	t.Helper()
 	path := filepath.Join(target, filepath.FromSlash(rel))
@@ -834,6 +1151,17 @@ func writePruneApproval(t *testing.T, target string, approval control.PruneAppro
 	}
 }
 
+func writePruneReceipt(t *testing.T, target string, receipt control.PruneReceipt) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactPruneReceipt, receipt.ID)
+	if err != nil {
+		t.Fatalf("control.Path(%q, prune receipt, %q) error = %v, want nil", target, receipt.ID, err)
+	}
+	if err := control.WriteFile(path, receipt); err != nil {
+		t.Fatalf("control.WriteFile(%q, prune receipt) error = %v, want nil", path, err)
+	}
+}
+
 func writePruneApprovalProfileSnapshot(t *testing.T, target string, approval control.PruneApproval) {
 	t.Helper()
 	payload := pruneApprovalProfileSnapshotPayload(t, approval.ID)
@@ -906,6 +1234,13 @@ func testPruneApproval(t *testing.T, p profile.Profile, record control.SoftDelet
 		ApprovalReason: "operator reviewed soft-delete evidence",
 	}
 	approval.ApprovalScopeDigest = prune.ApprovalScopeDigest(approval.ProfileID, approval.TargetID, approval.RootID, approval.ProfileSnapshotID, approval.ProfileSnapshotDigest, p.DeletePolicy, approval.Items)
+	return approval
+}
+
+func freshTestPruneApproval(t *testing.T, p profile.Profile, record control.SoftDelete) control.PruneApproval {
+	t.Helper()
+	approval := testPruneApproval(t, p, record)
+	approval.ExpiresAt = "2099-05-19T12:00:00Z"
 	return approval
 }
 
@@ -1009,6 +1344,46 @@ func snapshotControlPlane(t *testing.T, target string) []string {
 		t.Fatalf("filepath.WalkDir(%q) error = %v, want nil", controlDir, err)
 	}
 	return paths
+}
+
+func writeStatusReconcileReceipt(t *testing.T, target string, id string, status string, p profile.Profile, sessionID string, summary reconcile.Summary) {
+	t.Helper()
+	endedAt := "2026-05-18T09:31:00Z"
+	if status == reconcile.ReceiptStatusStarted {
+		endedAt = ""
+	}
+	receipt := reconcile.Receipt{
+		Schema:      reconcile.SchemaApplyReceipt,
+		ID:          id,
+		Status:      status,
+		TargetRoot:  filepath.ToSlash(target),
+		ProfileID:   p.ProfileID,
+		TargetID:    p.Target.TargetID,
+		SessionID:   sessionID,
+		GeneratedAt: "2026-05-18T09:30:00Z",
+		StartedAt:   "2026-05-18T09:30:00Z",
+		EndedAt:     endedAt,
+		ApplyIntent: true,
+		Summary:     summary,
+	}
+	receipt.ReceiptPath = filepath.ToSlash(filepath.Join(target, control.DirName, "reconcile", "receipts", id+".json"))
+	if summary.Refused > 0 {
+		receipt.Refusals = []reconcile.Refusal{{
+			DriftID:    "drift-" + id,
+			Path:       "file.txt",
+			Change:     "missing",
+			Action:     reconcile.ActionRestoreFile,
+			ReasonCode: reconcile.ReasonTargetChanged,
+			Message:    "target changed before apply",
+		}}
+	}
+	path, err := control.Path(target, control.ArtifactReconcileReceipt, id)
+	if err != nil {
+		t.Fatalf("control.Path(%q, reconcile receipt, %q) error = %v, want nil", target, id, err)
+	}
+	if err := control.WriteFile(path, receipt); err != nil {
+		t.Fatalf("control.WriteFile(%q, reconcile receipt) error = %v, want nil", path, err)
+	}
 }
 
 func digest(data []byte) string {

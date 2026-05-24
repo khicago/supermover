@@ -13,6 +13,11 @@ func sampleAbsolutePath(parts ...string) string {
 	return filepath.Join(all...)
 }
 
+func sampleUncleanAbsolutePath(parts ...string) string {
+	all := append([]string{"opt", "sample"}, parts...)
+	return string(filepath.Separator) + strings.Join(all, string(filepath.Separator))
+}
+
 func sampleTargetPath() string {
 	return filepath.Join(string(filepath.Separator), "var", "tmp", "sample-target")
 }
@@ -131,6 +136,19 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			name:    "negative jitter",
 			mutate:  func(p *Profile) { p.PrivacyPolicy.JitterBudgetMillis = -1 },
 			wantErr: "privacy_policy.jitter_budget_millis cannot be negative",
+		},
+		{
+			name:    "discovery receiver hint without receiver url",
+			mutate:  func(p *Profile) { p.Discovery = &DiscoveryConfig{AdvertiseReceiverHint: true}; p.Network = nil },
+			wantErr: "network.receiver_url is required when discovery.advertise_receiver_hint is true",
+		},
+		{
+			name: "discovery receiver hint without local tls identity",
+			mutate: func(p *Profile) {
+				p.Discovery = &DiscoveryConfig{AdvertiseReceiverHint: true}
+				p.Network = &NetworkConfig{ReceiverURL: "https://127.0.0.1:9443"}
+			},
+			wantErr: "network.local_tls_identity is required when discovery.advertise_receiver_hint is true",
 		},
 		{
 			name:    "prune without review",
@@ -261,7 +279,7 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			mutate: func(p *Profile) {
 				p.Network.LocalTLSIdentity = TLSIdentityRef{
 					CertificatePath: sampleAbsolutePath(".config", "supermover", "source.crt"),
-					PrivateKeyPath:  sampleAbsolutePath(".config", "..", "source.key"),
+					PrivateKeyPath:  sampleUncleanAbsolutePath(".config", "..", "source.key"),
 				}
 			},
 			wantErr: "must not contain parent traversal",
@@ -300,7 +318,7 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 			name: "network tls identity rejects cleaned parent traversal",
 			mutate: func(p *Profile) {
 				p.Network.LocalTLSIdentity = TLSIdentityRef{
-					CertificatePath: sampleAbsolutePath(".config", "supermover", "..", "source.crt"),
+					CertificatePath: sampleUncleanAbsolutePath(".config", "supermover", "..", "source.crt"),
 					PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
 				}
 			},
@@ -315,6 +333,164 @@ func TestValidateRejectsInvalidProfiles(t *testing.T) {
 				}
 			},
 			wantErr: "must not contain backslash path separators",
+		},
+		{
+			name: "enabled local polling sync requires interval",
+			mutate: func(p *Profile) {
+				p.Sync = &SyncConfig{LocalPolling: &LocalPollingSyncConfig{
+					Enabled:            true,
+					SessionPrefix:      "daemon-sync",
+					RetryBackoffMillis: 1000,
+				}}
+			},
+			wantErr: "sync.local_polling.interval_millis must be greater than zero when enabled",
+		},
+		{
+			name: "enabled local polling sync requires session prefix",
+			mutate: func(p *Profile) {
+				p.Sync = &SyncConfig{LocalPolling: &LocalPollingSyncConfig{
+					Enabled:            true,
+					IntervalMillis:     1000,
+					RetryBackoffMillis: 1000,
+				}}
+			},
+			wantErr: "sync.local_polling.session_prefix is required when enabled",
+		},
+		{
+			name: "local polling sync rejects unsafe session prefix",
+			mutate: func(p *Profile) {
+				p.Sync = &SyncConfig{LocalPolling: &LocalPollingSyncConfig{
+					Enabled:            true,
+					IntervalMillis:     1000,
+					RetryBackoffMillis: 1000,
+					SessionPrefix:      "../daemon-sync",
+				}}
+			},
+			wantErr: "sync.local_polling.session_prefix is invalid",
+		},
+		{
+			name: "local polling sync rejects negative retry backoff",
+			mutate: func(p *Profile) {
+				p.Sync = &SyncConfig{LocalPolling: &LocalPollingSyncConfig{
+					Enabled:            true,
+					IntervalMillis:     1000,
+					RetryBackoffMillis: -1,
+					SessionPrefix:      "daemon-sync",
+				}}
+			},
+			wantErr: "sync.local_polling.retry_backoff_millis cannot be negative",
+		},
+		{
+			name: "enabled drift recording repair requires interval",
+			mutate: func(p *Profile) {
+				p.Repair = &RepairConfig{DriftRecording: &DriftRecordingRepairConfig{
+					Enabled: true,
+				}}
+			},
+			wantErr: "repair.drift_recording.interval_millis must be greater than zero when enabled",
+		},
+		{
+			name: "drift recording repair rejects negative interval",
+			mutate: func(p *Profile) {
+				p.Repair = &RepairConfig{DriftRecording: &DriftRecordingRepairConfig{
+					Enabled:        true,
+					IntervalMillis: -1,
+				}}
+			},
+			wantErr: "repair.drift_recording.interval_millis cannot be negative",
+		},
+		{
+			name: "drift recording repair rejects network polling sync",
+			mutate: func(p *Profile) {
+				p.Sync = &SyncConfig{NetworkPolling: &NetworkPollingSyncConfig{
+					Enabled:            true,
+					IntervalMillis:     1000,
+					RetryBackoffMillis: 5000,
+					SessionPrefix:      "daemon-network-sync",
+				}}
+				p.Repair = &RepairConfig{DriftRecording: &DriftRecordingRepairConfig{
+					Enabled:        true,
+					IntervalMillis: 1000,
+				}}
+			},
+			wantErr: "repair.drift_recording cannot be enabled with sync.network_polling",
+		},
+		{
+			name: "enabled persisted reconcile apply repair requires interval",
+			mutate: func(p *Profile) {
+				p.Repair = &RepairConfig{PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+					Enabled: true,
+					Reason:  "restore persisted drift from daemon profile policy",
+				}}
+			},
+			wantErr: "repair.persisted_reconcile_apply.interval_millis must be greater than zero when enabled",
+		},
+		{
+			name: "enabled persisted reconcile apply repair requires reason",
+			mutate: func(p *Profile) {
+				p.Repair = &RepairConfig{PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+					Enabled:        true,
+					IntervalMillis: 1000,
+				}}
+			},
+			wantErr: "repair.persisted_reconcile_apply.reason is required when enabled",
+		},
+		{
+			name: "persisted reconcile apply repair rejects padded reason",
+			mutate: func(p *Profile) {
+				p.Repair = &RepairConfig{PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+					Enabled:        true,
+					IntervalMillis: 1000,
+					Reason:         " restore ",
+				}}
+			},
+			wantErr: "repair.persisted_reconcile_apply.reason must not be padded",
+		},
+		{
+			name: "persisted reconcile apply repair rejects padded reviewer",
+			mutate: func(p *Profile) {
+				p.Repair = &RepairConfig{PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+					Enabled:        true,
+					IntervalMillis: 1000,
+					Reason:         "restore persisted drift from daemon profile policy",
+					Reviewer:       " ops ",
+				}}
+			},
+			wantErr: "repair.persisted_reconcile_apply.reviewer must not be padded",
+		},
+		{
+			name: "persisted reconcile apply repair rejects network polling sync",
+			mutate: func(p *Profile) {
+				p.Sync = &SyncConfig{NetworkPolling: &NetworkPollingSyncConfig{
+					Enabled:            true,
+					IntervalMillis:     1000,
+					RetryBackoffMillis: 5000,
+					SessionPrefix:      "daemon-network-sync",
+				}}
+				p.Repair = &RepairConfig{PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+					Enabled:        true,
+					IntervalMillis: 1000,
+					Reason:         "restore persisted drift from daemon profile policy",
+				}}
+			},
+			wantErr: "repair.persisted_reconcile_apply cannot be enabled with sync.network_polling",
+		},
+		{
+			name: "persisted reconcile apply repair rejects drift recording repair",
+			mutate: func(p *Profile) {
+				p.Repair = &RepairConfig{
+					DriftRecording: &DriftRecordingRepairConfig{
+						Enabled:        true,
+						IntervalMillis: 1000,
+					},
+					PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+						Enabled:        true,
+						IntervalMillis: 1000,
+						Reason:         "restore persisted drift from daemon profile policy",
+					},
+				}
+			},
+			wantErr: "repair.persisted_reconcile_apply cannot be enabled with repair.drift_recording",
 		},
 		{
 			name:    "missing knowledge category name",
@@ -450,6 +626,86 @@ func TestValidateAcceptsNetworkSSOTMaterial(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsProfileBackedLocalPollingSync(t *testing.T) {
+	p := validProfile()
+	p.Sync = &SyncConfig{LocalPolling: &LocalPollingSyncConfig{
+		Enabled:            true,
+		IntervalMillis:     1000,
+		RetryBackoffMillis: 5000,
+		SessionPrefix:      "daemon-sync",
+	}}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate(local polling sync) error = %v, want nil", err)
+	}
+}
+
+func TestValidateAcceptsProfileBackedNetworkPollingSync(t *testing.T) {
+	p := validProfile()
+	p.Sync = &SyncConfig{NetworkPolling: &NetworkPollingSyncConfig{
+		Enabled:            true,
+		IntervalMillis:     1000,
+		RetryBackoffMillis: 5000,
+		SessionPrefix:      "daemon-network-sync",
+	}}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate(network polling sync) error = %v, want nil", err)
+	}
+}
+
+func TestValidateAcceptsProfileBackedDriftRecordingRepair(t *testing.T) {
+	p := validProfile()
+	p.Repair = &RepairConfig{DriftRecording: &DriftRecordingRepairConfig{
+		Enabled:        true,
+		IntervalMillis: 1000,
+	}}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate(drift recording repair) error = %v, want nil", err)
+	}
+}
+
+func TestValidateAcceptsProfileBackedPersistedReconcileApplyRepair(t *testing.T) {
+	p := validProfile()
+	p.Repair = &RepairConfig{PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+		Enabled:        true,
+		IntervalMillis: 1000,
+		Reason:         "restore persisted drift from daemon profile policy",
+		Reviewer:       "ops@example.com",
+	}}
+
+	if err := p.Validate(); err != nil {
+		t.Fatalf("Validate(persisted reconcile apply repair) error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsMultipleDaemonPollingModes(t *testing.T) {
+	p := validProfile()
+	p.Sync = &SyncConfig{
+		LocalPolling: &LocalPollingSyncConfig{
+			Enabled:            true,
+			IntervalMillis:     1000,
+			RetryBackoffMillis: 5000,
+			SessionPrefix:      "daemon-sync",
+		},
+		NetworkPolling: &NetworkPollingSyncConfig{
+			Enabled:            true,
+			IntervalMillis:     1000,
+			RetryBackoffMillis: 5000,
+			SessionPrefix:      "daemon-network-sync",
+		},
+	}
+
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("Validate(multiple polling modes) error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "sync.local_polling and sync.network_polling cannot both be enabled") {
+		t.Fatalf("Validate(multiple polling modes) error = %q, want polling mode conflict", err.Error())
+	}
+}
+
 func TestNetworkMaterialHelpersFailClosed(t *testing.T) {
 	p := validProfile()
 
@@ -492,6 +748,23 @@ func TestWriteReadRoundTrip(t *testing.T) {
 			PrivateKeyPath:  sampleAbsolutePath(".config", "supermover", "source.key"),
 		},
 	}
+	want.Sync = &SyncConfig{LocalPolling: &LocalPollingSyncConfig{
+		Enabled:            true,
+		IntervalMillis:     1000,
+		RetryBackoffMillis: 5000,
+		SessionPrefix:      "daemon-sync",
+	}, NetworkPolling: &NetworkPollingSyncConfig{
+		IntervalMillis:     1000,
+		RetryBackoffMillis: 5000,
+		SessionPrefix:      "daemon-network-sync",
+	}}
+	want.Repair = &RepairConfig{PersistedReconcileApply: &PersistedReconcileApplyRepairConfig{
+		Enabled:        true,
+		IntervalMillis: 3000,
+		Reason:         "restore persisted drift from daemon profile policy",
+		Reviewer:       "ops@example.com",
+	}}
+	want.Discovery = &DiscoveryConfig{AdvertiseReceiverHint: true}
 
 	if err := Write(&buf, want); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -515,6 +788,33 @@ func TestWriteReadRoundTrip(t *testing.T) {
 		got.Network.LocalTLSIdentity.CertificatePath != want.Network.LocalTLSIdentity.CertificatePath ||
 		got.Network.LocalTLSIdentity.PrivateKeyPath != want.Network.LocalTLSIdentity.PrivateKeyPath {
 		t.Fatalf("Read() network = %#v, want %#v", got.Network, want.Network)
+	}
+	if got.Sync == nil || got.Sync.LocalPolling == nil ||
+		!got.Sync.LocalPolling.Enabled ||
+		got.Sync.LocalPolling.IntervalMillis != want.Sync.LocalPolling.IntervalMillis ||
+		got.Sync.LocalPolling.RetryBackoffMillis != want.Sync.LocalPolling.RetryBackoffMillis ||
+		got.Sync.LocalPolling.SessionPrefix != want.Sync.LocalPolling.SessionPrefix {
+		t.Fatalf("Read() sync = %#v, want %#v", got.Sync, want.Sync)
+	}
+	if got.Sync.NetworkPolling == nil ||
+		got.Sync.NetworkPolling.Enabled ||
+		got.Sync.NetworkPolling.IntervalMillis != want.Sync.NetworkPolling.IntervalMillis ||
+		got.Sync.NetworkPolling.RetryBackoffMillis != want.Sync.NetworkPolling.RetryBackoffMillis ||
+		got.Sync.NetworkPolling.SessionPrefix != want.Sync.NetworkPolling.SessionPrefix {
+		t.Fatalf("Read() network polling sync = %#v, want %#v", got.Sync.NetworkPolling, want.Sync.NetworkPolling)
+	}
+	if got.Repair == nil {
+		t.Fatalf("Read() repair = %#v, want %#v", got.Repair, want.Repair)
+	}
+	if got.Repair.PersistedReconcileApply == nil ||
+		!got.Repair.PersistedReconcileApply.Enabled ||
+		got.Repair.PersistedReconcileApply.IntervalMillis != want.Repair.PersistedReconcileApply.IntervalMillis ||
+		got.Repair.PersistedReconcileApply.Reason != want.Repair.PersistedReconcileApply.Reason ||
+		got.Repair.PersistedReconcileApply.Reviewer != want.Repair.PersistedReconcileApply.Reviewer {
+		t.Fatalf("Read() persisted reconcile repair = %#v, want %#v", got.Repair.PersistedReconcileApply, want.Repair.PersistedReconcileApply)
+	}
+	if got.Discovery == nil || got.Discovery.AdvertiseReceiverHint != want.Discovery.AdvertiseReceiverHint {
+		t.Fatalf("Read() discovery = %#v, want %#v", got.Discovery, want.Discovery)
 	}
 }
 

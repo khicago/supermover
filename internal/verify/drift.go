@@ -23,6 +23,9 @@ type DriftOptions struct {
 	ProfileID  string
 	TargetID   string
 	Now        time.Time
+	// ExtraPathsOnly is for callers that have already verified expected entries
+	// against this selected manifest and need only findings outside it.
+	ExtraPathsOnly bool
 }
 
 type DriftReport struct {
@@ -115,6 +118,9 @@ func DetectTargetDrift(opts DriftOptions) (DriftReport, error) {
 		rel := targetPath(entry)
 		if _, ok := expectedPaths[rel]; !ok {
 			expectedPaths[rel] = entry
+		}
+		if opts.ExtraPathsOnly {
+			continue
 		}
 		drifts, problems := detectEntryDrift(targetRoot, manifest, receipt, entry, detectedAt)
 		report.Drifts = append(report.Drifts, drifts...)

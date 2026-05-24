@@ -112,15 +112,6 @@ func ValidateUnauthenticatedTXTField(key, value string) error {
 	return nil
 }
 
-func parseCaps(value string) []string {
-	caps, err := parseStrictCaps(value)
-	if err != nil {
-		return nil
-	}
-	sort.Strings(caps)
-	return caps
-}
-
 func parseStrictCaps(value string) ([]string, error) {
 	parts := strings.Split(value, ",")
 	caps := make([]string, 0, len(parts))

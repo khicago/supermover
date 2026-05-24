@@ -28,6 +28,7 @@ func TestPath(t *testing.T) {
 		{"delete", ArtifactSoftDelete, "del1", filepath.Join(root, DirName, "deleted", "del1.json")},
 		{"prune approval", ArtifactPruneApproval, "approval1", filepath.Join(root, DirName, "prune", "approvals", "approval1.json")},
 		{"prune receipt", ArtifactPruneReceipt, "prune1", filepath.Join(root, DirName, "prune", "receipts", "prune1.json")},
+		{"reconcile receipt", ArtifactReconcileReceipt, "reconcile1", filepath.Join(root, DirName, "reconcile", "receipts", "reconcile1.json")},
 		{"history", ArtifactHistoryIndex, "", filepath.Join(root, DirName, "history", "index.json")},
 		{"recovery", ArtifactRecoveryState, "", filepath.Join(root, DirName, "recovery", "state.json")},
 		{"network transfer", ArtifactNetworkTransfer, "s1", filepath.Join(root, DirName, "sessions", "s1", "network-transfer.json")},
@@ -150,12 +151,17 @@ func TestValidateArtifactLoadBoundaryRejectsUnsafeControlArtifacts(t *testing.T)
 		{name: "prune approval file", linkRel: filepath.Join(DirName, "prune", "approvals", "approval.json")},
 		{name: "prune receipts directory", linkRel: filepath.Join(DirName, "prune", "receipts")},
 		{name: "prune receipt file", linkRel: filepath.Join(DirName, "prune", "receipts", "receipt.json")},
+		{name: "reconcile directory", linkRel: filepath.Join(DirName, "reconcile")},
+		{name: "reconcile receipts directory", linkRel: filepath.Join(DirName, "reconcile", "receipts")},
+		{name: "reconcile receipt file", linkRel: filepath.Join(DirName, "reconcile", "receipts", "receipt.json")},
 		{name: "incremental sync directory", linkRel: filepath.Join(DirName, "incremental-sync")},
 		{name: "incremental sync profiles directory", linkRel: filepath.Join(DirName, "incremental-sync", "profiles")},
 		{name: "incremental sync profile scope directory", linkRel: filepath.Join(DirName, "incremental-sync", "profiles", "profile-scope")},
 		{name: "incremental sync targets directory", linkRel: filepath.Join(DirName, "incremental-sync", "profiles", "profile-scope", "targets")},
 		{name: "incremental sync target scope directory", linkRel: filepath.Join(DirName, "incremental-sync", "profiles", "profile-scope", "targets", "target-scope")},
 		{name: "incremental sync queue file", linkRel: filepath.Join(DirName, "incremental-sync", "profiles", "profile-scope", "targets", "target-scope", "queue.json")},
+		{name: "incremental sync runs directory", linkRel: filepath.Join(DirName, "incremental-sync", "profiles", "profile-scope", "targets", "target-scope", "runs")},
+		{name: "incremental sync run receipt file", linkRel: filepath.Join(DirName, "incremental-sync", "profiles", "profile-scope", "targets", "target-scope", "runs", "sync-run-1.json")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -188,6 +194,114 @@ func TestValidateArtifactLoadBoundaryRejectsUnsafeControlArtifacts(t *testing.T)
 			}
 		})
 	}
+}
+
+func TestValidateArtifactLoadBoundaryIgnoresDaemonEventTempFiles(t *testing.T) {
+	target := t.TempDir()
+	eventsDir := filepath.Join(target, DirName, "daemon", "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(eventsDir) error = %v, want nil", err)
+	}
+	tempPath := filepath.Join(eventsDir, ".daemon-event-123.tmp")
+	if err := os.WriteFile(tempPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(temp event) error = %v, want nil", err)
+	}
+	if err := ValidateArtifactLoadBoundary(target); err != nil {
+		t.Fatalf("ValidateArtifactLoadBoundary(target with daemon event temp) error = %v, want nil", err)
+	}
+
+	if err := os.Remove(tempPath); err != nil {
+		t.Fatalf("os.Remove(temp event) error = %v, want nil", err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, tempPath); err != nil {
+		t.Skipf("symlink temp event unavailable: %v", err)
+	}
+	if err := ValidateArtifactLoadBoundary(target); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("ValidateArtifactLoadBoundary(target with symlink daemon event temp) error = %v, want symlink refusal", err)
+	}
+}
+
+func TestValidateArtifactLoadBoundaryToleratesVanishedDaemonEventTempAfterReadDir(t *testing.T) {
+	target := t.TempDir()
+	eventsDir := filepath.Join(target, DirName, "daemon", "events")
+	if err := os.MkdirAll(eventsDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(eventsDir) error = %v, want nil", err)
+	}
+	tempPath := filepath.Join(eventsDir, ".daemon-event-123.tmp")
+	if err := os.WriteFile(tempPath, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("os.WriteFile(temp event) error = %v, want nil", err)
+	}
+
+	withArtifactBoundaryLstat(t, func(path string) (os.FileInfo, error) {
+		if path == tempPath {
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+			return nil, &os.PathError{Op: "lstat", Path: path, Err: os.ErrNotExist}
+		}
+		return os.Lstat(path)
+	})
+
+	if err := ValidateArtifactLoadBoundary(target); err != nil {
+		t.Fatalf("ValidateArtifactLoadBoundary(target with vanished daemon event temp) error = %v, want nil", err)
+	}
+}
+
+func TestValidateArtifactLoadBoundaryRejectsUnexpectedVanishedFilesAfterReadDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		dirRel   string
+		fileName string
+	}{
+		{
+			name:     "daemon event artifact",
+			dirRel:   filepath.Join(DirName, "daemon", "events"),
+			fileName: "event.json",
+		},
+		{
+			name:     "similarly named temp outside daemon events",
+			dirRel:   filepath.Join(DirName, "warnings"),
+			fileName: ".daemon-event-123.tmp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			target := t.TempDir()
+			dir := filepath.Join(target, tt.dirRel)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatalf("os.MkdirAll(%s) error = %v, want nil", dir, err)
+			}
+			vanishedPath := filepath.Join(dir, tt.fileName)
+			if err := os.WriteFile(vanishedPath, []byte("{}\n"), 0o600); err != nil {
+				t.Fatalf("os.WriteFile(%s) error = %v, want nil", vanishedPath, err)
+			}
+
+			withArtifactBoundaryLstat(t, func(path string) (os.FileInfo, error) {
+				if path == vanishedPath {
+					if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+						return nil, err
+					}
+					return nil, &os.PathError{Op: "lstat", Path: path, Err: os.ErrNotExist}
+				}
+				return os.Lstat(path)
+			})
+
+			err := ValidateArtifactLoadBoundary(target)
+			if err == nil || !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("ValidateArtifactLoadBoundary(target with vanished %s) error = %v, want os.ErrNotExist", tt.fileName, err)
+			}
+		})
+	}
+}
+
+func withArtifactBoundaryLstat(t *testing.T, lstat func(string) (os.FileInfo, error)) {
+	t.Helper()
+	original := artifactBoundaryLstat
+	artifactBoundaryLstat = lstat
+	t.Cleanup(func() {
+		artifactBoundaryLstat = original
+	})
 }
 
 func TestValidateDocuments(t *testing.T) {
@@ -297,6 +411,11 @@ func TestValidateDocuments(t *testing.T) {
 			doc.ReviewState = "resolved"
 			return doc
 		}(), wantErr: `review_action "resolve" is required`},
+		{name: "invalid target drift expired state without expire action", doc: func() TargetDrift {
+			doc := validTargetDrift()
+			doc.ReviewState = "expired"
+			return doc
+		}(), wantErr: `review_action "expire" is required`},
 		{name: "invalid target drift evidence without action", doc: func() TargetDrift {
 			doc := validTargetDrift()
 			doc.ReviewedAt = "2026-05-19T00:00:00Z"
@@ -410,6 +529,14 @@ func TestValidateDocuments(t *testing.T) {
 			Status:        "refused",
 			RefusalReason: "delete_policy.allow_physical_prune is false",
 		}},
+		{name: "valid superseded prune approval preserves approval plus supersede metadata", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededBy = "reviewer@example.com"
+			doc.SupersededAt = "2026-05-16T00:03:00Z"
+			return doc
+		}()},
 		{name: "invalid prune approval approved before created", doc: func() PruneApproval {
 			doc := validPruneApproval()
 			doc.ApprovedAt = "2026-05-15T00:00:00Z"
@@ -463,6 +590,30 @@ func TestValidateDocuments(t *testing.T) {
 			doc.Status = "refused"
 			return doc
 		}(), wantErr: "refusal_reason is required"},
+		{name: "invalid prune approval superseded without supersede reviewer", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededAt = "2026-05-16T00:03:00Z"
+			doc.SupersededBy = ""
+			return doc
+		}(), wantErr: "superseded_by"},
+		{name: "invalid prune approval superseded without superseded_at", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededBy = "reviewer@example.com"
+			doc.SupersededAt = ""
+			return doc
+		}(), wantErr: "superseded_at"},
+		{name: "invalid prune approval superseded before approval", doc: func() PruneApproval {
+			doc := validPruneApproval()
+			doc.Status = "superseded"
+			doc.RefusalReason = "replaced by newer approval"
+			doc.SupersededBy = "reviewer@example.com"
+			doc.SupersededAt = "2026-05-16T00:01:30Z"
+			return doc
+		}(), wantErr: "superseded_at must be greater than or equal to approved_at"},
 		{name: "invalid prune receipt dry run applied", doc: func() PruneReceipt {
 			doc := validPruneReceipt()
 			doc.Status = PruneReceiptApplied
@@ -582,6 +733,11 @@ func TestValidateDocuments(t *testing.T) {
 			doc.ProtocolVersion = "one"
 			return doc
 		}(), wantErr: "protocol_version is invalid"},
+		{name: "invalid network transfer unsupported encrypted transfer marker", doc: func() NetworkTransfer {
+			doc := validNetworkTransfer()
+			doc.EncryptedTransfer = "profile_backed_mtls_validated"
+			return doc
+		}(), wantErr: "encrypted_transfer must be"},
 		{name: "invalid network transfer missing attempts", doc: func() NetworkTransfer {
 			doc := validNetworkTransfer()
 			doc.Attempts = nil
@@ -1574,6 +1730,7 @@ func validNetworkTransfer() NetworkTransfer {
 		SourceDeviceID:  "sha256:abcdef0123456789",
 		TargetDeviceID:  "sha256:0123456789abcdef",
 		ProtocolVersion: "supermover/1",
+		EncryptedTransfer: NetworkTransferEncryptedTLS13MTLS,
 		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
 		Status:          NetworkTransferInterrupted,
 		Stage:           "chunk",

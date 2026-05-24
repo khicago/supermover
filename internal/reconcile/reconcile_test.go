@@ -68,6 +68,9 @@ func TestPlanRefusesScopeMismatchWithoutMutation(t *testing.T) {
 	if receipt.Refusals[0].ReasonCode != ReasonProfileScopeMismatch {
 		t.Fatalf("Plan() refusal = %+v, want scope mismatch", receipt.Refusals[0])
 	}
+	if receipt.Refusals[0].ConflictClass != ConflictClassScopeMismatch || receipt.Refusals[0].RetryAdvice != RetryAdviceSelectMatchingScope {
+		t.Fatalf("Plan() refusal taxonomy = %+v, want scope mismatch with matching-scope retry advice", receipt.Refusals[0])
+	}
 	assertTreeUnchanged(t, target, before)
 }
 
@@ -90,6 +93,118 @@ func TestPlanDryRunDoesNotMutateTarget(t *testing.T) {
 	if _, err := os.Lstat(filepath.Join(target, "file.txt")); !os.IsNotExist(err) {
 		t.Fatalf("target file after dry-run err = %v, want missing", err)
 	}
+	assertNoReconcileReceipts(t, target)
+}
+
+func TestReviewBoundariesReportsPersistedPlanWithoutCountingCoveredLiveDriftAsLiveOnly(t *testing.T) {
+	p, target := setupReconcileFixture(t)
+	writeSourceFile(t, p, "file.txt", []byte("payload"), 0o644)
+	drift := missingFileDrift("drift-review", "file.txt", []byte("payload"))
+	writePublishedSession(t, target, drift.SessionID, p.ProfileID, p.Target.TargetID, drift.RootID, []control.ManifestEntry{manifestEntry("file.txt", []byte("payload"))})
+	writeTargetDrift(t, target, drift)
+	before := snapshotTree(t, target)
+
+	review, err := ReviewBoundaries(ReviewOptions{Profile: p, Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("ReviewBoundaries() error = %v, want nil", err)
+	}
+
+	if review.Schema != SchemaReview || review.ProfileID != p.ProfileID || review.TargetID != p.Target.TargetID {
+		t.Fatalf("ReviewBoundaries() metadata = %+v, want review schema and profile scope", review)
+	}
+	if review.Summary.PersistedRecords != 1 || review.Summary.PersistedPlanned != 1 || review.Summary.ApplyCapableBoundaries != 1 {
+		t.Fatalf("ReviewBoundaries().Summary = %+v, want one apply-capable persisted plan boundary", review.Summary)
+	}
+	if review.Summary.LiveTargetDrifts != 0 || !review.Summary.ReviewRequired {
+		t.Fatalf("ReviewBoundaries().Summary = %+v, want persisted plan review required without live-only drift", review.Summary)
+	}
+	persisted := mustReviewBoundary(t, review, BoundaryPersistentDrift)
+	if persisted.Status != BoundaryStatusWiredReadOnly || !persisted.ApplyCapable || persisted.Summary.Planned != 1 {
+		t.Fatalf("persisted boundary = %+v, want wired read-only apply-capable plan", persisted)
+	}
+	live := mustReviewBoundary(t, review, BoundaryLiveOnlyDrift)
+	if live.Status != BoundaryStatusWiredReadOnly || live.ApplyCapable || live.Action != "no_live_repair_inputs" {
+		t.Fatalf("live boundary = %+v, want covered live drift excluded from live-only boundary", live)
+	}
+	for _, name := range []string{BoundaryBackgroundScan, BoundaryManifestRewrite, BoundaryDaemonSync, BoundaryDriftToPrune, BoundaryAutomaticRetry} {
+		boundary := mustReviewBoundary(t, review, name)
+		if boundary.Status != BoundaryStatusPlanned || boundary.ApplyCapable {
+			t.Fatalf("boundary %q = %+v, want planned non-apply-capable", name, boundary)
+		}
+	}
+	assertTreeUnchanged(t, target, before)
+	assertNoReconcileReceipts(t, target)
+}
+
+func TestReviewBoundariesReportsUnpersistedLiveOnlyDriftAsRecordRequired(t *testing.T) {
+	p, target := setupReconcileFixture(t)
+	writeSourceFile(t, p, "file.txt", []byte("payload"), 0o644)
+	writePublishedSession(t, target, "session-one", p.ProfileID, p.Target.TargetID, "root", []control.ManifestEntry{manifestEntry("file.txt", []byte("payload"))})
+	before := snapshotTree(t, target)
+
+	review, err := ReviewBoundaries(ReviewOptions{Profile: p, Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("ReviewBoundaries() error = %v, want nil", err)
+	}
+
+	if review.Summary.PersistedRecords != 0 || review.Summary.LiveTargetDrifts != 1 || !review.Summary.ReviewRequired {
+		t.Fatalf("ReviewBoundaries().Summary = %+v, want unpersisted live-only drift review required", review.Summary)
+	}
+	live := mustReviewBoundary(t, review, BoundaryLiveOnlyDrift)
+	if live.Status != BoundaryStatusRecordRequired || live.ApplyCapable || live.Action != "run_drift_record_before_reconcile_apply" {
+		t.Fatalf("live boundary = %+v, want record-required non-apply-capable boundary", live)
+	}
+	assertTreeUnchanged(t, target, before)
+	assertNoReconcileReceipts(t, target)
+}
+
+func TestReviewBoundariesDoesNotLetClosedPersistedDriftCoverLiveOnlyRedetection(t *testing.T) {
+	p, target := setupReconcileFixture(t)
+	writeSourceFile(t, p, "file.txt", []byte("payload"), 0o644)
+	drift := missingFileDrift("drift-review-expired", "file.txt", []byte("payload"))
+	drift.ReviewState = "expired"
+	drift.ReviewAction = "expire"
+	drift.ReviewedAt = "2026-05-20T10:00:00Z"
+	drift.ReviewedBy = "ops"
+	drift.ReviewReason = "stale review evidence"
+	writePublishedSession(t, target, drift.SessionID, p.ProfileID, p.Target.TargetID, drift.RootID, []control.ManifestEntry{manifestEntry("file.txt", []byte("payload"))})
+	writeTargetDrift(t, target, drift)
+
+	review, err := ReviewBoundaries(ReviewOptions{Profile: p, Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("ReviewBoundaries() error = %v, want nil", err)
+	}
+
+	if review.Summary.PersistedNoop != 1 || review.Summary.LiveTargetDrifts != 1 || !review.Summary.ReviewRequired {
+		t.Fatalf("ReviewBoundaries().Summary = %+v, want expired persisted noop plus live-only redetection", review.Summary)
+	}
+	live := mustReviewBoundary(t, review, BoundaryLiveOnlyDrift)
+	if live.Status != BoundaryStatusRecordRequired || live.Summary.TargetDrifts != 1 {
+		t.Fatalf("live boundary = %+v, want record-required redetection despite closed persisted evidence", live)
+	}
+}
+
+func TestReviewBoundariesDoesNotTreatCleanLiveDetectorAsRepairInput(t *testing.T) {
+	p, target := setupReconcileFixture(t)
+	writeSourceFile(t, p, "file.txt", []byte("payload"), 0o644)
+	writeTargetFile(t, target, "file.txt", []byte("payload"), 0o644)
+	writePublishedSession(t, target, "session-one", p.ProfileID, p.Target.TargetID, "root", []control.ManifestEntry{manifestEntry("file.txt", []byte("payload"))})
+	before := snapshotTree(t, target)
+
+	review, err := ReviewBoundaries(ReviewOptions{Profile: p, Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("ReviewBoundaries() error = %v, want nil", err)
+	}
+
+	if review.Summary.PersistedRecords != 0 || review.Summary.LiveTargetDrifts != 0 || review.Summary.ReviewRequired {
+		t.Fatalf("ReviewBoundaries().Summary = %+v, want no repair review required for clean live detector", review.Summary)
+	}
+	live := mustReviewBoundary(t, review, BoundaryLiveOnlyDrift)
+	if live.Status != BoundaryStatusWiredReadOnly || live.Action != "no_live_repair_inputs" {
+		t.Fatalf("live boundary = %+v, want clean read-only boundary", live)
+	}
+	assertTreeUnchanged(t, target, before)
+	assertNoReconcileReceipts(t, target)
 }
 
 func TestApplyRequiresIntentAndPreflightRefusesChangedTarget(t *testing.T) {
@@ -125,6 +240,9 @@ func TestApplyRequiresIntentAndPreflightRefusesChangedTarget(t *testing.T) {
 	}
 	if withIntent.Summary.Applied != 0 || withIntent.Summary.Refused != 1 || withIntent.Refusals[0].ReasonCode != ReasonAmbiguousState {
 		t.Fatalf("Apply(changed target) = %+v, want preflight refusal", withIntent)
+	}
+	if withIntent.Refusals[0].ConflictClass != ConflictClassTargetState || withIntent.Refusals[0].RetryAdvice != RetryAdviceReviewTargetState {
+		t.Fatalf("Apply(changed target).Refusal taxonomy = %+v, want target-state review guidance", withIntent.Refusals[0])
 	}
 	if got := readFileDigest(t, filepath.Join(target, "file.txt")); got != changedBeforeFile {
 		t.Fatalf("target file digest changed after refused apply: got %s want %s", got, changedBeforeFile)
@@ -166,6 +284,51 @@ func TestApplyRestoresFileAndMarksDriftResolved(t *testing.T) {
 	persisted := readTargetDrift(t, target, drift.ID)
 	if persisted.ReviewState != "resolved" || persisted.ReviewAction != "resolve" || persisted.ReviewedAt != fixedNow().Format(time.RFC3339Nano) || persisted.ReviewedBy != "ops@example.com" || persisted.ReviewReason != "restore from source evidence" {
 		t.Fatalf("persisted drift review = %+v, want resolved apply evidence", persisted)
+	}
+	artifact := readOnlyReconcileReceipt(t, target)
+	if artifact.ID != receipt.ID || artifact.Schema != SchemaApplyReceipt || artifact.Status != ReceiptStatusApplied || artifact.ReceiptPath != receipt.ReceiptPath {
+		t.Fatalf("durable reconcile receipt = %+v, stdout receipt = %+v, want matching applied receipt", artifact, receipt)
+	}
+	if artifact.Summary.Applied != 1 || len(artifact.Actions) != 1 || artifact.Actions[0].Result != ResultApplied {
+		t.Fatalf("durable reconcile receipt actions = %+v summary=%+v, want applied repair evidence", artifact.Actions, artifact.Summary)
+	}
+	if artifact.StartedAt == "" || artifact.EndedAt == "" {
+		t.Fatalf("durable reconcile receipt times = started %q ended %q, want final receipt evidence", artifact.StartedAt, artifact.EndedAt)
+	}
+}
+
+func TestApplyWritesFailedReceiptWhenPreflightRefusesMutation(t *testing.T) {
+	p, target := setupReconcileFixture(t)
+	writeSourceFile(t, p, "file.txt", []byte("payload"), 0o644)
+	drift := missingFileDrift("drift-receipt-refused", "file.txt", []byte("payload"))
+	writePublishedSession(t, target, drift.SessionID, p.ProfileID, p.Target.TargetID, drift.RootID, []control.ManifestEntry{manifestEntry("file.txt", []byte("payload"))})
+	writeTargetDrift(t, target, drift)
+	writeTargetFile(t, target, "file.txt", []byte("operator"), 0o644)
+
+	receipt, err := Apply(ApplyOptions{
+		Profile:  p,
+		IDs:      []string{drift.ID},
+		Apply:    true,
+		Reviewer: "ops@example.com",
+		Reason:   "restore from source evidence",
+		Now:      fixedNow(),
+	})
+	if err != nil {
+		t.Fatalf("Apply(refused) error = %v, want nil failed receipt", err)
+	}
+
+	if receipt.Summary.Applied != 0 || receipt.Summary.Refused != 1 || receipt.Status != ReceiptStatusFailed {
+		t.Fatalf("Apply(refused) receipt = %+v, want failed durable receipt summary", receipt)
+	}
+	artifact := readOnlyReconcileReceipt(t, target)
+	if artifact.ID != receipt.ID || artifact.Status != ReceiptStatusFailed || artifact.Summary.Refused != 1 {
+		t.Fatalf("durable refused reconcile receipt = %+v, stdout receipt = %+v, want matching failed receipt", artifact, receipt)
+	}
+	if len(artifact.Refusals) != 1 || artifact.Refusals[0].ReasonCode != ReasonAmbiguousState {
+		t.Fatalf("durable refused reconcile receipt refusals = %+v, want preflight refusal evidence", artifact.Refusals)
+	}
+	if artifact.Refusals[0].ConflictClass != ConflictClassTargetState || artifact.Refusals[0].RetryAdvice != RetryAdviceReviewTargetState {
+		t.Fatalf("durable refused reconcile receipt taxonomy = %+v, want target-state retry guidance", artifact.Refusals[0])
 	}
 }
 
@@ -211,6 +374,9 @@ func TestPlanRefusesRestoreWhenManifestSourceAndTargetPathsDiffer(t *testing.T) 
 	if receipt.Refusals[0].ReasonCode != ReasonPublishedEvidence {
 		t.Fatalf("Plan(diverged source/target path).Refusal = %+v, want published evidence refusal", receipt.Refusals[0])
 	}
+	if receipt.Refusals[0].ConflictClass != ConflictClassPublishedEvidence || receipt.Refusals[0].RetryAdvice != RetryAdviceRestorePublishedEvidence {
+		t.Fatalf("Plan(diverged source/target path).Refusal taxonomy = %+v, want published-evidence guidance", receipt.Refusals[0])
+	}
 }
 
 func TestApplyRefusesWhenSourceChangesBeforeStagedPublish(t *testing.T) {
@@ -248,6 +414,9 @@ func TestApplyRefusesWhenSourceChangesBeforeStagedPublish(t *testing.T) {
 	}
 	if receipt.Refusals[0].ReasonCode != ReasonSourceMismatch || !strings.Contains(receipt.Refusals[0].Message, "staged file does not match expected evidence") {
 		t.Fatalf("Apply(source race).Refusal = %+v, want staged mismatch refusal", receipt.Refusals[0])
+	}
+	if receipt.Refusals[0].ConflictClass != ConflictClassSourceEvidence || receipt.Refusals[0].RetryAdvice != RetryAdviceRestoreSourceEvidence {
+		t.Fatalf("Apply(source race).Refusal taxonomy = %+v, want source-evidence guidance", receipt.Refusals[0])
 	}
 	if _, err := os.Lstat(filepath.Join(target, "file.txt")); !os.IsNotExist(err) {
 		t.Fatalf("target file after refused source race err = %v, want missing", err)
@@ -313,7 +482,8 @@ func TestApplyRefusesDuplicateSelectedTargetPathsBeforeMutation(t *testing.T) {
 	writePublishedSession(t, target, driftA.SessionID, p.ProfileID, p.Target.TargetID, driftA.RootID, []control.ManifestEntry{manifestEntry("file.txt", []byte("payload"))})
 	writeTargetDrift(t, target, driftA)
 	writeTargetDrift(t, target, driftB)
-	before := snapshotTree(t, target)
+	beforeDriftA := readRawFile(t, targetDriftPath(t, target, driftA.ID))
+	beforeDriftB := readRawFile(t, targetDriftPath(t, target, driftB.ID))
 
 	receipt, err := Apply(ApplyOptions{
 		Profile:  p,
@@ -334,10 +504,22 @@ func TestApplyRefusesDuplicateSelectedTargetPathsBeforeMutation(t *testing.T) {
 		if refusal.ReasonCode != ReasonAmbiguousState || !strings.Contains(refusal.Message, "multiple selected drift records target the same path") {
 			t.Fatalf("Apply(duplicate target paths).Refusal = %+v, want duplicate target path refusal", refusal)
 		}
+		if refusal.ConflictClass != ConflictClassTargetState || refusal.RetryAdvice != RetryAdviceReviewTargetState {
+			t.Fatalf("Apply(duplicate target paths).Refusal taxonomy = %+v, want target-state guidance", refusal)
+		}
 	}
-	assertTreeUnchanged(t, target, before)
 	if _, err := os.Lstat(filepath.Join(target, "file.txt")); !os.IsNotExist(err) {
 		t.Fatalf("target file after duplicate-target refusal err = %v, want missing", err)
+	}
+	if got := readRawFile(t, targetDriftPath(t, target, driftA.ID)); string(got) != string(beforeDriftA) {
+		t.Fatalf("drift A changed after duplicate-target refusal\nbefore=%s\nafter=%s", beforeDriftA, got)
+	}
+	if got := readRawFile(t, targetDriftPath(t, target, driftB.ID)); string(got) != string(beforeDriftB) {
+		t.Fatalf("drift B changed after duplicate-target refusal\nbefore=%s\nafter=%s", beforeDriftB, got)
+	}
+	artifact := readOnlyReconcileReceipt(t, target)
+	if artifact.Status != ReceiptStatusFailed || artifact.Summary.Refused != 2 {
+		t.Fatalf("durable duplicate-target receipt = %+v, want failed receipt with two refusals", artifact)
 	}
 }
 
@@ -366,6 +548,30 @@ func TestPlanTreatsAlreadyRestoredMissingFileAsResolveNoop(t *testing.T) {
 	}
 }
 
+func TestPlanTreatsExpiredDriftAsClosedNoop(t *testing.T) {
+	p, target := setupReconcileFixture(t)
+	writeSourceFile(t, p, "file.txt", []byte("payload"), 0o644)
+	drift := missingFileDrift("drift-expired", "file.txt", []byte("payload"))
+	drift.ReviewState = "expired"
+	drift.ReviewAction = "expire"
+	drift.ReviewedAt = fixedNow().Format(time.RFC3339Nano)
+	drift.ReviewReason = "stale review evidence"
+	writePublishedSession(t, target, drift.SessionID, p.ProfileID, p.Target.TargetID, drift.RootID, []control.ManifestEntry{manifestEntry("file.txt", []byte("payload"))})
+	writeTargetDrift(t, target, drift)
+
+	receipt, err := Plan(Options{Profile: p, IDs: []string{drift.ID}, Now: fixedNow()})
+	if err != nil {
+		t.Fatalf("Plan(expired drift) error = %v, want nil", err)
+	}
+	if receipt.Summary.Noop != 1 || len(receipt.Actions) != 1 {
+		t.Fatalf("Plan(expired drift).Summary = %+v actions=%+v, want one noop action", receipt.Summary, receipt.Actions)
+	}
+	action := receipt.Actions[0]
+	if action.Action != ActionAlreadyResolved || action.Result != ResultNoop || action.Reason != "stale review evidence" {
+		t.Fatalf("Plan(expired drift).Action = %+v, want already-closed noop", action)
+	}
+}
+
 func TestPlanRefusesAlreadyRestoredMissingFileWithoutExpectedDigestAndSize(t *testing.T) {
 	p, target := setupReconcileFixture(t)
 	writeTargetFile(t, target, "file.txt", []byte("payload"), 0o644)
@@ -388,6 +594,9 @@ func TestPlanRefusesAlreadyRestoredMissingFileWithoutExpectedDigestAndSize(t *te
 	}
 	if receipt.Refusals[0].ReasonCode != ReasonPublishedEvidence {
 		t.Fatalf("Plan(weak restored evidence).Refusal = %+v, want published evidence refusal", receipt.Refusals[0])
+	}
+	if receipt.Refusals[0].ConflictClass != ConflictClassPublishedEvidence || receipt.Refusals[0].RetryAdvice != RetryAdviceRestorePublishedEvidence {
+		t.Fatalf("Plan(weak restored evidence).Refusal taxonomy = %+v, want published-evidence guidance", receipt.Refusals[0])
 	}
 }
 
@@ -458,6 +667,9 @@ func TestApplyRefusesPublishErrorThenAllowsExplicitResolveRerun(t *testing.T) {
 	if refusal := refused.Refusals[0]; refusal.ReasonCode != ReasonMutationFailed || !strings.Contains(refusal.Message, "target now matches expected evidence") {
 		t.Fatalf("Apply(post-publish error).Refusal = %+v, want mutation refusal with rerun guidance", refusal)
 	}
+	if refusal := refused.Refusals[0]; refusal.ConflictClass != ConflictClassMutationFailure || refusal.RetryAdvice != RetryAdviceInspectMutationThenReplan {
+		t.Fatalf("Apply(post-publish error).Refusal taxonomy = %+v, want mutation inspection guidance", refusal)
+	}
 	if got := readFileDigest(t, filepath.Join(target, "file.txt")); got != digest([]byte("payload")) {
 		t.Fatalf("target file digest after refusal = %s, want restored payload", got)
 	}
@@ -525,6 +737,9 @@ func TestApplyRestoreFileRefusesWhenStagedModTimeCannotBeSet(t *testing.T) {
 	}
 	if receipt.Refusals[0].ReasonCode != ReasonMutationFailed || !strings.Contains(receipt.Refusals[0].Message, "set staged mod time") {
 		t.Fatalf("Apply() refusal = %+v, want staged modtime mutation failure", receipt.Refusals[0])
+	}
+	if receipt.Refusals[0].ConflictClass != ConflictClassMutationFailure || receipt.Refusals[0].RetryAdvice != RetryAdviceInspectMutationThenReplan {
+		t.Fatalf("Apply() refusal taxonomy = %+v, want mutation inspection guidance", receipt.Refusals[0])
 	}
 	if _, err := os.Lstat(filepath.Join(target, "file.txt")); !os.IsNotExist(err) {
 		t.Fatalf("target file after refused apply err = %v, want missing", err)
@@ -611,6 +826,9 @@ func TestPlanExplicitIDKeepsSelectedMalformedArtifactProblem(t *testing.T) {
 	if receipt.Refusals[0].ReasonCode != ReasonArtifactProblems {
 		t.Fatalf("Plan() refusal = %+v, want artifact-problems refusal", receipt.Refusals[0])
 	}
+	if receipt.Refusals[0].ConflictClass != ConflictClassArtifactIntegrity || receipt.Refusals[0].RetryAdvice != RetryAdviceRepairArtifacts {
+		t.Fatalf("Plan() refusal taxonomy = %+v, want artifact repair guidance", receipt.Refusals[0])
+	}
 }
 
 func TestReceiptDeterminism(t *testing.T) {
@@ -661,6 +879,9 @@ func TestClassifyRefusesControlPlaneTargetPath(t *testing.T) {
 	}
 	if item.refusal.ReasonCode != ReasonControlPlanePath {
 		t.Fatalf("classify(control path) refusal = %+v, want control-plane path refusal", item.refusal)
+	}
+	if item.refusal.ConflictClass != ConflictClassUnsafePath || item.refusal.RetryAdvice != RetryAdviceManualReview {
+		t.Fatalf("classify(control path) refusal taxonomy = %+v, want unsafe-path manual-review guidance", item.refusal)
 	}
 }
 
@@ -798,6 +1019,17 @@ func readTargetDrift(t *testing.T, target string, id string) control.TargetDrift
 	return drift
 }
 
+func mustReviewBoundary(t *testing.T, review Review, name string) RepairBoundary {
+	t.Helper()
+	for _, boundary := range review.Boundaries {
+		if boundary.Name == name {
+			return boundary
+		}
+	}
+	t.Fatalf("review boundary %q not found in %+v", name, review.Boundaries)
+	return RepairBoundary{}
+}
+
 func targetDriftPath(t *testing.T, target string, id string) string {
 	t.Helper()
 	path, err := control.Path(target, control.ArtifactTargetDrift, id)
@@ -877,6 +1109,39 @@ func assertTreeUnchanged(t *testing.T, root string, before string) {
 	if after != before {
 		t.Fatalf("target tree changed\nbefore:\n%s\nafter:\n%s", before, after)
 	}
+}
+
+func assertNoReconcileReceipts(t *testing.T, target string) {
+	t.Helper()
+	receiptDir := filepath.Join(target, control.DirName, "reconcile", "receipts")
+	entries, err := os.ReadDir(receiptDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v, want nil or not exist", receiptDir, err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("reconcile receipts after plan = %d, want none", len(entries))
+	}
+}
+
+func readOnlyReconcileReceipt(t *testing.T, target string) Receipt {
+	t.Helper()
+	receiptDir := filepath.Join(target, control.DirName, "reconcile", "receipts")
+	entries, err := os.ReadDir(receiptDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v, want one receipt", receiptDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("reconcile receipt count = %d, want one", len(entries))
+	}
+	path := filepath.Join(receiptDir, entries[0].Name())
+	receipt, err := control.ReadFile[Receipt](path)
+	if err != nil {
+		t.Fatalf("control.ReadFile(%q, reconcile receipt) error = %v, want nil", path, err)
+	}
+	return receipt
 }
 
 func readFileDigest(t *testing.T, path string) string {

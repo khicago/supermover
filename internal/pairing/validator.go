@@ -11,6 +11,8 @@ import (
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
+	"github.com/khicago/supermover/internal/protocol"
+	"github.com/khicago/supermover/internal/transport"
 )
 
 var (
@@ -28,6 +30,10 @@ type TrustState struct {
 }
 
 func ValidateProfileTrust(p profile.Profile) (TrustState, error) {
+	return ValidateTargetProfileTrust(p)
+}
+
+func ValidateTargetProfileTrust(p profile.Profile) (TrustState, error) {
 	if err := p.Validate(); err != nil {
 		return TrustState{}, fmt.Errorf("%w: %v", ErrPairingProfileInvalid, err)
 	}
@@ -73,6 +79,56 @@ func ValidateProfileTrust(p profile.Profile) (TrustState, error) {
 		return TrustState{}, fmt.Errorf("%w: receipt verified_at %q does not match profile paired_at %q", ErrPairingMismatch, receipt.VerifiedAt, p.Target.PairedAt)
 	}
 	return TrustState{Receipt: receipt, TargetDeviceID: receipt.TargetDeviceID}, nil
+}
+
+func ValidateSourceProfileTrust(p profile.Profile) (TrustState, error) {
+	if err := p.Validate(); err != nil {
+		return TrustState{}, fmt.Errorf("%w: %v", ErrPairingProfileInvalid, err)
+	}
+	if strings.TrimSpace(p.Target.PairingReceiptID) == "" || strings.TrimSpace(p.Target.DevicePublicKey) == "" || strings.TrimSpace(p.Target.PairedAt) == "" {
+		return TrustState{}, ErrUnpairedProfile
+	}
+	if strings.TrimSpace(p.Target.LocalPairingReceiptPath) != "" {
+		receipt, err := ReadReceiptFile(filepath.Clean(p.Target.LocalPairingReceiptPath))
+		if err != nil {
+			return TrustState{}, fmt.Errorf("%w: source receipt file: %v", ErrPairingReceiptInvalid, err)
+		}
+		if receipt.ID != p.Target.PairingReceiptID {
+			return TrustState{}, fmt.Errorf("%w: source receipt id %q does not match profile pairing_receipt_id %q", ErrPairingMismatch, receipt.ID, p.Target.PairingReceiptID)
+		}
+		if receipt.ProfileID != p.ProfileID {
+			return TrustState{}, fmt.Errorf("%w: source receipt profile_id %q does not match profile_id %q", ErrPairingMismatch, receipt.ProfileID, p.ProfileID)
+		}
+		if receipt.TargetID != p.Target.TargetID {
+			return TrustState{}, fmt.Errorf("%w: source receipt target_id %q does not match profile target_id %q", ErrPairingMismatch, receipt.TargetID, p.Target.TargetID)
+		}
+		if receipt.TargetDeviceID != p.Target.DevicePublicKey || receipt.DevicePublicKey != p.Target.DevicePublicKey {
+			return TrustState{}, fmt.Errorf("%w: source receipt target identity does not match pinned profile target device_public_key", ErrPairingMismatch)
+		}
+		if receipt.VerifiedAt != p.Target.PairedAt {
+			return TrustState{}, fmt.Errorf("%w: source receipt verified_at %q does not match profile paired_at %q", ErrPairingMismatch, receipt.VerifiedAt, p.Target.PairedAt)
+		}
+		return TrustState{Receipt: receipt, TargetDeviceID: receipt.TargetDeviceID}, nil
+	}
+	if err := transport.DeviceID(p.Target.DevicePublicKey).Validate(); err != nil {
+		return TrustState{}, fmt.Errorf("%w: %v", ErrPairingProfileInvalid, err)
+	}
+	if err := control.ValidateArtifactID(p.Target.PairingReceiptID); err != nil {
+		return TrustState{}, fmt.Errorf("%w: %v", ErrPairingProfileInvalid, err)
+	}
+	return TrustState{
+		Receipt: control.PairingReceipt{
+			Version:         control.CurrentVersion,
+			ID:              p.Target.PairingReceiptID,
+			ProfileID:       p.ProfileID,
+			TargetID:        p.Target.TargetID,
+			TargetDeviceID:  p.Target.DevicePublicKey,
+			DevicePublicKey: p.Target.DevicePublicKey,
+			VerifiedAt:      p.Target.PairedAt,
+			ProtocolVersion: protocol.Version,
+		},
+		TargetDeviceID: p.Target.DevicePublicKey,
+	}, nil
 }
 
 func validatePlainReceiptFile(path string) error {

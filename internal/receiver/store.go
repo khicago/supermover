@@ -103,13 +103,12 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 	defer unlock()
 
 	layout := s.layout()
-	if err := layout.EnsureSessionDirs(req.SessionID); err != nil {
-		return protocol.BeginSessionResponse{}, err
-	}
-
 	if existing, err := readMeta(s.metaPath(req.SessionID)); err == nil {
 		if !sameManifest(existing, req) {
 			return protocol.BeginSessionResponse{}, fmt.Errorf("%w: session %q already exists with different metadata", ErrConflict, req.SessionID)
+		}
+		if err := layout.EnsureSessionDirs(req.SessionID); err != nil {
+			return protocol.BeginSessionResponse{}, err
 		}
 		if err := s.reconcileBegin(existing); err != nil {
 			return protocol.BeginSessionResponse{}, err
@@ -123,14 +122,6 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		return protocol.BeginSessionResponse{}, err
 	}
 
-	record, err := transaction.NewSessionRecord(req.SessionID, req.CreatedAt)
-	if err != nil {
-		return protocol.BeginSessionResponse{}, err
-	}
-	record, err = record.WithState(transaction.StateValidated, s.now())
-	if err != nil {
-		return protocol.BeginSessionResponse{}, err
-	}
 	meta := sessionMeta{
 		ProtocolVersion: req.ProtocolVersion,
 		SessionID:       req.SessionID,
@@ -143,6 +134,21 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		CreatedAt:       req.CreatedAt.UTC(),
 		Manifest:        req.Manifest,
 	}
+	if err := s.preflightNewSessionTargets(meta); err != nil {
+		return protocol.BeginSessionResponse{}, err
+	}
+	if err := layout.EnsureSessionDirs(req.SessionID); err != nil {
+		return protocol.BeginSessionResponse{}, err
+	}
+
+	record, err := transaction.NewSessionRecord(req.SessionID, req.CreatedAt)
+	if err != nil {
+		return protocol.BeginSessionResponse{}, err
+	}
+	record, err = record.WithState(transaction.StateValidated, s.now())
+	if err != nil {
+		return protocol.BeginSessionResponse{}, err
+	}
 	if err := writeJSONAtomic(s.metaPath(req.SessionID), meta); err != nil {
 		return protocol.BeginSessionResponse{}, err
 	}
@@ -153,6 +159,59 @@ func (s FileStore) Begin(req protocol.BeginSessionRequest) (protocol.BeginSessio
 		return protocol.BeginSessionResponse{}, err
 	}
 	return protocol.BeginSessionResponse{SessionID: req.SessionID, State: protocol.SessionStateValidated}, nil
+}
+
+// preflightNewSessionTargets avoids receiving payload that is already known to
+// be unpublishable. Commit still repeats conflict checks because targets can
+// change after this check while a transfer is in progress.
+func (s FileStore) preflightNewSessionTargets(meta sessionMeta) error {
+	for _, entry := range meta.Manifest.Entries {
+		final, err := s.finalPath(entry)
+		if err != nil {
+			return err
+		}
+		switch entry.Kind {
+		case protocol.FileKindDir:
+			if _, _, err := finalDirectoryState(final); err != nil {
+				return err
+			}
+		case protocol.FileKindSymlink:
+			same, exists, err := symlinkTargetState(final, entry.SymlinkTarget)
+			if err != nil {
+				return err
+			}
+			if exists && !same {
+				return fmt.Errorf("%w: target symlink %q already exists with different target; refusing to overwrite", ErrConflict, publishPath(entry))
+			}
+		case protocol.FileKindFile:
+			same, exists, err := finalFileState(final, entry.Size, entry.Digest)
+			if err != nil {
+				return err
+			}
+			if exists && !same {
+				previous, ok, err := previousEvidenceFromProtocolEntry(entry)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
+				}
+				if err := s.validatePreviousManifestEvidence(meta, entry, previous); err != nil {
+					return err
+				}
+				previousSame, err := s.targetMatchesPreviousFile(final, previous)
+				if err != nil {
+					return err
+				}
+				if !previousSame {
+					return fmt.Errorf("%w: target file %q already exists with different content and does not match previous manifest evidence; refusing to overwrite", ErrConflict, publishPath(entry))
+				}
+			}
+		default:
+			return fmt.Errorf("%w: manifest entry %q uses unsupported kind %q", ErrConflict, entry.Path, entry.Kind)
+		}
+	}
+	return nil
 }
 
 func (s FileStore) Status(sessionID string) (protocol.SessionStatusResponse, error) {
@@ -1173,7 +1232,20 @@ func (s FileStore) reconcileStagedFile(meta sessionMeta, entry protocol.Manifest
 			}
 			return nil
 		}
-		return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
+		previous, ok, err := s.validatedPreviousEvidence(meta, entry, final)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
+		}
+		previousSame, err := s.targetMatchesPreviousFile(final, previous)
+		if err != nil {
+			return err
+		}
+		if !previousSame {
+			return fmt.Errorf("%w: target file %q already exists with different content and no longer matches previous manifest evidence; refusing to overwrite", ErrConflict, publishPath(entry))
+		}
 	}
 	stage, err := s.stageFilePath(meta.SessionID, entry.Path)
 	if err != nil {
@@ -1230,6 +1302,19 @@ func (s FileStore) publish(meta sessionMeta) error {
 					}
 					continue
 				}
+				previous, ok, err := s.validatedPreviousEvidence(meta, entry, final)
+				if err != nil {
+					return err
+				}
+				if ok {
+					if err := applyReceiverFileMetadata(stage, entry); err != nil {
+						return err
+					}
+					if err := s.publishManagedReplacement(stage, final, entry, previous); err != nil {
+						return err
+					}
+					continue
+				}
 				return fmt.Errorf("%w: target file %q already exists with different content; refusing to overwrite", ErrConflict, publishPath(entry))
 			}
 			if err := pathguard.EnsurePlainDirectory(s.TargetRoot, filepath.Dir(final), 0o755); err != nil {
@@ -1238,12 +1323,254 @@ func (s FileStore) publish(meta sessionMeta) error {
 			if err := applyReceiverFileMetadata(stage, entry); err != nil {
 				return err
 			}
+			if previous, ok, err := s.validatedPreviousEvidence(meta, entry, final); err != nil {
+				return err
+			} else if ok {
+				if err := s.publishManagedReplacement(stage, final, entry, previous); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := durable.PromoteFileNoReplace(stage, final); err != nil {
 				return fmt.Errorf("publish file %q: %w", entry.Path, err)
 			}
 		}
 	}
 	return nil
+}
+
+type receiverPreviousEvidence struct {
+	SessionID  string
+	ManifestID string
+	Size       int64
+	Digest     string
+	Mode       uint32
+	ModTime    string
+}
+
+func previousEvidenceFromProtocolEntry(entry protocol.ManifestEntry) (receiverPreviousEvidence, bool, error) {
+	present := strings.TrimSpace(entry.PreviousSessionID) != "" ||
+		strings.TrimSpace(entry.PreviousManifestID) != "" ||
+		entry.PreviousSize != nil ||
+		strings.TrimSpace(entry.PreviousDigest) != "" ||
+		entry.PreviousMode != nil ||
+		strings.TrimSpace(entry.PreviousModTime) != ""
+	if !present {
+		return receiverPreviousEvidence{}, false, nil
+	}
+	if entry.Kind != protocol.FileKindFile {
+		return receiverPreviousEvidence{}, false, fmt.Errorf("%w: previous manifest evidence is only valid for file entry %q", ErrConflict, entry.Path)
+	}
+	if strings.TrimSpace(entry.PreviousSessionID) == "" ||
+		strings.TrimSpace(entry.PreviousManifestID) == "" ||
+		entry.PreviousSize == nil ||
+		strings.TrimSpace(entry.PreviousDigest) == "" ||
+		entry.PreviousMode == nil ||
+		strings.TrimSpace(entry.PreviousModTime) == "" {
+		return receiverPreviousEvidence{}, false, fmt.Errorf("%w: file %q has incomplete previous manifest evidence", ErrConflict, entry.Path)
+	}
+	return receiverPreviousEvidence{
+		SessionID:  entry.PreviousSessionID,
+		ManifestID: entry.PreviousManifestID,
+		Size:       *entry.PreviousSize,
+		Digest:     entry.PreviousDigest,
+		Mode:       *entry.PreviousMode,
+		ModTime:    entry.PreviousModTime,
+	}, true, nil
+}
+
+func (s FileStore) validatedPreviousEvidence(meta sessionMeta, entry protocol.ManifestEntry, final string) (receiverPreviousEvidence, bool, error) {
+	previous, ok, err := previousEvidenceFromProtocolEntry(entry)
+	if err != nil || !ok {
+		return receiverPreviousEvidence{}, ok, err
+	}
+	if err := s.validatePreviousManifestEvidence(meta, entry, previous); err != nil {
+		return receiverPreviousEvidence{}, false, err
+	}
+	previousSame, err := s.targetMatchesPreviousFile(final, previous)
+	if err != nil {
+		return receiverPreviousEvidence{}, false, err
+	}
+	if !previousSame {
+		return receiverPreviousEvidence{}, false, fmt.Errorf("%w: target file %q no longer matches previous manifest evidence", ErrConflict, publishPath(entry))
+	}
+	return previous, true, nil
+}
+
+func (s FileStore) validatePreviousManifestEvidence(meta sessionMeta, entry protocol.ManifestEntry, previous receiverPreviousEvidence) error {
+	if previous.SessionID == meta.SessionID {
+		return fmt.Errorf("%w: file %q previous_session_id must not equal current session", ErrConflict, entry.Path)
+	}
+	receiptPath, err := control.Path(s.TargetRoot, control.ArtifactSessionReceipt, previous.SessionID)
+	if err != nil {
+		return err
+	}
+	receipt, err := control.ReadFile[control.SessionReceipt](receiptPath)
+	if err != nil {
+		return fmt.Errorf("%w: read previous receipt %q for %q: %v", ErrConflict, previous.SessionID, publishPath(entry), err)
+	}
+	if receipt.ID != previous.SessionID || receipt.Status != string(protocol.SessionStatePublished) {
+		return fmt.Errorf("%w: previous receipt %q is not published evidence", ErrConflict, previous.SessionID)
+	}
+	if receipt.ProfileID != meta.ProfileID || receipt.TargetID != meta.TargetID {
+		return fmt.Errorf("%w: previous receipt %q scope = %q/%q, want %q/%q", ErrConflict, previous.SessionID, receipt.ProfileID, receipt.TargetID, meta.ProfileID, meta.TargetID)
+	}
+	manifestPath, err := control.Path(s.TargetRoot, control.ArtifactManifest, previous.SessionID)
+	if err != nil {
+		return err
+	}
+	manifest, err := control.ReadManifestCompatFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("%w: read previous manifest %q for %q: %v", ErrConflict, previous.SessionID, publishPath(entry), err)
+	}
+	if manifest.ID != previous.ManifestID || manifest.SessionID != previous.SessionID {
+		return fmt.Errorf("%w: previous manifest %q identity mismatch", ErrConflict, previous.SessionID)
+	}
+	if manifest.RootID != meta.RootID && !(manifest.RootID == "" && meta.RootID != "") {
+		return fmt.Errorf("%w: previous manifest %q root_id = %q, want %q", ErrConflict, previous.SessionID, manifest.RootID, meta.RootID)
+	}
+	previousPath := cleanReceiverTarget(publishPath(entry))
+	for _, candidate := range manifest.Entries {
+		if candidate.Kind != string(protocol.FileKindFile) {
+			continue
+		}
+		if cleanReceiverTarget(controlEntryTargetPath(candidate)) != previousPath {
+			continue
+		}
+		if candidate.Size != previous.Size ||
+			candidate.Digest != previous.Digest ||
+			candidate.Mode != previous.Mode ||
+			candidate.ModTime != previous.ModTime ||
+			!candidate.HasSizeEvidence() ||
+			!candidate.HasModeEvidence() {
+			return fmt.Errorf("%w: previous manifest entry %q does not match replacement evidence", ErrConflict, previousPath)
+		}
+		return nil
+	}
+	return fmt.Errorf("%w: previous manifest %q has no file evidence for %q", ErrConflict, previous.SessionID, previousPath)
+}
+
+func controlEntryTargetPath(entry control.ManifestEntry) string {
+	if strings.TrimSpace(entry.TargetPath) != "" {
+		return entry.TargetPath
+	}
+	return entry.Path
+}
+
+func (s FileStore) targetMatchesPreviousFile(path string, previous receiverPreviousEvidence) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat previous target file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return false, fmt.Errorf("%w: target path %q already exists as non-regular; refusing to overwrite", ErrConflict, path)
+	}
+	if info.Size() != previous.Size || uint32(info.Mode().Perm()) != previous.Mode {
+		return false, nil
+	}
+	modTime, err := time.Parse(time.RFC3339Nano, previous.ModTime)
+	if err != nil {
+		return false, fmt.Errorf("%w: previous mod_time for %q is invalid: %v", ErrConflict, path, err)
+	}
+	if !info.ModTime().Equal(modTime) {
+		return false, nil
+	}
+	got, err := fileDigest(path)
+	if err != nil {
+		return false, err
+	}
+	return strings.EqualFold(got, previous.Digest), nil
+}
+
+func (s FileStore) publishManagedReplacement(stage, final string, entry protocol.ManifestEntry, previous receiverPreviousEvidence) error {
+	previousSame, err := s.targetMatchesPreviousFile(final, previous)
+	if err != nil {
+		return err
+	}
+	if !previousSame {
+		return fmt.Errorf("%w: target file %q changed before managed replacement", ErrConflict, publishPath(entry))
+	}
+	holdPath, err := s.receiverReplacementHoldPath(entry, "current")
+	if err != nil {
+		return err
+	}
+	if err := pathguard.EnsurePlainDirectory(control.ControlDir(s.TargetRoot), filepath.Dir(holdPath), 0o700); err != nil {
+		return fmt.Errorf("create replacement hold parent %q: %w", filepath.Dir(holdPath), err)
+	}
+	if err := durable.MoveFileNoReplace(final, holdPath); err != nil {
+		return fmt.Errorf("move previous target %q to replacement hold: %w", publishPath(entry), err)
+	}
+	if err := durable.SyncDirBestEffort(filepath.Dir(final)); err != nil {
+		return s.restoreReceiverReplacementHoldOnError(holdPath, final, err)
+	}
+	holdSame, err := s.targetMatchesPreviousFile(holdPath, previous)
+	if err != nil {
+		return s.restoreReceiverReplacementHoldOnError(holdPath, final, err)
+	}
+	if !holdSame {
+		return s.restoreReceiverReplacementHoldOnError(holdPath, final, fmt.Errorf("%w: replacement hold for %q no longer matches previous manifest evidence", ErrConflict, publishPath(entry)))
+	}
+	if err := durable.PromoteFileNoReplace(stage, final); err != nil {
+		return errors.Join(fmt.Errorf("publish managed replacement %q: %w", publishPath(entry), err), s.restoreReceiverReplacementHold(holdPath, final))
+	}
+	if err := s.removeReceiverReplacementHold(holdPath, previous); err != nil {
+		return err
+	}
+	return durable.SyncDirBestEffort(filepath.Dir(final))
+}
+
+func (s FileStore) restoreReceiverReplacementHoldOnError(holdPath, final string, cause error) error {
+	return errors.Join(cause, s.restoreReceiverReplacementHold(holdPath, final))
+}
+
+func (s FileStore) receiverReplacementHoldPath(entry protocol.ManifestEntry, holdKind string) (string, error) {
+	if holdKind != "current" {
+		return "", fmt.Errorf("replacement hold kind %q is invalid", holdKind)
+	}
+	holdRoot := filepath.Join(control.ControlDir(s.TargetRoot), "network-replacement-holds", entry.PreviousSessionID, holdKind)
+	holdPath, err := pathguard.SafeJoin(holdRoot, publishPath(entry))
+	if err != nil {
+		return "", err
+	}
+	if err := pathguard.EnsureDirectory(control.ControlDir(s.TargetRoot), filepath.Dir(holdPath)); err != nil {
+		return "", fmt.Errorf("validate replacement hold parent %q: %w", filepath.Dir(holdPath), err)
+	}
+	return holdPath, nil
+}
+
+func (s FileStore) restoreReceiverReplacementHold(holdPath, final string) error {
+	if _, err := os.Lstat(holdPath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("stat replacement hold %q: %w", holdPath, err)
+	}
+	if _, err := os.Lstat(final); err == nil {
+		return fmt.Errorf("target path %q exists while restoring replacement hold %q", final, holdPath)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("stat target path %q before replacement hold restore: %w", final, err)
+	}
+	if err := durable.PromoteFileNoReplace(holdPath, final); err != nil {
+		return fmt.Errorf("restore replacement hold %q: %w", holdPath, err)
+	}
+	return nil
+}
+
+func (s FileStore) removeReceiverReplacementHold(holdPath string, previous receiverPreviousEvidence) error {
+	same, err := s.targetMatchesPreviousFile(holdPath, previous)
+	if err != nil {
+		return err
+	}
+	if !same {
+		return fmt.Errorf("%w: replacement hold %q changed before cleanup", ErrConflict, holdPath)
+	}
+	if err := os.Remove(holdPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove replacement hold %q: %w", holdPath, err)
+	}
+	return durable.SyncDirBestEffort(filepath.Dir(holdPath))
 }
 
 func (s FileStore) requireZeroBytePublishedEvidence(meta sessionMeta, entry protocol.ManifestEntry) error {
@@ -1466,15 +1793,25 @@ func controlEntriesFromProtocol(entries []protocol.ManifestEntry) []control.Mani
 	out := make([]control.ManifestEntry, 0, len(entries))
 	for _, entry := range entries {
 		next := control.ManifestEntry{
-			Path:          entry.Path,
-			Kind:          string(entry.Kind),
-			ModTime:       formatOptionalTime(entry.ModTime),
-			Digest:        entry.Digest,
-			TargetPath:    entry.TargetPath,
-			SymlinkTarget: entry.SymlinkTarget,
+			Path:               entry.Path,
+			Kind:               string(entry.Kind),
+			ModTime:            formatOptionalTime(entry.ModTime),
+			Digest:             entry.Digest,
+			TargetPath:         entry.TargetPath,
+			SymlinkTarget:      entry.SymlinkTarget,
+			PreviousSessionID:  entry.PreviousSessionID,
+			PreviousManifestID: entry.PreviousManifestID,
+			PreviousDigest:     entry.PreviousDigest,
+			PreviousModTime:    entry.PreviousModTime,
 		}
 		next.SetModeEvidence(entry.Mode)
 		next.SetSizeEvidence(entry.Size)
+		if entry.PreviousSize != nil {
+			next.SetPreviousSizeEvidence(*entry.PreviousSize)
+		}
+		if entry.PreviousMode != nil {
+			next.SetPreviousModeEvidence(*entry.PreviousMode)
+		}
 		out = append(out, next)
 	}
 	return out

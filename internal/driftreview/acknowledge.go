@@ -62,6 +62,27 @@ type ResolveResult struct {
 	Prune           string `json:"prune"`
 }
 
+type ExpireOptions struct {
+	Profile  profile.Profile
+	ID       string
+	Reason   string
+	Reviewer string
+	Now      time.Time
+}
+
+type ExpireResult struct {
+	ID            string `json:"id"`
+	Path          string `json:"path"`
+	PreviousState string `json:"previous_state"`
+	ReviewState   string `json:"review_state"`
+	ReviewedAt    string `json:"reviewed_at"`
+	Reviewer      string `json:"reviewer,omitempty"`
+	Reason        string `json:"reason"`
+	ProfileID     string `json:"profile_id"`
+	TargetID      string `json:"target_id"`
+	SessionID     string `json:"session_id"`
+}
+
 func Acknowledge(opts AcknowledgeOptions) (AcknowledgeResult, error) {
 	if strings.TrimSpace(opts.ID) == "" {
 		return AcknowledgeResult{}, errors.New("drift id is required")
@@ -80,8 +101,7 @@ func Acknowledge(opts AcknowledgeOptions) (AcknowledgeResult, error) {
 	if err := control.ValidateArtifactLoadBoundary(targetRoot); err != nil {
 		return AcknowledgeResult{}, err
 	}
-	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
-	if err != nil {
+	if _, _, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID); err != nil {
 		return AcknowledgeResult{}, err
 	}
 
@@ -91,7 +111,7 @@ func Acknowledge(opts AcknowledgeOptions) (AcknowledgeResult, error) {
 	}
 	defer unlock()
 
-	path, doc, err = loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
+	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
 	if err != nil {
 		return AcknowledgeResult{}, err
 	}
@@ -156,7 +176,7 @@ func Resolve(opts ResolveOptions) (ResolveResult, error) {
 	if err := control.ValidateArtifactLoadBoundary(targetRoot); err != nil {
 		return ResolveResult{}, err
 	}
-	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
+	_, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -170,7 +190,7 @@ func Resolve(opts ResolveOptions) (ResolveResult, error) {
 	}
 	defer unlock()
 
-	path, doc, err = loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
+	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -191,6 +211,8 @@ func Resolve(opts ResolveOptions) (ResolveResult, error) {
 	case "needs_review", "acknowledged":
 	case "resolved":
 		return ResolveResult{}, fmt.Errorf("persisted target drift %q is already resolved; re-resolve overwrite is not supported", opts.ID)
+	case "expired":
+		return ResolveResult{}, fmt.Errorf("persisted target drift %q is already expired; resolve would overwrite retired review evidence", opts.ID)
 	default:
 		return ResolveResult{}, fmt.Errorf("persisted target drift %q has unsupported review_state %q", opts.ID, previousState)
 	}
@@ -218,6 +240,81 @@ func Resolve(opts ResolveOptions) (ResolveResult, error) {
 		Repair:          "not_applied",
 		ManifestRewrite: "not_applied",
 		Prune:           "not_authorized",
+	}, nil
+}
+
+func Expire(opts ExpireOptions) (ExpireResult, error) {
+	if strings.TrimSpace(opts.ID) == "" {
+		return ExpireResult{}, errors.New("drift id is required")
+	}
+	if err := control.ValidateArtifactID(opts.ID); err != nil {
+		return ExpireResult{}, fmt.Errorf("drift id is unsafe: %w", err)
+	}
+	reason := strings.TrimSpace(opts.Reason)
+	if reason == "" {
+		return ExpireResult{}, errors.New("reason is required")
+	}
+	targetRoot, err := targetRootFromProfile(opts.Profile)
+	if err != nil {
+		return ExpireResult{}, err
+	}
+	if err := control.ValidateArtifactLoadBoundary(targetRoot); err != nil {
+		return ExpireResult{}, err
+	}
+	if _, _, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID); err != nil {
+		return ExpireResult{}, err
+	}
+
+	unlock, err := targetlock.LockTarget(targetRoot)
+	if err != nil {
+		return ExpireResult{}, err
+	}
+	defer unlock()
+
+	path, doc, err := loadReviewableDrift(targetRoot, opts.Profile, opts.ID)
+	if err != nil {
+		return ExpireResult{}, err
+	}
+
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	reviewedAt := now.UTC().Format(time.RFC3339Nano)
+	previousState := doc.ReviewState
+	if strings.TrimSpace(previousState) == "" {
+		previousState = "needs_review"
+	}
+	switch previousState {
+	case "needs_review", "acknowledged":
+	case "resolved":
+		return ExpireResult{}, fmt.Errorf("persisted target drift %q is already resolved; expire would overwrite review evidence", opts.ID)
+	case "expired":
+		return ExpireResult{}, fmt.Errorf("persisted target drift %q is already expired; re-expire overwrite is not supported", opts.ID)
+	default:
+		return ExpireResult{}, fmt.Errorf("persisted target drift %q has unsupported review_state %q", opts.ID, previousState)
+	}
+
+	doc.ReviewState = "expired"
+	doc.ReviewedAt = reviewedAt
+	doc.ReviewedBy = strings.TrimSpace(opts.Reviewer)
+	doc.ReviewReason = reason
+	doc.ReviewAction = "expire"
+	if err := control.WriteFile(path, doc); err != nil {
+		return ExpireResult{}, err
+	}
+
+	return ExpireResult{
+		ID:            doc.ID,
+		Path:          doc.Path,
+		PreviousState: previousState,
+		ReviewState:   doc.ReviewState,
+		ReviewedAt:    doc.ReviewedAt,
+		Reviewer:      doc.ReviewedBy,
+		Reason:        doc.ReviewReason,
+		ProfileID:     doc.ProfileID,
+		TargetID:      doc.TargetID,
+		SessionID:     doc.SessionID,
 	}, nil
 }
 

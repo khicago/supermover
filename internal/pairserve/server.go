@@ -77,8 +77,8 @@ func New(opts Options) (*Server, error) {
 		return nil, fmt.Errorf("%w: listen address is required", ErrInvalidOptions)
 	}
 	nonce := strings.TrimSpace(opts.Nonce)
+	var err error
 	if nonce == "" {
-		var err error
 		nonce, err = randomNonce()
 		if err != nil {
 			return nil, fmt.Errorf("%w: generate discovery nonce: %v", ErrInvalidOptions, err)
@@ -86,10 +86,6 @@ func New(opts Options) (*Server, error) {
 	}
 	if err := discovery.NewLowInfoAdvertisement(ServiceType, protocol.Version, nonce, []string{"pair"}).Validate(); err != nil {
 		return nil, fmt.Errorf("%w: discovery advertisement: %v", ErrInvalidOptions, err)
-	}
-	targetDeviceID, err := pairing.TargetDeviceID(opts.Profile)
-	if err != nil {
-		return nil, fmt.Errorf("%w: target device id: %v", ErrInvalidOptions, err)
 	}
 	pairingCode := strings.TrimSpace(opts.PairingCode)
 	if pairingCode == "" {
@@ -109,19 +105,24 @@ func New(opts Options) (*Server, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	targetDeviceID, transportIdentityBound, err := pairing.BootstrapTargetDeviceID(opts.Profile, now)
+	if err != nil {
+		return nil, fmt.Errorf("%w: target device id: %v", ErrInvalidOptions, err)
+	}
 	ttl := opts.ChallengeTTL
 	if ttl <= 0 {
 		ttl = pairing.DefaultChallengeTTL
 	}
 	bootstrap := pairing.Bootstrap{
-		ProtocolVersion:  protocol.Version,
-		Status:           "pairing_ready",
-		TargetDeviceID:   targetDeviceID,
-		ChallengeID:      challengeID,
-		VerificationHash: pairing.VerificationHash(targetDeviceID, challengeID, pairingCode),
-		ExpiresAt:        now.Add(ttl).UTC(),
-		Trusted:          false,
-		TransferEnabled:  false,
+		ProtocolVersion:        protocol.Version,
+		Status:                 "pairing_ready",
+		TargetDeviceID:         targetDeviceID,
+		ChallengeID:            challengeID,
+		VerificationHash:       pairing.VerificationHash(targetDeviceID, challengeID, pairingCode),
+		ExpiresAt:              now.Add(ttl).UTC(),
+		Trusted:                false,
+		TransferEnabled:        false,
+		TransportIdentityBound: transportIdentityBound,
 	}
 	if err := pairing.ValidateBootstrap(bootstrap, targetDeviceID, pairingCode, now); err != nil {
 		return nil, fmt.Errorf("%w: pairing bootstrap: %v", ErrInvalidOptions, err)

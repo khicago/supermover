@@ -1308,6 +1308,208 @@ func TestApplyMissingInvalidAndExpiredApproval(t *testing.T) {
 	}
 }
 
+func TestListApprovalsFiltersCurrentScope(t *testing.T) {
+	target := t.TempDir()
+	record := softDelete("session-two", "gone.txt", []byte("gone"))
+	approval := approvalForItems("approval-one", []control.PruneApprovalItem{approvalItem(record)})
+	writePruneApproval(t, target, approval)
+	other := approvalForItems("approval-two", []control.PruneApprovalItem{approvalItem(record)})
+	other.ProfileID = "profile-other"
+	writePruneApproval(t, target, other)
+
+	result, err := ListApprovals(ListApprovalsOptions{
+		TargetRoot: target,
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+	})
+	if err != nil {
+		t.Fatalf("ListApprovals(%q) error = %v, want nil", target, err)
+	}
+	if result.ProfileID != "profile-local" || result.TargetID != "target-local" || len(result.Approvals) != 1 || result.Approvals[0].ID != "approval-one" {
+		t.Fatalf("ListApprovals(%q) = %+v, want one current-scope approval", target, result)
+	}
+}
+
+func TestListApprovalsRejectsPathIDMismatch(t *testing.T) {
+	target := t.TempDir()
+	record := softDelete("session-two", "gone.txt", []byte("gone"))
+	approval := approvalForItems("approval-real", []control.PruneApprovalItem{approvalItem(record)})
+	writePruneProfileSnapshot(t, target, approval)
+	mismatchPath := filepath.Join(target, control.DirName, "prune", "approvals", "approval-path.json")
+	if err := control.WriteNewFile(mismatchPath, approval); err != nil {
+		t.Fatalf("WriteNewFile(mismatched approval path) error = %v, want nil", err)
+	}
+
+	_, err := ListApprovals(ListApprovalsOptions{
+		TargetRoot: target,
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match path id") {
+		t.Fatalf("ListApprovals(path id mismatch) error = %v, want path/id mismatch refusal", err)
+	}
+}
+
+func TestListApprovalsSkipsOutOfScopeMalformedApproval(t *testing.T) {
+	target := t.TempDir()
+	record := softDelete("session-two", "gone.txt", []byte("gone"))
+	approval := approvalForItems("approval-foreign", []control.PruneApprovalItem{approvalItem(record)})
+	approval.ProfileID = "profile-foreign"
+	approval.TargetID = "target-foreign"
+	path := filepath.Join(target, control.DirName, "prune", "approvals", "approval-foreign.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v, want nil", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("{\"profile_id\":\"profile-foreign\",\"target_id\":\"target-foreign\",\"id\":5}"), 0o644); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v, want nil", path, err)
+	}
+	local := approvalForItems("approval-local", []control.PruneApprovalItem{approvalItem(record)})
+	writePruneApproval(t, target, local)
+
+	result, err := ListApprovals(ListApprovalsOptions{
+		TargetRoot: target,
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+	})
+	if err != nil {
+		t.Fatalf("ListApprovals(out-of-scope malformed) error = %v, want nil", err)
+	}
+	if len(result.Approvals) != 1 || result.Approvals[0].ID != "approval-local" {
+		t.Fatalf("ListApprovals(out-of-scope malformed) = %+v, want only local scoped approval", result)
+	}
+}
+
+func TestSupersedeApprovalUpdatesDurableReviewState(t *testing.T) {
+	target := t.TempDir()
+	record := softDelete("session-two", "gone.txt", []byte("gone"))
+	approval := approvalForItems("approval-one", []control.PruneApprovalItem{approvalItem(record)})
+	writePruneApproval(t, target, approval)
+	writePruneTargetFile(t, target, "gone.txt", []byte("gone"))
+
+	result, err := SupersedeApproval(SupersedeApprovalOptions{
+		TargetRoot: target,
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+		ApprovalID: "approval-one",
+		Reason:     "replaced by fresher approval",
+		Reviewer:   "ops-reviewer",
+		ReviewTool: "supermover prune supersede",
+		Now:        time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("SupersedeApproval(%q) error = %v, want nil", target, err)
+	}
+	if result.Approval.Status != "superseded" || result.Approval.RefusalReason != "replaced by fresher approval" || result.Approval.SupersededBy != "ops-reviewer" || result.Approval.SupersededAt != "2026-05-18T11:00:00Z" || result.Approval.ApprovedBy != "reviewer" || result.Approval.ReviewTool != "supermover prune supersede" {
+		t.Fatalf("SupersedeApproval(%q) result = %+v, want superseded review metadata", target, result)
+	}
+	persisted, err := control.ReadFile[control.PruneApproval](approvalPath(t, target, "approval-one"))
+	if err != nil {
+		t.Fatalf("ReadFile(superseded approval) error = %v, want nil", err)
+	}
+	if persisted.Status != "superseded" || persisted.RefusalReason != "replaced by fresher approval" || persisted.SupersededBy != "ops-reviewer" || persisted.SupersededAt != "2026-05-18T11:00:00Z" || persisted.ApprovedBy != "reviewer" {
+		t.Fatalf("persisted superseded approval = %+v, want durable superseded state", persisted)
+	}
+	if data, readErr := os.ReadFile(filepath.Join(target, "gone.txt")); readErr != nil || string(data) != "gone" {
+		t.Fatalf("target after supersede read=%v data=%q, want unchanged target file", readErr, string(data))
+	}
+	if _, err := os.Lstat(receiptPath(t, target, "approval-one")); !os.IsNotExist(err) {
+		t.Fatalf("Lstat(receipt after supersede) error = %v, want no receipt", err)
+	}
+}
+
+func TestSupersedeApprovalRejectsNonApprovedState(t *testing.T) {
+	target := t.TempDir()
+	record := softDelete("session-two", "gone.txt", []byte("gone"))
+	approval := approvalForItems("approval-one", []control.PruneApprovalItem{approvalItem(record)})
+	approval.Status = "refused"
+	approval.RefusalReason = "operator refused"
+	approval.ApprovedBy = ""
+	approval.ApprovedAt = ""
+	writePruneApproval(t, target, approval)
+
+	_, err := SupersedeApproval(SupersedeApprovalOptions{
+		TargetRoot: target,
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+		ApprovalID: "approval-one",
+		Reason:     "replaced by fresher approval",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot be superseded") {
+		t.Fatalf("SupersedeApproval(non-approved) error = %v, want non-approved refusal", err)
+	}
+}
+
+func TestSupersedeApprovalRejectsLinkedReceiptEvidence(t *testing.T) {
+	target := t.TempDir()
+	record := softDelete("session-two", "gone.txt", []byte("gone"))
+	approval := approvalForItems("approval-one", []control.PruneApprovalItem{approvalItem(record)})
+	writePruneApproval(t, target, approval)
+	writePruneReceiptFile(t, target, control.PruneReceipt{
+		Version:             control.CurrentVersion,
+		ID:                  "approval-one",
+		PruneSessionID:      "approval-one",
+		ApprovalID:          approval.ID,
+		ProfileID:           approval.ProfileID,
+		TargetID:            approval.TargetID,
+		StartedAt:           "2026-05-18T10:30:00Z",
+		EndedAt:             "2026-05-18T10:31:00Z",
+		Status:              control.PruneReceiptFailed,
+		DryRun:              false,
+		ApprovalScopeDigest: approval.ApprovalScopeDigest,
+		Items:               []control.PruneReceiptItem{failedPruneReceiptItem(record)},
+	})
+
+	_, err := SupersedeApproval(SupersedeApprovalOptions{
+		TargetRoot: target,
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+		ApprovalID: "approval-one",
+		Reason:     "replaced by fresher approval",
+	})
+	if err == nil || !strings.Contains(err.Error(), "already has prune receipt evidence") {
+		t.Fatalf("SupersedeApproval(linked receipt) error = %v, want linked receipt refusal", err)
+	}
+}
+
+func TestSupersedeApprovalRejectsMismatchedReceiptPathID(t *testing.T) {
+	target := t.TempDir()
+	record := softDelete("session-two", "gone.txt", []byte("gone"))
+	approval := approvalForItems("approval-one", []control.PruneApprovalItem{approvalItem(record)})
+	writePruneApproval(t, target, approval)
+	receiptPath := filepath.Join(target, control.DirName, "prune", "receipts", "receipt-path.json")
+	if err := os.MkdirAll(filepath.Dir(receiptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v, want nil", filepath.Dir(receiptPath), err)
+	}
+	if err := control.WriteFile(receiptPath, control.PruneReceipt{
+		Version:             control.CurrentVersion,
+		ID:                  "receipt-real",
+		PruneSessionID:      "receipt-real",
+		ApprovalID:          approval.ID,
+		ProfileID:           approval.ProfileID,
+		TargetID:            approval.TargetID,
+		StartedAt:           "2026-05-18T10:30:00Z",
+		EndedAt:             "2026-05-18T10:31:00Z",
+		Status:              control.PruneReceiptFailed,
+		DryRun:              false,
+		ApprovalScopeDigest: approval.ApprovalScopeDigest,
+		Items:               []control.PruneReceiptItem{failedPruneReceiptItem(record)},
+	}); err != nil {
+		t.Fatalf("WriteFile(mismatched receipt path) error = %v, want nil", err)
+	}
+
+	_, err := SupersedeApproval(SupersedeApprovalOptions{
+		TargetRoot: target,
+		ProfileID:  "profile-local",
+		TargetID:   "target-local",
+		ApprovalID: "approval-one",
+		Reason:     "replaced by fresher approval",
+		Reviewer:   "ops-reviewer",
+	})
+	if err == nil || !strings.Contains(err.Error(), "receipt id") {
+		t.Fatalf("SupersedeApproval(mismatched receipt path) error = %v, want receipt path/id mismatch", err)
+	}
+}
+
 func TestApprovalScopeDigestDeterministicAndCanonical(t *testing.T) {
 	policy := validOptions("unused").DeletePolicy
 	a := approvalItem(softDelete("session-two", "a.txt", []byte("a")))
@@ -1638,9 +1840,40 @@ func writePruneProfileSnapshot(t *testing.T, target string, approval control.Pru
 	}
 }
 
+func writePruneReceiptFile(t *testing.T, target string, receipt control.PruneReceipt) {
+	t.Helper()
+	path, err := control.Path(target, control.ArtifactPruneReceipt, receipt.ID)
+	if err != nil {
+		t.Fatalf("control.Path(prune receipt %q) error = %v, want nil", receipt.ID, err)
+	}
+	if err := control.WriteFile(path, receipt); err != nil {
+		t.Fatalf("control.WriteFile(%q, prune receipt) error = %v, want nil", path, err)
+	}
+}
+
 func pruneProfileSnapshotPayloadForApproval(approvalID string) []byte {
 	p := pruneProfileForTest()
 	return pruneProfilePayload(p, approvalID)
+}
+
+func failedPruneReceiptItem(record control.SoftDelete) control.PruneReceiptItem {
+	present := true
+	observed := control.PruneObservedTargetState{
+		Present: &present,
+		Kind:    record.Kind,
+		Path:    record.TargetPath,
+		Digest:  record.Digest,
+	}
+	observed.SetSizeEvidence(record.Size)
+	return control.PruneReceiptItem{
+		SoftDeleteID:     record.ID,
+		TargetPath:       record.TargetPath,
+		IntendedAction:   "delete_file",
+		PrePruneObserved: observed,
+		Result:           "failed",
+		ErrorCode:        "target_state_changed",
+		Error:            "target changed before prune",
+	}
 }
 
 func pruneProfilePayload(p profile.Profile, approvalID string) []byte {

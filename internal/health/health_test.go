@@ -175,6 +175,34 @@ func TestBuildReportResolvedTargetDriftDoesNotRequireReview(t *testing.T) {
 	}
 }
 
+func TestBuildReportExpiredTargetDriftDoesNotRequireReview(t *testing.T) {
+	target := t.TempDir()
+	writeTargetDrift(t, target, control.TargetDrift{
+		Version:      control.CurrentVersion,
+		ID:           "session-drift-expired",
+		SessionID:    "session-drift",
+		ProfileID:    "profile-local",
+		TargetID:     "target-local",
+		RootID:       "root",
+		Path:         "file.txt",
+		DetectedAt:   "2026-05-16T00:01:00Z",
+		Change:       "content_mismatch",
+		ReviewState:  "expired",
+		ReviewAction: "expire",
+		ReviewedAt:   "2026-05-20T00:00:00Z",
+		ReviewReason: "stale review evidence",
+		Evidence:     []string{"target content differs from staged manifest"},
+	})
+
+	got, err := BuildReport(Options{TargetRoot: target})
+	if err != nil {
+		t.Fatalf("BuildReport(%q) error = %v, want nil", target, err)
+	}
+	if !got.Healthy || got.Summary.TargetDrifts != 0 || len(got.TargetDrifts) != 0 {
+		t.Fatalf("BuildReport(%q) healthy=%v target drifts=%#v summary=%+v, want expired drift excluded from review counts", target, got.Healthy, got.TargetDrifts, got.Summary)
+	}
+}
+
 func TestBuildReportMarksNetworkTransferIssueUnhealthy(t *testing.T) {
 	target := t.TempDir()
 	writeNetworkTransfer(t, target, control.NetworkTransfer{

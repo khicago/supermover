@@ -109,14 +109,20 @@ type TransferManifest struct {
 }
 
 type ManifestEntry struct {
-	Path          string    `json:"path"`
-	TargetPath    string    `json:"target_path,omitempty"`
-	Kind          FileKind  `json:"kind"`
-	Mode          uint32    `json:"mode,omitempty"`
-	Size          int64     `json:"size,omitempty"`
-	Digest        string    `json:"digest,omitempty"`
-	ModTime       time.Time `json:"mod_time,omitempty"`
-	SymlinkTarget string    `json:"symlink_target,omitempty"`
+	Path               string    `json:"path"`
+	TargetPath         string    `json:"target_path,omitempty"`
+	Kind               FileKind  `json:"kind"`
+	Mode               uint32    `json:"mode,omitempty"`
+	Size               int64     `json:"size,omitempty"`
+	Digest             string    `json:"digest,omitempty"`
+	ModTime            time.Time `json:"mod_time,omitempty"`
+	SymlinkTarget      string    `json:"symlink_target,omitempty"`
+	PreviousSessionID  string    `json:"previous_session_id,omitempty"`
+	PreviousManifestID string    `json:"previous_manifest_id,omitempty"`
+	PreviousSize       *int64    `json:"previous_size,omitempty"`
+	PreviousDigest     string    `json:"previous_digest,omitempty"`
+	PreviousMode       *uint32   `json:"previous_mode,omitempty"`
+	PreviousModTime    string    `json:"previous_mod_time,omitempty"`
 }
 
 type ChunkUploadRequest struct {
@@ -372,7 +378,62 @@ func (e ManifestEntry) Validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("kind must be one of %s, %s, %s", FileKindFile, FileKindDir, FileKindSymlink))
 	}
+	validatePreviousManifestEvidence(e, &errs)
 	return joinValidation(errs)
+}
+
+func validatePreviousManifestEvidence(e ManifestEntry, errs *[]error) {
+	previousCoreFields := []string{
+		e.PreviousSessionID,
+		e.PreviousManifestID,
+		e.PreviousDigest,
+	}
+	previousPresent := 0
+	for _, value := range previousCoreFields {
+		if strings.TrimSpace(value) != "" {
+			previousPresent++
+		}
+	}
+	if previousPresent > 0 && previousPresent != len(previousCoreFields) {
+		*errs = append(*errs, errors.New("previous evidence must include previous_session_id, previous_manifest_id, and previous_digest together"))
+	}
+	if previousPresent > 0 && e.Kind != FileKindFile {
+		*errs = append(*errs, errors.New("previous evidence is only valid for file entries"))
+	}
+	if strings.TrimSpace(e.PreviousSessionID) != "" {
+		validateSessionID("previous_session_id", e.PreviousSessionID, errs)
+	}
+	if strings.TrimSpace(e.PreviousManifestID) != "" {
+		validateToken("previous_manifest_id", e.PreviousManifestID, MaxSessionIDLen, errs)
+	}
+	if strings.TrimSpace(e.PreviousDigest) != "" {
+		validateDigest("previous_digest", e.PreviousDigest, true, errs)
+	}
+	if e.PreviousSize != nil && *e.PreviousSize < 0 {
+		*errs = append(*errs, errors.New("previous_size cannot be negative"))
+	}
+	if e.PreviousMode != nil {
+		validateMode("previous_mode", *e.PreviousMode, errs)
+	}
+	if strings.TrimSpace(e.PreviousModTime) != "" {
+		if _, err := time.Parse(time.RFC3339Nano, e.PreviousModTime); err != nil {
+			*errs = append(*errs, fmt.Errorf("previous_mod_time must be RFC3339 timestamp: %w", err))
+		}
+	}
+	if previousPresent > 0 {
+		if e.PreviousSize == nil {
+			*errs = append(*errs, errors.New("previous evidence must include previous_size"))
+		}
+		if e.PreviousMode == nil {
+			*errs = append(*errs, errors.New("previous evidence must include previous_mode"))
+		}
+		if strings.TrimSpace(e.PreviousModTime) == "" {
+			*errs = append(*errs, errors.New("previous evidence must include previous_mod_time"))
+		}
+	}
+	if previousPresent == 0 && (e.PreviousSize != nil || e.PreviousMode != nil || strings.TrimSpace(e.PreviousModTime) != "") {
+		*errs = append(*errs, errors.New("previous metadata requires previous evidence"))
+	}
 }
 
 func (r ChunkUploadRequest) Validate() error {

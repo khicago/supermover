@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -24,9 +26,10 @@ import (
 )
 
 type Options struct {
-	Profile   profile.Profile
-	SessionID string
-	Now       func() time.Time
+	Profile         profile.Profile
+	SessionID       string
+	Now             func() time.Time
+	TransferEntries []scan.Entry
 }
 
 type Result struct {
@@ -126,16 +129,21 @@ func prepare(ctx context.Context, opts Options, validateTLSIdentity bool) (prepa
 	if err := ValidateProfileForNetworkPush(opts.Profile); err != nil {
 		return preparedRun{}, err
 	}
-	trust, err := pairing.ValidateProfileTrust(opts.Profile)
+	now := nowFunc(opts.Now)
+	trust, err := pairing.ValidateSourceProfileTrust(opts.Profile)
 	if err != nil {
 		return preparedRun{}, fmt.Errorf("profile trust: %w", err)
 	}
 	if validateTLSIdentity {
-		if err := tlsidentity.ValidatePinned(opts.Profile.Network.LocalTLSIdentity, trust.Receipt.SourceDeviceID, opts.Now); err != nil {
+		sourceDeviceID, err := pairing.SourceTransportDeviceID(opts.Profile, now())
+		if err != nil {
+			return preparedRun{}, fmt.Errorf("validate local TLS identity files: %w", err)
+		}
+		trust.Receipt.SourceDeviceID = sourceDeviceID
+		if err := tlsidentity.ValidatePinned(opts.Profile.Network.LocalTLSIdentity, sourceDeviceID, opts.Now); err != nil {
 			return preparedRun{}, fmt.Errorf("validate local TLS identity files: %w", err)
 		}
 	}
-	now := nowFunc(opts.Now)
 	createdAt := now()
 	sessionID := strings.TrimSpace(opts.SessionID)
 	if sessionID == "" {
@@ -145,7 +153,7 @@ func prepare(ctx context.Context, opts Options, validateTLSIdentity bool) (prepa
 		return preparedRun{}, err
 	}
 	root := opts.Profile.Roots[0]
-	scanned, err := scan.Scan(root.Path)
+	scanned, err := scanForNetworkPush(root.Path, opts.TransferEntries)
 	if err != nil {
 		return preparedRun{}, fmt.Errorf("scan source root: %w", err)
 	}
@@ -178,6 +186,24 @@ func prepare(ctx context.Context, opts Options, validateTLSIdentity bool) (prepa
 		request: request,
 		profile: snapshot,
 	}, nil
+}
+
+func scanForNetworkPush(root string, entries []scan.Entry) (scan.Result, error) {
+	if len(entries) == 0 {
+		return scan.Scan(root)
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return scan.Result{}, err
+	}
+	out := scan.Result{
+		Root:    filepath.ToSlash(absRoot),
+		Entries: append([]scan.Entry(nil), entries...),
+	}
+	sort.Slice(out.Entries, func(i, j int) bool {
+		return out.Entries[i].Path < out.Entries[j].Path
+	})
+	return out, nil
 }
 
 func resultFromNetworkRun(sessionID string, runResult networkrun.Result) Result {

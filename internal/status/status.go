@@ -28,20 +28,22 @@ type Options struct {
 }
 
 type Report struct {
-	Schema         string                   `json:"schema"`
-	Scope          string                   `json:"scope"`
-	TargetRoot     string                   `json:"target_root"`
-	ProfileID      string                   `json:"profile_id,omitempty"`
-	TargetID       string                   `json:"target_id,omitempty"`
-	Overall        Overall                  `json:"overall"`
-	Issues         []string                 `json:"issues,omitempty"`
-	LatestSession  LatestSession            `json:"latest_session"`
-	Counts         Counts                   `json:"counts"`
-	Pairing        PairingEvidence          `json:"pairing"`
-	Privacy        PrivacyEvidence          `json:"privacy"`
-	TrafficPrivacy TrafficPrivacyAcceptance `json:"traffic_privacy_acceptance"`
-	Network        NetworkEvidence          `json:"network"`
-	ReviewRequired bool                     `json:"review_required"`
+	Schema          string                   `json:"schema"`
+	Scope           string                   `json:"scope"`
+	TargetRoot      string                   `json:"target_root"`
+	ProfileID       string                   `json:"profile_id,omitempty"`
+	TargetID        string                   `json:"target_id,omitempty"`
+	Overall         Overall                  `json:"overall"`
+	Issues          []string                 `json:"issues,omitempty"`
+	LatestSession   LatestSession            `json:"latest_session"`
+	Counts          Counts                   `json:"counts"`
+	PruneReview     PruneReview              `json:"prune_review"`
+	IncrementalSync IncrementalSyncEvidence  `json:"incremental_sync"`
+	Pairing         PairingEvidence          `json:"pairing"`
+	Privacy         PrivacyEvidence          `json:"privacy"`
+	TrafficPrivacy  TrafficPrivacyAcceptance `json:"traffic_privacy_acceptance"`
+	Network         NetworkEvidence          `json:"network"`
+	ReviewRequired  bool                     `json:"review_required"`
 }
 
 type Overall struct {
@@ -63,26 +65,58 @@ type LatestSession struct {
 }
 
 type Counts struct {
-	ManifestCount           int                          `json:"manifest_count"`
-	ManifestEntries         int                          `json:"manifest_entries"`
-	FilesExpected           int                          `json:"files_expected"`
-	FilesVerified           int                          `json:"files_verified"`
-	VerificationErrors      int                          `json:"verification_errors"`
-	VerificationWarnings    int                          `json:"verification_warnings"`
-	Warnings                int                          `json:"warnings"`
-	ProfileSuggestions      int                          `json:"profile_suggestions"`
-	SoftDeletes             int                          `json:"soft_deletes"`
-	PruneApprovals          int                          `json:"prune_approvals"`
-	PruneUnappliedApprovals int                          `json:"prune_unapplied_approvals"`
-	TargetDrifts            int                          `json:"target_drifts"`
-	LiveTargetDrifts        int                          `json:"live_target_drifts"`
-	LiveTargetDriftProblems int                          `json:"live_target_drift_artifact_problems"`
-	RecoveryIssues          int                          `json:"recovery_issues"`
-	InvalidHealthRecords    int                          `json:"invalid_health_records"`
-	ArtifactProblems        int                          `json:"artifact_problems"`
-	ArtifactProblemSources  []ArtifactProblemSourceCount `json:"artifact_problem_sources,omitempty"`
-	PairingIssues           int                          `json:"pairing_issues"`
-	NetworkTransfers        int                          `json:"network_transfers"`
+	ManifestCount                   int                          `json:"manifest_count"`
+	ManifestEntries                 int                          `json:"manifest_entries"`
+	FilesExpected                   int                          `json:"files_expected"`
+	FilesVerified                   int                          `json:"files_verified"`
+	VerificationErrors              int                          `json:"verification_errors"`
+	VerificationWarnings            int                          `json:"verification_warnings"`
+	Warnings                        int                          `json:"warnings"`
+	ProfileSuggestions              int                          `json:"profile_suggestions"`
+	SoftDeletes                     int                          `json:"soft_deletes"`
+	PruneApprovals                  int                          `json:"prune_approvals"`
+	PruneUnappliedApprovals         int                          `json:"prune_unapplied_approvals"`
+	PruneActiveApprovals            int                          `json:"prune_active_approvals"`
+	PruneStaleApprovals             int                          `json:"prune_stale_approvals"`
+	PruneExpiredApprovals           int                          `json:"prune_expired_approvals"`
+	PruneConsumedApprovals          int                          `json:"prune_consumed_approvals"`
+	PruneReceipts                   int                          `json:"prune_receipts"`
+	PruneReceiptIssues              int                          `json:"prune_receipt_issues"`
+	ReconcileReceipts               int                          `json:"reconcile_receipts"`
+	ReconcileReceiptIssues          int                          `json:"reconcile_receipt_issues"`
+	IncrementalSyncQueued           int                          `json:"incremental_sync_queued"`
+	IncrementalSyncInFlight         int                          `json:"incremental_sync_in_flight"`
+	IncrementalSyncBackoff          int                          `json:"incremental_sync_backoff"`
+	IncrementalSyncFailed           int                          `json:"incremental_sync_failed"`
+	IncrementalSyncCanceled         int                          `json:"incremental_sync_canceled"`
+	IncrementalSyncDone             int                          `json:"incremental_sync_done"`
+	IncrementalSyncReady            int                          `json:"incremental_sync_ready"`
+	IncrementalSyncTotal            int                          `json:"incremental_sync_total"`
+	IncrementalSyncRuns             int                          `json:"incremental_sync_runs"`
+	IncrementalSyncIdleRuns         int                          `json:"incremental_sync_idle_runs"`
+	IncrementalSyncInFlightRuns     int                          `json:"incremental_sync_in_flight_runs"`
+	IncrementalSyncPublishedRuns    int                          `json:"incremental_sync_published_runs"`
+	IncrementalSyncRetryingRuns     int                          `json:"incremental_sync_retrying_runs"`
+	IncrementalSyncArtifactProblems int                          `json:"incremental_sync_artifact_problems"`
+	TargetDrifts                    int                          `json:"target_drifts"`
+	LiveTargetDrifts                int                          `json:"live_target_drifts"`
+	LiveTargetDriftProblems         int                          `json:"live_target_drift_artifact_problems"`
+	RecoveryIssues                  int                          `json:"recovery_issues"`
+	InvalidHealthRecords            int                          `json:"invalid_health_records"`
+	ArtifactProblems                int                          `json:"artifact_problems"`
+	ArtifactProblemSources          []ArtifactProblemSourceCount `json:"artifact_problem_sources,omitempty"`
+	PairingIssues                   int                          `json:"pairing_issues"`
+	NetworkTransfers                int                          `json:"network_transfers"`
+}
+
+type PruneReview struct {
+	Status string `json:"status"`
+	Action string `json:"action"`
+}
+
+type IncrementalSyncEvidence struct {
+	Status string `json:"status"`
+	Action string `json:"action"`
 }
 
 type ArtifactProblemSourceCount struct {
@@ -98,6 +132,10 @@ type PairingEvidence struct {
 	Method            string `json:"method,omitempty"`
 	VerifiedAt        string `json:"verified_at,omitempty"`
 	Evidence          string `json:"evidence,omitempty"`
+	ReceiptSource     string `json:"receipt_source,omitempty"`
+	ReceiptPath       string `json:"receipt_path,omitempty"`
+	SourceReceiptPath string `json:"source_receipt_path,omitempty"`
+	TargetReceiptPath string `json:"target_receipt_path,omitempty"`
 	EncryptedTransfer string `json:"encrypted_transfer"`
 	Issue             string `json:"issue,omitempty"`
 }
@@ -165,19 +203,21 @@ func Build(opts Options) (Report, error) {
 	}
 
 	out := Report{
-		Schema:         SchemaV1,
-		Scope:          full.Scope,
-		TargetRoot:     full.TargetRoot,
-		ProfileID:      full.ProfileID,
-		TargetID:       full.TargetID,
-		Overall:        overall(full),
-		Issues:         append([]string(nil), full.Overall.Issues...),
-		LatestSession:  latestSession(full.LatestSession),
-		Counts:         counts(full.Summary, full.ArtifactProblems),
-		Pairing:        pairingEvidence(full.Pairing),
-		Privacy:        privacyEvidence(full.Privacy),
-		TrafficPrivacy: trafficPrivacyAcceptance(full.TrafficPrivacy),
-		Network:        networkEvidence(full.NetworkTransfers, full.ArtifactProblems),
+		Schema:          SchemaV1,
+		Scope:           full.Scope,
+		TargetRoot:      full.TargetRoot,
+		ProfileID:       full.ProfileID,
+		TargetID:        full.TargetID,
+		Overall:         overall(full),
+		Issues:          append([]string(nil), full.Overall.Issues...),
+		LatestSession:   latestSession(full.LatestSession),
+		Counts:          counts(full.Summary, full.ArtifactProblems),
+		PruneReview:     pruneReview(full.PruneReview),
+		IncrementalSync: incrementalSyncEvidence(full.IncrementalSync),
+		Pairing:         pairingEvidence(full.Pairing),
+		Privacy:         privacyEvidence(full.Privacy),
+		TrafficPrivacy:  trafficPrivacyAcceptance(full.TrafficPrivacy),
+		Network:         networkEvidence(full.NetworkTransfers, full.ArtifactProblems),
 	}
 	out.ReviewRequired = out.NeedsReview()
 	return out, nil
@@ -222,26 +262,62 @@ func latestSession(in report.LatestSession) LatestSession {
 
 func counts(in report.Summary, artifactProblems []report.ArtifactProblem) Counts {
 	return Counts{
-		ManifestCount:           in.ManifestCount,
-		ManifestEntries:         in.ManifestEntries,
-		FilesExpected:           in.FilesExpected,
-		FilesVerified:           in.FilesVerified,
-		VerificationErrors:      in.VerificationErrors,
-		VerificationWarnings:    in.VerificationWarnings,
-		Warnings:                in.Warnings,
-		ProfileSuggestions:      in.ProfileSuggestions,
-		SoftDeletes:             in.SoftDeletes,
-		PruneApprovals:          in.PruneApprovals,
-		PruneUnappliedApprovals: in.PruneUnappliedApprovals,
-		TargetDrifts:            in.TargetDrifts,
-		LiveTargetDrifts:        in.LiveTargetDrifts,
-		LiveTargetDriftProblems: in.LiveTargetDriftProblems,
-		RecoveryIssues:          in.RecoveryIssues,
-		InvalidHealthRecords:    in.InvalidHealthRecords,
-		ArtifactProblems:        in.ArtifactProblems,
-		ArtifactProblemSources:  artifactProblemSourceCounts(artifactProblems),
-		PairingIssues:           in.PairingIssues,
-		NetworkTransfers:        in.NetworkTransfers,
+		ManifestCount:                   in.ManifestCount,
+		ManifestEntries:                 in.ManifestEntries,
+		FilesExpected:                   in.FilesExpected,
+		FilesVerified:                   in.FilesVerified,
+		VerificationErrors:              in.VerificationErrors,
+		VerificationWarnings:            in.VerificationWarnings,
+		Warnings:                        in.Warnings,
+		ProfileSuggestions:              in.ProfileSuggestions,
+		SoftDeletes:                     in.SoftDeletes,
+		PruneApprovals:                  in.PruneApprovals,
+		PruneUnappliedApprovals:         in.PruneUnappliedApprovals,
+		PruneActiveApprovals:            in.PruneActiveApprovals,
+		PruneStaleApprovals:             in.PruneStaleApprovals,
+		PruneExpiredApprovals:           in.PruneExpiredApprovals,
+		PruneConsumedApprovals:          in.PruneConsumedApprovals,
+		PruneReceipts:                   in.PruneReceipts,
+		PruneReceiptIssues:              in.PruneReceiptIssues,
+		ReconcileReceipts:               in.ReconcileReceipts,
+		ReconcileReceiptIssues:          in.ReconcileReceiptIssues,
+		IncrementalSyncQueued:           in.IncrementalSyncQueued,
+		IncrementalSyncInFlight:         in.IncrementalSyncInFlight,
+		IncrementalSyncBackoff:          in.IncrementalSyncBackoff,
+		IncrementalSyncFailed:           in.IncrementalSyncFailed,
+		IncrementalSyncCanceled:         in.IncrementalSyncCanceled,
+		IncrementalSyncDone:             in.IncrementalSyncDone,
+		IncrementalSyncReady:            in.IncrementalSyncReady,
+		IncrementalSyncTotal:            in.IncrementalSyncTotal,
+		IncrementalSyncRuns:             in.IncrementalSyncRuns,
+		IncrementalSyncIdleRuns:         in.IncrementalSyncIdleRuns,
+		IncrementalSyncInFlightRuns:     in.IncrementalSyncInFlightRuns,
+		IncrementalSyncPublishedRuns:    in.IncrementalSyncPublishedRuns,
+		IncrementalSyncRetryingRuns:     in.IncrementalSyncRetryingRuns,
+		IncrementalSyncArtifactProblems: in.IncrementalSyncArtifactProblems,
+		TargetDrifts:                    in.TargetDrifts,
+		LiveTargetDrifts:                in.LiveTargetDrifts,
+		LiveTargetDriftProblems:         in.LiveTargetDriftProblems,
+		RecoveryIssues:                  in.RecoveryIssues,
+		InvalidHealthRecords:            in.InvalidHealthRecords,
+		ArtifactProblems:                in.ArtifactProblems,
+		ArtifactProblemSources:          artifactProblemSourceCounts(artifactProblems),
+		PairingIssues:                   in.PairingIssues,
+		NetworkTransfers:                in.NetworkTransfers,
+	}
+}
+
+func pruneReview(in report.PruneReview) PruneReview {
+	return PruneReview{
+		Status: string(in.Status),
+		Action: in.ReviewAction(),
+	}
+}
+
+func incrementalSyncEvidence(in report.IncrementalSyncReview) IncrementalSyncEvidence {
+	return IncrementalSyncEvidence{
+		Status: string(in.Status),
+		Action: in.Action,
 	}
 }
 
@@ -281,6 +357,10 @@ func pairingEvidence(in report.PairingState) PairingEvidence {
 		Method:            in.Method,
 		VerifiedAt:        in.VerifiedAt,
 		Evidence:          in.Evidence,
+		ReceiptSource:     in.ReceiptSource,
+		ReceiptPath:       in.ReceiptPath,
+		SourceReceiptPath: in.SourceReceiptPath,
+		TargetReceiptPath: in.TargetReceiptPath,
 		EncryptedTransfer: in.EncryptedTransfer,
 		Issue:             in.Issue,
 	}

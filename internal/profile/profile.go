@@ -15,6 +15,7 @@ import (
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/durable"
+	"github.com/khicago/supermover/internal/transaction"
 	"github.com/khicago/supermover/internal/transport"
 )
 
@@ -63,6 +64,9 @@ type Profile struct {
 	PrivacyPolicy        PrivacyPolicy     `json:"privacy_policy"`
 	Target               TargetIdentity    `json:"target"`
 	Network              *NetworkConfig    `json:"network,omitempty"`
+	Sync                 *SyncConfig       `json:"sync,omitempty"`
+	Repair               *RepairConfig     `json:"repair,omitempty"`
+	Discovery            *DiscoveryConfig  `json:"discovery,omitempty"`
 	AgentKnowledge       AgentKnowledge    `json:"agent_knowledge"`
 	SupplementalMetadata map[string]string `json:"supplemental_metadata,omitempty"`
 }
@@ -110,11 +114,52 @@ type TargetIdentity struct {
 	DevicePublicKey  string `json:"device_public_key,omitempty"`
 	PairingReceiptID string `json:"pairing_receipt_id,omitempty"`
 	PairedAt         string `json:"paired_at,omitempty"`
+	LocalPairingReceiptPath string `json:"local_pairing_receipt_path,omitempty"`
 }
 
 type NetworkConfig struct {
 	ReceiverURL      string         `json:"receiver_url,omitempty"`
 	LocalTLSIdentity TLSIdentityRef `json:"local_tls_identity,omitempty"`
+}
+
+type SyncConfig struct {
+	LocalPolling   *LocalPollingSyncConfig   `json:"local_polling,omitempty"`
+	NetworkPolling *NetworkPollingSyncConfig `json:"network_polling,omitempty"`
+}
+
+type LocalPollingSyncConfig struct {
+	Enabled            bool   `json:"enabled"`
+	IntervalMillis     int    `json:"interval_millis,omitempty"`
+	RetryBackoffMillis int    `json:"retry_backoff_millis,omitempty"`
+	SessionPrefix      string `json:"session_prefix,omitempty"`
+}
+
+type NetworkPollingSyncConfig struct {
+	Enabled            bool   `json:"enabled"`
+	IntervalMillis     int    `json:"interval_millis,omitempty"`
+	RetryBackoffMillis int    `json:"retry_backoff_millis,omitempty"`
+	SessionPrefix      string `json:"session_prefix,omitempty"`
+}
+
+type RepairConfig struct {
+	DriftRecording          *DriftRecordingRepairConfig          `json:"drift_recording,omitempty"`
+	PersistedReconcileApply *PersistedReconcileApplyRepairConfig `json:"persisted_reconcile_apply,omitempty"`
+}
+
+type DriftRecordingRepairConfig struct {
+	Enabled        bool `json:"enabled"`
+	IntervalMillis int  `json:"interval_millis,omitempty"`
+}
+
+type PersistedReconcileApplyRepairConfig struct {
+	Enabled        bool   `json:"enabled"`
+	IntervalMillis int    `json:"interval_millis,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	Reviewer       string `json:"reviewer,omitempty"`
+}
+
+type DiscoveryConfig struct {
+	AdvertiseReceiverHint bool `json:"advertise_receiver_hint,omitempty"`
 }
 
 type TLSIdentityRef struct {
@@ -245,6 +290,9 @@ func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 			errs = append(errs, fmt.Errorf("target.paired_at must be RFC3339 timestamp: %w", err))
 		}
 	}
+	if strings.TrimSpace(p.Target.LocalPairingReceiptPath) != "" && strings.TrimSpace(p.Target.PairingReceiptID) == "" {
+		errs = append(errs, errors.New("target.local_pairing_receipt_path requires target.pairing_receipt_id"))
+	}
 	if strings.TrimSpace(p.Target.DevicePublicKey) == "" && (strings.TrimSpace(p.Target.PairingReceiptID) != "" || strings.TrimSpace(p.Target.PairedAt) != "") {
 		errs = append(errs, errors.New("target.device_public_key is required when pairing_receipt_id or paired_at is set"))
 	}
@@ -260,7 +308,31 @@ func (p Profile) validateWithOptions(opts profileValidationOptions) error {
 			errs = append(errs, errors.New("target.target_id must not equal target.local_path"))
 		}
 	}
-	if err := p.networkConfig().Validate(); err != nil {
+	networkConfig := p.networkConfig()
+	syncConfig := p.syncConfig()
+	repairConfig := p.repairConfig()
+	if err := networkConfig.Validate(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := syncConfig.Validate(); err != nil {
+		errs = append(errs, err)
+	}
+	if err := repairConfig.Validate(); err != nil {
+		errs = append(errs, err)
+	}
+	if repairConfig.DriftRecording != nil && repairConfig.DriftRecording.Enabled &&
+		repairConfig.PersistedReconcileApply != nil && repairConfig.PersistedReconcileApply.Enabled {
+		errs = append(errs, errors.New("repair.persisted_reconcile_apply cannot be enabled with repair.drift_recording"))
+	}
+	if syncConfig.NetworkPolling != nil && syncConfig.NetworkPolling.Enabled {
+		if repairConfig.DriftRecording != nil && repairConfig.DriftRecording.Enabled {
+			errs = append(errs, errors.New("repair.drift_recording cannot be enabled with sync.network_polling"))
+		}
+		if repairConfig.PersistedReconcileApply != nil && repairConfig.PersistedReconcileApply.Enabled {
+			errs = append(errs, errors.New("repair.persisted_reconcile_apply cannot be enabled with sync.network_polling"))
+		}
+	}
+	if err := p.discoveryConfig().Validate(networkConfig); err != nil {
 		errs = append(errs, err)
 	}
 	for i, category := range p.AgentKnowledge.Categories {
@@ -307,6 +379,27 @@ func (p Profile) networkConfig() NetworkConfig {
 	return *p.Network
 }
 
+func (p Profile) syncConfig() SyncConfig {
+	if p.Sync == nil {
+		return SyncConfig{}
+	}
+	return *p.Sync
+}
+
+func (p Profile) repairConfig() RepairConfig {
+	if p.Repair == nil {
+		return RepairConfig{}
+	}
+	return *p.Repair
+}
+
+func (p Profile) discoveryConfig() DiscoveryConfig {
+	if p.Discovery == nil {
+		return DiscoveryConfig{}
+	}
+	return *p.Discovery
+}
+
 func (n NetworkConfig) Validate() error {
 	var errs []error
 	if strings.TrimSpace(n.ReceiverURL) != "" {
@@ -318,6 +411,105 @@ func (n NetworkConfig) Validate() error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func (s SyncConfig) Validate() error {
+	var errs []error
+	if s.LocalPolling != nil {
+		errs = append(errs, s.LocalPolling.Validate("sync.local_polling"))
+	}
+	if s.NetworkPolling != nil {
+		errs = append(errs, s.NetworkPolling.Validate("sync.network_polling"))
+	}
+	if s.LocalPolling != nil && s.LocalPolling.Enabled && s.NetworkPolling != nil && s.NetworkPolling.Enabled {
+		errs = append(errs, errors.New("sync.local_polling and sync.network_polling cannot both be enabled"))
+	}
+	return errors.Join(errs...)
+}
+
+func (l LocalPollingSyncConfig) Validate(prefix string) error {
+	return validatePollingSyncConfig(prefix, l.Enabled, l.IntervalMillis, l.RetryBackoffMillis, l.SessionPrefix)
+}
+
+func (n NetworkPollingSyncConfig) Validate(prefix string) error {
+	return validatePollingSyncConfig(prefix, n.Enabled, n.IntervalMillis, n.RetryBackoffMillis, n.SessionPrefix)
+}
+
+func (r RepairConfig) Validate() error {
+	var errs []error
+	if r.DriftRecording != nil {
+		errs = append(errs, r.DriftRecording.Validate("repair.drift_recording"))
+	}
+	if r.PersistedReconcileApply != nil {
+		errs = append(errs, r.PersistedReconcileApply.Validate("repair.persisted_reconcile_apply"))
+	}
+	return errors.Join(errs...)
+}
+
+func (d DriftRecordingRepairConfig) Validate(prefix string) error {
+	var errs []error
+	validateDurationMillis(prefix+".interval_millis", d.IntervalMillis, d.Enabled, &errs)
+	return errors.Join(errs...)
+}
+
+func (p PersistedReconcileApplyRepairConfig) Validate(prefix string) error {
+	var errs []error
+	validateDurationMillis(prefix+".interval_millis", p.IntervalMillis, p.Enabled, &errs)
+	reason := strings.TrimSpace(p.Reason)
+	if p.Enabled && reason == "" {
+		errs = append(errs, fmt.Errorf("%s.reason is required when enabled", prefix))
+	}
+	if p.Reason != reason {
+		errs = append(errs, fmt.Errorf("%s.reason must not be padded", prefix))
+	}
+	reviewer := strings.TrimSpace(p.Reviewer)
+	if p.Reviewer != reviewer {
+		errs = append(errs, fmt.Errorf("%s.reviewer must not be padded", prefix))
+	}
+	return errors.Join(errs...)
+}
+
+func (d DiscoveryConfig) Validate(network NetworkConfig) error {
+	if !d.AdvertiseReceiverHint {
+		return nil
+	}
+	if strings.TrimSpace(network.ReceiverURL) == "" {
+		return errors.New("network.receiver_url is required when discovery.advertise_receiver_hint is true")
+	}
+	if !network.LocalTLSIdentity.Configured() {
+		return errors.New("network.local_tls_identity is required when discovery.advertise_receiver_hint is true")
+	}
+	return nil
+}
+
+func validatePollingSyncConfig(prefix string, enabled bool, intervalMillis int, retryBackoffMillis int, sessionPrefix string) error {
+	var errs []error
+	validateDurationMillis(prefix+".interval_millis", intervalMillis, enabled, &errs)
+	validateDurationMillis(prefix+".retry_backoff_millis", retryBackoffMillis, enabled, &errs)
+	prefixValue := strings.TrimSpace(sessionPrefix)
+	if enabled && prefixValue == "" {
+		errs = append(errs, fmt.Errorf("%s.session_prefix is required when enabled", prefix))
+	}
+	if sessionPrefix != prefixValue {
+		errs = append(errs, fmt.Errorf("%s.session_prefix must not be padded", prefix))
+	} else if prefixValue != "" {
+		if err := transaction.ValidateSessionID(prefixValue); err != nil {
+			errs = append(errs, fmt.Errorf("%s.session_prefix is invalid: %w", prefix, err))
+		} else if err := transaction.ValidateSessionID(fmt.Sprintf("%s-%06d", prefixValue, 1)); err != nil {
+			errs = append(errs, fmt.Errorf("%s.session_prefix generated session id is invalid: %w", prefix, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func validateDurationMillis(name string, value int, required bool, errs *[]error) {
+	if value < 0 {
+		*errs = append(*errs, fmt.Errorf("%s cannot be negative", name))
+		return
+	}
+	if required && value == 0 {
+		*errs = append(*errs, fmt.Errorf("%s must be greater than zero when enabled", name))
+	}
 }
 
 func (r TLSIdentityRef) Configured() bool {

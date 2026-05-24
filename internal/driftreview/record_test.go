@@ -201,6 +201,68 @@ func TestRecordReopensResolvedDriftWhenSameFindingReturns(t *testing.T) {
 	}
 }
 
+func TestRecordReopensExpiredDriftWhenSameFindingReturns(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target")
+	source := filepath.Join(dir, "source")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	writePublishedSession(t, target, "session-one", p.ProfileID, p.Target.TargetID, "root")
+	if err := os.WriteFile(filepath.Join(target, "file.txt"), []byte("operator edit"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(target file) error = %v, want nil", err)
+	}
+
+	first, err := Record(RecordOptions{
+		Profile: p,
+		Now:     time.Date(2026, 5, 20, 1, 2, 3, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Record(first) error = %v, want nil", err)
+	}
+	if first.Recorded != 1 || len(first.Records) != 1 {
+		t.Fatalf("Record(first) = %+v, want one recorded drift", first)
+	}
+	id := first.Records[0].ID
+	path := targetDriftPath(t, target, id)
+	persisted, err := control.ReadFile[control.TargetDrift](path)
+	if err != nil {
+		t.Fatalf("control.ReadFile(first drift) error = %v, want nil", err)
+	}
+	persisted.ReviewState = "expired"
+	persisted.ReviewAction = "expire"
+	persisted.ReviewedAt = "2026-05-20T02:00:00Z"
+	persisted.ReviewedBy = "ops"
+	persisted.ReviewReason = "stale review evidence"
+	if err := control.WriteFile(path, persisted); err != nil {
+		t.Fatalf("control.WriteFile(expired drift) error = %v, want nil", err)
+	}
+
+	second, err := Record(RecordOptions{Profile: p, Now: time.Date(2026, 5, 20, 3, 4, 5, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("Record(expired existing) error = %v, want nil", err)
+	}
+	if second.Recorded != 0 || second.Existing != 0 || second.Reopened != 1 || len(second.Records) != 1 {
+		t.Fatalf("Record(expired existing) = %+v, want one reopened drift", second)
+	}
+	if second.Records[0].ID != id || second.Records[0].ReviewState != "needs_review" || !second.Records[0].Reopened {
+		t.Fatalf("Record(expired existing).Records[0] = %+v, want reopened needs_review record", second.Records[0])
+	}
+
+	again, err := control.ReadFile[control.TargetDrift](path)
+	if err != nil {
+		t.Fatalf("control.ReadFile(reopened expired drift) error = %v, want nil", err)
+	}
+	if again.ReviewState != "needs_review" || again.ReviewAction != "" || again.ReviewReason != "" {
+		t.Fatalf("persisted reopened expired drift = %+v, want current review reset", again)
+	}
+	if len(again.ReviewHistory) != 1 {
+		t.Fatalf("persisted reopened expired history = %+v, want prior expire evidence", again.ReviewHistory)
+	}
+	event := again.ReviewHistory[0]
+	if event.ReviewState != "expired" || event.ReviewAction != "expire" || event.ReviewedAt != "2026-05-20T02:00:00Z" || event.ReviewedBy != "ops" || event.ReviewReason != "stale review evidence" || event.ReconciledAt != "2026-05-20T03:04:05Z" || event.ReconcileAction != "reopen" {
+		t.Fatalf("persisted reopened expired history event = %+v, want prior expire evidence plus reopen action", event)
+	}
+}
+
 func TestRecordRejectsExistingCollisionWithMismatchedEvidence(t *testing.T) {
 	tests := []struct {
 		name    string

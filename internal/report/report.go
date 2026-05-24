@@ -12,11 +12,13 @@ import (
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/health"
+	"github.com/khicago/supermover/internal/incrementalsync"
 	"github.com/khicago/supermover/internal/networkpush"
 	"github.com/khicago/supermover/internal/pairing"
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/prune"
+	"github.com/khicago/supermover/internal/reconcile"
 	"github.com/khicago/supermover/internal/tlsidentity"
 	"github.com/khicago/supermover/internal/transport"
 	"github.com/khicago/supermover/internal/verify"
@@ -64,6 +66,8 @@ type Report struct {
 	ProfileSuggestions   []ProfileSuggestion      `json:"profile_suggestions,omitempty"`
 	SoftDeletes          []control.SoftDelete     `json:"soft_deletes,omitempty"`
 	PruneReview          PruneReview              `json:"prune_review"`
+	ReconcileReview      ReconcileReview          `json:"reconcile_review"`
+	IncrementalSync      IncrementalSyncReview    `json:"incremental_sync"`
 	TargetDrifts         []control.TargetDrift    `json:"target_drifts,omitempty"`
 	LiveTargetDrift      LiveTargetDrift          `json:"live_target_drift"`
 	NetworkTransfers     []NetworkTransfer        `json:"network_transfers,omitempty"`
@@ -94,34 +98,50 @@ type Overall struct {
 }
 
 type Summary struct {
-	ManifestCount           int `json:"manifest_count"`
-	ManifestEntries         int `json:"manifest_entries"`
-	FilesExpected           int `json:"files_expected"`
-	FilesVerified           int `json:"files_verified"`
-	VerificationErrors      int `json:"verification_errors"`
-	VerificationWarnings    int `json:"verification_warnings"`
-	Warnings                int `json:"warnings"`
-	ProfileSuggestions      int `json:"profile_suggestions"`
-	SoftDeletes             int `json:"soft_deletes"`
-	PruneCandidates         int `json:"prune_candidates"`
-	PruneRefusals           int `json:"prune_refusals"`
-	PruneApprovals          int `json:"prune_approvals"`
-	PruneUnappliedApprovals int `json:"prune_unapplied_approvals"`
-	PruneActiveApprovals    int `json:"prune_active_approvals"`
-	PruneStaleApprovals     int `json:"prune_stale_approvals"`
-	PruneExpiredApprovals   int `json:"prune_expired_approvals"`
-	PruneConsumedApprovals  int `json:"prune_consumed_approvals"`
-	PruneReceipts           int `json:"prune_receipts"`
-	PruneReceiptIssues      int `json:"prune_receipt_issues"`
-	PruneArtifactProblems   int `json:"prune_artifact_problems"`
-	TargetDrifts            int `json:"target_drifts"`
-	LiveTargetDrifts        int `json:"live_target_drifts"`
-	LiveTargetDriftProblems int `json:"live_target_drift_artifact_problems"`
-	RecoveryIssues          int `json:"recovery_issues"`
-	InvalidHealthRecords    int `json:"invalid_health_records"`
-	ArtifactProblems        int `json:"artifact_problems"`
-	PairingIssues           int `json:"pairing_issues"`
-	NetworkTransfers        int `json:"network_transfers"`
+	ManifestCount                   int `json:"manifest_count"`
+	ManifestEntries                 int `json:"manifest_entries"`
+	FilesExpected                   int `json:"files_expected"`
+	FilesVerified                   int `json:"files_verified"`
+	VerificationErrors              int `json:"verification_errors"`
+	VerificationWarnings            int `json:"verification_warnings"`
+	Warnings                        int `json:"warnings"`
+	ProfileSuggestions              int `json:"profile_suggestions"`
+	SoftDeletes                     int `json:"soft_deletes"`
+	PruneCandidates                 int `json:"prune_candidates"`
+	PruneRefusals                   int `json:"prune_refusals"`
+	PruneApprovals                  int `json:"prune_approvals"`
+	PruneUnappliedApprovals         int `json:"prune_unapplied_approvals"`
+	PruneActiveApprovals            int `json:"prune_active_approvals"`
+	PruneStaleApprovals             int `json:"prune_stale_approvals"`
+	PruneExpiredApprovals           int `json:"prune_expired_approvals"`
+	PruneConsumedApprovals          int `json:"prune_consumed_approvals"`
+	PruneReceipts                   int `json:"prune_receipts"`
+	PruneReceiptIssues              int `json:"prune_receipt_issues"`
+	PruneArtifactProblems           int `json:"prune_artifact_problems"`
+	ReconcileReceipts               int `json:"reconcile_receipts"`
+	ReconcileReceiptIssues          int `json:"reconcile_receipt_issues"`
+	IncrementalSyncQueued           int `json:"incremental_sync_queued"`
+	IncrementalSyncInFlight         int `json:"incremental_sync_in_flight"`
+	IncrementalSyncBackoff          int `json:"incremental_sync_backoff"`
+	IncrementalSyncFailed           int `json:"incremental_sync_failed"`
+	IncrementalSyncCanceled         int `json:"incremental_sync_canceled"`
+	IncrementalSyncDone             int `json:"incremental_sync_done"`
+	IncrementalSyncReady            int `json:"incremental_sync_ready"`
+	IncrementalSyncTotal            int `json:"incremental_sync_total"`
+	IncrementalSyncRuns             int `json:"incremental_sync_runs"`
+	IncrementalSyncIdleRuns         int `json:"incremental_sync_idle_runs"`
+	IncrementalSyncInFlightRuns     int `json:"incremental_sync_in_flight_runs"`
+	IncrementalSyncPublishedRuns    int `json:"incremental_sync_published_runs"`
+	IncrementalSyncRetryingRuns     int `json:"incremental_sync_retrying_runs"`
+	IncrementalSyncArtifactProblems int `json:"incremental_sync_artifact_problems"`
+	TargetDrifts                    int `json:"target_drifts"`
+	LiveTargetDrifts                int `json:"live_target_drifts"`
+	LiveTargetDriftProblems         int `json:"live_target_drift_artifact_problems"`
+	RecoveryIssues                  int `json:"recovery_issues"`
+	InvalidHealthRecords            int `json:"invalid_health_records"`
+	ArtifactProblems                int `json:"artifact_problems"`
+	PairingIssues                   int `json:"pairing_issues"`
+	NetworkTransfers                int `json:"network_transfers"`
 }
 
 type PairingStatus string
@@ -209,6 +229,8 @@ type PruneApproval struct {
 	Status                string                      `json:"status"`
 	ApprovalReason        string                      `json:"approval_reason,omitempty"`
 	RefusalReason         string                      `json:"refusal_reason,omitempty"`
+	SupersededBy          string                      `json:"superseded_by,omitempty"`
+	SupersededAt          string                      `json:"superseded_at,omitempty"`
 	LinkedReceiptID       string                      `json:"linked_receipt_id,omitempty"`
 	LinkedReceiptStatus   control.PruneReceiptStatus  `json:"linked_receipt_status,omitempty"`
 }
@@ -239,6 +261,99 @@ type PruneReceipt struct {
 	Refusals            []control.PruneRefusal     `json:"refusals,omitempty"`
 }
 
+type ReconcileReview struct {
+	Summary  ReconcileReviewSummary `json:"summary"`
+	Receipts []ReconcileReceipt     `json:"receipts,omitempty"`
+}
+
+type ReconcileReviewSummary struct {
+	Receipts      int `json:"receipts"`
+	ReceiptIssues int `json:"receipt_issues"`
+}
+
+type ReconcileReceipt struct {
+	Path             string `json:"path"`
+	Action           string `json:"action"`
+	ID               string `json:"id"`
+	Status           string `json:"status"`
+	ProfileID        string `json:"profile_id"`
+	TargetID         string `json:"target_id"`
+	SessionID        string `json:"session_id,omitempty"`
+	StartedAt        string `json:"started_at"`
+	EndedAt          string `json:"ended_at,omitempty"`
+	ApplyIntent      bool   `json:"apply_intent"`
+	Planned          int    `json:"planned"`
+	Applied          int    `json:"applied"`
+	Noop             int    `json:"noop"`
+	Refused          int    `json:"refused"`
+	ArtifactProblems int    `json:"artifact_problems"`
+}
+
+type IncrementalSyncReviewStatus string
+
+const (
+	IncrementalSyncNoEvidence       IncrementalSyncReviewStatus = "no_evidence"
+	IncrementalSyncNoPendingReview  IncrementalSyncReviewStatus = "no_pending_review"
+	IncrementalSyncReviewRequired   IncrementalSyncReviewStatus = "review_required"
+	IncrementalSyncArtifactProblems IncrementalSyncReviewStatus = "artifact_problems"
+)
+
+type IncrementalSyncReview struct {
+	Status           IncrementalSyncReviewStatus `json:"status"`
+	Action           string                      `json:"action"`
+	Queue            IncrementalSyncQueue        `json:"queue"`
+	Runs             []IncrementalSyncRun        `json:"runs,omitempty"`
+	ArtifactProblems []ArtifactProblem           `json:"artifact_problems,omitempty"`
+}
+
+type IncrementalSyncQueue struct {
+	State        string                 `json:"state"`
+	StatePath    string                 `json:"state_path,omitempty"`
+	ProfileID    string                 `json:"profile_id,omitempty"`
+	TargetID     string                 `json:"target_id,omitempty"`
+	Queued       int                    `json:"queued"`
+	InFlight     int                    `json:"in_flight"`
+	Backoff      int                    `json:"backoff"`
+	Failed       int                    `json:"failed"`
+	Canceled     int                    `json:"canceled"`
+	Done         int                    `json:"done"`
+	Ready        int                    `json:"ready"`
+	Total        int                    `json:"total"`
+	WarningCount int                    `json:"warning_count,omitempty"`
+	ByStatus     map[string]int         `json:"by_status,omitempty"`
+	Entries      []IncrementalSyncEntry `json:"entries,omitempty"`
+}
+
+type IncrementalSyncEntry struct {
+	ID         string `json:"id"`
+	Root       string `json:"root"`
+	Path       string `json:"path"`
+	Kind       string `json:"kind"`
+	Status     string `json:"status"`
+	Attempts   int    `json:"attempts,omitempty"`
+	LastError  string `json:"last_error,omitempty"`
+	NextDueAt  string `json:"next_due_at,omitempty"`
+	FailedAt   string `json:"failed_at,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+	EnqueuedAt string `json:"enqueued_at,omitempty"`
+	DoneAt     string `json:"done_at,omitempty"`
+}
+
+type IncrementalSyncRun struct {
+	SessionID  string `json:"session_id"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"started_at"`
+	FinishedAt string `json:"finished_at,omitempty"`
+	Path       string `json:"path"`
+	Action     string `json:"action"`
+	Ready      int    `json:"ready"`
+	InFlight   int    `json:"in_flight"`
+	Published  int    `json:"published"`
+	Retried    int    `json:"retried"`
+	Recovered  int    `json:"recovered_in_flight,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
 type PairingState struct {
 	Status            PairingStatus `json:"status"`
 	ReceiptID         string        `json:"receipt_id,omitempty"`
@@ -247,6 +362,10 @@ type PairingState struct {
 	Method            string        `json:"method,omitempty"`
 	VerifiedAt        string        `json:"verified_at,omitempty"`
 	Evidence          string        `json:"evidence,omitempty"`
+	ReceiptSource     string        `json:"receipt_source,omitempty"`
+	ReceiptPath       string        `json:"receipt_path,omitempty"`
+	SourceReceiptPath string        `json:"source_receipt_path,omitempty"`
+	TargetReceiptPath string        `json:"target_receipt_path,omitempty"`
 	EncryptedTransfer string        `json:"encrypted_transfer"`
 	Issue             string        `json:"issue,omitempty"`
 }
@@ -461,7 +580,9 @@ func BuildReport(opts Options) (Report, error) {
 	profileSuggestions := collectProfileSuggestions(verifyReport.Warnings)
 	pairingState, pairingProblems := evaluatePairing(opts.Profile)
 	pruneReview, pruneProblems := buildPruneReview(absRoot, profileID, targetID, filterSessionID, opts.Profile, verifyReport.SoftDeletes)
-	artifactProblems := mergeArtifactProblems(filterSessionID, healthView.ArtifactIssues, verifyReport.ArtifactProblems, snapshotProblems, scopeProblems, pairingProblems, pruneProblems)
+	reconcileReview, reconcileProblems := buildReconcileReview(absRoot, profileID, targetID, filterSessionID)
+	incrementalSyncReview, incrementalSyncProblems := buildIncrementalSyncReview(absRoot, profileID, targetID, filterSessionID)
+	artifactProblems := mergeArtifactProblems(filterSessionID, healthView.ArtifactIssues, verifyReport.ArtifactProblems, snapshotProblems, scopeProblems, pairingProblems, pruneProblems, reconcileProblems, incrementalSyncProblems)
 
 	privacyState := PrivacyForProfile(opts.Profile)
 	report := Report{
@@ -477,6 +598,8 @@ func BuildReport(opts Options) (Report, error) {
 		ProfileSuggestions:   profileSuggestions,
 		SoftDeletes:          append([]control.SoftDelete(nil), verifyReport.SoftDeletes...),
 		PruneReview:          pruneReview,
+		ReconcileReview:      reconcileReview,
+		IncrementalSync:      incrementalSyncReview,
 		TargetDrifts:         copyTargetDrifts(verifyReport.TargetDrifts),
 		LiveTargetDrift:      liveTargetDrift,
 		NetworkTransfers:     append([]NetworkTransfer(nil), healthView.Transfers...),
@@ -501,6 +624,9 @@ func BuildReport(opts Options) (Report, error) {
 	report.Summary.PruneReceipts = report.PruneReview.Summary.Receipts
 	report.Summary.PruneReceiptIssues = report.PruneReview.Summary.ReceiptIssues
 	report.Summary.PruneArtifactProblems = report.PruneReview.Summary.ArtifactProblems
+	report.Summary.ReconcileReceipts = report.ReconcileReview.Summary.Receipts
+	report.Summary.ReconcileReceiptIssues = report.ReconcileReview.Summary.ReceiptIssues
+	applyIncrementalSyncSummary(&report.Summary, report.IncrementalSync)
 	report.Summary.ArtifactProblems = len(report.ArtifactProblems)
 	report.Overall.Status = classify(report)
 	report.Overall.Issues = summarizeIssues(report)
@@ -675,6 +801,266 @@ func buildPruneReview(targetRoot string, profileID string, targetID string, sess
 	return review, problems
 }
 
+func buildReconcileReview(targetRoot string, profileID string, targetID string, sessionID string) (ReconcileReview, []ArtifactProblem) {
+	receipts, problems := readReconcileReceipts(targetRoot, profileID, targetID, sessionID)
+	return ReconcileReview{
+		Summary: ReconcileReviewSummary{
+			Receipts:      len(receipts),
+			ReceiptIssues: countReconcileReceiptIssues(receipts),
+		},
+		Receipts: receipts,
+	}, problems
+}
+
+func buildIncrementalSyncReview(targetRoot string, profileID string, targetID string, sessionID string) (IncrementalSyncReview, []ArtifactProblem) {
+	review := IncrementalSyncReview{
+		Status: IncrementalSyncNoEvidence,
+		Action: "no_incremental_sync_evidence",
+		Queue:  IncrementalSyncQueue{State: "missing"},
+	}
+	if strings.TrimSpace(profileID) == "" || strings.TrimSpace(targetID) == "" {
+		return review, nil
+	}
+	scheduler, err := incrementalsync.Open(incrementalsync.Options{StateDir: filepath.Join(control.ControlDir(targetRoot), "incremental-sync")})
+	if err != nil {
+		return review, []ArtifactProblem{{Source: "incremental_sync", Path: filepath.Join(control.ControlDir(targetRoot), "incremental-sync"), Error: err.Error()}}
+	}
+	scope := incrementalsync.Scope{ProfileID: profileID, TargetID: targetID}
+	state, statePath, err := scheduler.State(scope)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			runs, runProblems, runErr := scheduler.RunResults(scope)
+			if runErr != nil {
+				return review, []ArtifactProblem{{Source: "incremental_sync", Path: filepath.Join(control.ControlDir(targetRoot), "incremental-sync"), Error: runErr.Error()}}
+			}
+			review.Runs = viewIncrementalSyncRuns(runs)
+			problems := incrementalSyncArtifactProblems(runProblems)
+			review.ArtifactProblems = append([]ArtifactProblem(nil), problems...)
+			review.Status = incrementalSyncStatus(review)
+			review.Action = incrementalSyncAction(review.Status)
+			return review, problems
+		}
+		problem := ArtifactProblem{Source: "incremental_sync_queue", Path: statePath, Error: err.Error()}
+		review.Queue.State = "invalid"
+		review.ArtifactProblems = []ArtifactProblem{problem}
+		review.Status = incrementalSyncStatus(review)
+		review.Action = incrementalSyncAction(review.Status)
+		return review, []ArtifactProblem{problem}
+	}
+	summary := incrementalsyncSummary(state, statePath)
+	review.Queue = viewIncrementalSyncQueue(summary, state.Entries)
+	runs, runProblems, err := scheduler.RunResults(scope)
+	if err != nil {
+		problem := ArtifactProblem{Source: "incremental_sync_run", Path: statePath, Error: err.Error()}
+		review.ArtifactProblems = []ArtifactProblem{problem}
+		review.Status = incrementalSyncStatus(review)
+		review.Action = incrementalSyncAction(review.Status)
+		return review, []ArtifactProblem{problem}
+	}
+	review.Runs = viewIncrementalSyncRuns(filterIncrementalSyncRuns(runs, sessionID))
+	problems := incrementalSyncArtifactProblems(runProblems)
+	review.ArtifactProblems = append([]ArtifactProblem(nil), problems...)
+	review.Status = incrementalSyncStatus(review)
+	review.Action = incrementalSyncAction(review.Status)
+	return review, problems
+}
+
+func incrementalsyncSummary(state incrementalsync.State, statePath string) incrementalsync.Summary {
+	summary := incrementalsync.Summary{
+		ProfileID: state.Scope.ProfileID,
+		TargetID:  state.Scope.TargetID,
+		ByStatus:  map[string]int{},
+		StatePath: statePath,
+	}
+	for _, entry := range state.Entries {
+		summary.Total++
+		summary.ByStatus[entry.Status]++
+		switch entry.Status {
+		case incrementalsync.StatusQueued:
+			summary.Queued++
+			summary.Ready++
+		case incrementalsync.StatusInFlight:
+			summary.InFlight++
+		case incrementalsync.StatusBackoff:
+			summary.Backoff++
+			if strings.TrimSpace(entry.NextDueAt) == "" {
+				summary.Ready++
+				continue
+			}
+			due, err := time.Parse(time.RFC3339Nano, entry.NextDueAt)
+			if err == nil && !due.After(time.Now().UTC()) {
+				summary.Ready++
+			}
+		case incrementalsync.StatusCanceled:
+			summary.Canceled++
+		case incrementalsync.StatusDone:
+			summary.Done++
+		case incrementalsync.StatusFailed:
+			summary.Failed++
+		}
+	}
+	if len(summary.ByStatus) == 0 {
+		summary.ByStatus = nil
+	}
+	return summary
+}
+
+func viewIncrementalSyncQueue(summary incrementalsync.Summary, entries []incrementalsync.QueueEntry) IncrementalSyncQueue {
+	out := IncrementalSyncQueue{
+		State:        "present",
+		StatePath:    filepath.ToSlash(summary.StatePath),
+		ProfileID:    summary.ProfileID,
+		TargetID:     summary.TargetID,
+		Queued:       summary.Queued,
+		InFlight:     summary.InFlight,
+		Backoff:      summary.Backoff,
+		Failed:       summary.Failed,
+		Canceled:     summary.Canceled,
+		Done:         summary.Done,
+		Ready:        summary.Ready,
+		Total:        summary.Total,
+		WarningCount: summary.WarningCount,
+		ByStatus:     copyIntMap(summary.ByStatus),
+	}
+	for _, entry := range entries {
+		out.Entries = append(out.Entries, viewIncrementalSyncEntry(entry))
+	}
+	return out
+}
+
+func viewIncrementalSyncEntry(entry incrementalsync.QueueEntry) IncrementalSyncEntry {
+	return IncrementalSyncEntry{
+		ID:         entry.ID,
+		Root:       entry.Root,
+		Path:       entry.Path,
+		Kind:       string(entry.Kind),
+		Status:     entry.Status,
+		Attempts:   entry.Attempts,
+		LastError:  entry.LastError,
+		NextDueAt:  entry.NextDueAt,
+		FailedAt:   entry.FailedAt,
+		UpdatedAt:  entry.UpdatedAt,
+		EnqueuedAt: entry.EnqueuedAt,
+		DoneAt:     entry.DoneAt,
+	}
+}
+
+func filterIncrementalSyncRuns(runs []incrementalsync.RunResult, sessionID string) []incrementalsync.RunResult {
+	if strings.TrimSpace(sessionID) == "" {
+		return runs
+	}
+	out := make([]incrementalsync.RunResult, 0, len(runs))
+	for _, run := range runs {
+		if run.SessionID == sessionID {
+			out = append(out, run)
+		}
+	}
+	return out
+}
+
+func viewIncrementalSyncRuns(runs []incrementalsync.RunResult) []IncrementalSyncRun {
+	out := make([]IncrementalSyncRun, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, IncrementalSyncRun{
+			SessionID:  run.SessionID,
+			Status:     run.Status,
+			StartedAt:  run.StartedAt,
+			FinishedAt: run.FinishedAt,
+			Path:       filepath.ToSlash(run.RunPath),
+			Action:     incrementalSyncRunAction(run.Status),
+			Ready:      len(run.Ready),
+			InFlight:   len(run.InFlight),
+			Published:  len(run.Published),
+			Retried:    len(run.Retried),
+			Recovered:  run.Recovered,
+			Error:      run.Error,
+		})
+	}
+	return out
+}
+
+func incrementalSyncArtifactProblems(problems []incrementalsync.ArtifactProblem) []ArtifactProblem {
+	out := make([]ArtifactProblem, 0, len(problems))
+	for _, problem := range problems {
+		out = append(out, ArtifactProblem{Source: "incremental_sync_run", Path: filepath.ToSlash(problem.Path), Error: problem.Error})
+	}
+	return out
+}
+
+func incrementalSyncStatus(review IncrementalSyncReview) IncrementalSyncReviewStatus {
+	switch {
+	case len(review.ArtifactProblems) > 0:
+		return IncrementalSyncArtifactProblems
+	case review.Queue.Queued > 0 || review.Queue.InFlight > 0 || review.Queue.Backoff > 0 || review.Queue.Failed > 0 || review.Queue.Ready > 0 || incrementalSyncRunIssues(review.Runs) > 0:
+		return IncrementalSyncReviewRequired
+	case review.Queue.Total > 0 || len(review.Runs) > 0:
+		return IncrementalSyncNoPendingReview
+	default:
+		return IncrementalSyncNoEvidence
+	}
+}
+
+func incrementalSyncAction(status IncrementalSyncReviewStatus) string {
+	switch status {
+	case IncrementalSyncReviewRequired:
+		return "inspect_incremental_sync_queue"
+	case IncrementalSyncArtifactProblems:
+		return "inspect_incremental_sync_artifacts"
+	case IncrementalSyncNoPendingReview:
+		return "no_incremental_sync_review_action_required"
+	default:
+		return "no_incremental_sync_evidence"
+	}
+}
+
+func incrementalSyncRunAction(status string) string {
+	switch status {
+	case incrementalsync.RunStatusPublished, incrementalsync.RunStatusIdle:
+		return "inspect_incremental_sync_run_receipt"
+	case incrementalsync.StatusInFlight, incrementalsync.RunStatusRetrying:
+		return "inspect_incremental_sync_run_before_retry"
+	default:
+		return "inspect_incremental_sync_run_receipt"
+	}
+}
+
+func incrementalSyncRunIssues(runs []IncrementalSyncRun) int {
+	issues := 0
+	for _, run := range runs {
+		switch run.Status {
+		case incrementalsync.RunStatusPublished, incrementalsync.RunStatusIdle:
+		default:
+			issues++
+		}
+	}
+	return issues
+}
+
+func applyIncrementalSyncSummary(summary *Summary, review IncrementalSyncReview) {
+	summary.IncrementalSyncQueued = review.Queue.Queued
+	summary.IncrementalSyncInFlight = review.Queue.InFlight
+	summary.IncrementalSyncBackoff = review.Queue.Backoff
+	summary.IncrementalSyncFailed = review.Queue.Failed
+	summary.IncrementalSyncCanceled = review.Queue.Canceled
+	summary.IncrementalSyncDone = review.Queue.Done
+	summary.IncrementalSyncReady = review.Queue.Ready
+	summary.IncrementalSyncTotal = review.Queue.Total
+	summary.IncrementalSyncRuns = len(review.Runs)
+	summary.IncrementalSyncArtifactProblems = len(review.ArtifactProblems)
+	for _, run := range review.Runs {
+		switch run.Status {
+		case incrementalsync.RunStatusIdle:
+			summary.IncrementalSyncIdleRuns++
+		case incrementalsync.StatusInFlight:
+			summary.IncrementalSyncInFlightRuns++
+		case incrementalsync.RunStatusPublished:
+			summary.IncrementalSyncPublishedRuns++
+		case incrementalsync.RunStatusRetrying:
+			summary.IncrementalSyncRetryingRuns++
+		}
+	}
+}
+
 func prunePolicyEnabled(policy profile.DeletePolicy) bool {
 	return policy.Mode == profile.DeleteModePrune && policy.RequireReview && policy.AllowPhysicalPrune
 }
@@ -810,9 +1196,101 @@ func readPruneReceipts(targetRoot string, profileID string, targetID string, ses
 	return receipts, problems
 }
 
+func readReconcileReceipts(targetRoot string, profileID string, targetID string, sessionID string) ([]ReconcileReceipt, []ArtifactProblem) {
+	dir := filepath.Join(control.ControlDir(targetRoot), "reconcile", "receipts")
+	if err := pathguard.EnsureDirectory(targetRoot, dir); err != nil {
+		return nil, []ArtifactProblem{{Source: "reconcile_receipt", Path: dir, Error: err.Error()}}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, []ArtifactProblem{{Source: "reconcile_receipt", Path: dir, Error: err.Error()}}
+	}
+
+	var receipts []ReconcileReceipt
+	var problems []ArtifactProblem
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if entry.IsDir() {
+			problems = append(problems, ArtifactProblem{
+				Source: "reconcile_receipt",
+				Path:   path,
+				Error:  "reconcile receipt is not a regular file",
+			})
+			continue
+		}
+		receipt, err := control.ReadFileNoSymlinkUnderRoot[reconcile.Receipt](targetRoot, path)
+		if err != nil {
+			problems = append(problems, ArtifactProblem{
+				Source: "reconcile_receipt",
+				Path:   path,
+				Error:  err.Error(),
+			})
+			continue
+		}
+		pathID := strings.TrimSuffix(entry.Name(), ".json")
+		if receipt.ID != pathID {
+			problems = append(problems, ArtifactProblem{
+				Source: "reconcile_receipt",
+				Path:   path,
+				Error:  fmt.Sprintf("reconcile receipt id %q does not match path id %q", receipt.ID, pathID),
+			})
+			continue
+		}
+		if strings.TrimSpace(profileID) != "" && receipt.ProfileID != profileID {
+			continue
+		}
+		if strings.TrimSpace(targetID) != "" && receipt.TargetID != targetID {
+			continue
+		}
+		if strings.TrimSpace(sessionID) != "" && !reconcileReceiptMatchesSession(receipt, sessionID) {
+			continue
+		}
+		receipts = append(receipts, viewReconcileReceipt(path, receipt))
+	}
+	sort.Slice(receipts, func(i, j int) bool {
+		if receipts[i].StartedAt == receipts[j].StartedAt {
+			return receipts[i].ID < receipts[j].ID
+		}
+		return receipts[i].StartedAt < receipts[j].StartedAt
+	})
+	return receipts, problems
+}
+
+func reconcileReceiptMatchesSession(receipt reconcile.Receipt, sessionID string) bool {
+	if strings.TrimSpace(sessionID) == "" {
+		return true
+	}
+	if receipt.SessionID == sessionID {
+		return true
+	}
+	for _, action := range receipt.Actions {
+		if action.SessionID == sessionID || action.Expected.SessionID == sessionID {
+			return true
+		}
+	}
+	for _, refusal := range receipt.Refusals {
+		if refusal.SessionID == sessionID {
+			return true
+		}
+	}
+	for _, problem := range receipt.ArtifactProblems {
+		if problem.SessionID == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
 type appliedPruneReceipt struct {
-	ID     string
-	Status control.PruneReceiptStatus
+	ID        string
+	Status    control.PruneReceiptStatus
+	StartedAt string
 }
 
 func readPruneApprovals(targetRoot string, profileID string, targetID string, sessionID string, softDeleteIDs map[string]struct{}, appliedReceipts map[string]appliedPruneReceipt) ([]PruneApproval, []ArtifactProblem) {
@@ -959,7 +1437,7 @@ func filterPruneApprovalForSession(approval control.PruneApproval, softDeleteIDs
 	return filtered
 }
 
-func viewPruneApproval(targetRoot string, path string, approval control.PruneApproval, appliedReceipts map[string]appliedPruneReceipt) PruneApproval {
+func viewPruneApproval(targetRoot string, path string, approval control.PruneApproval, linkedReceipts map[string]appliedPruneReceipt) PruneApproval {
 	out := PruneApproval{
 		Path:                  filepath.ToSlash(path),
 		Action:                "inspect_prune_approval",
@@ -984,20 +1462,40 @@ func viewPruneApproval(targetRoot string, path string, approval control.PruneApp
 		Status:                approval.Status,
 		ApprovalReason:        approval.ApprovalReason,
 		RefusalReason:         approval.RefusalReason,
+		SupersededBy:          approval.SupersededBy,
+		SupersededAt:          approval.SupersededAt,
 	}
 	if approval.ProfileSnapshotID != "" {
 		if snapshotPath, err := control.Path(targetRoot, control.ArtifactProfileSnapshot, approval.ProfileSnapshotID); err == nil {
 			out.ProfileSnapshotPath = filepath.ToSlash(snapshotPath)
 		}
 	}
-	if linked, ok := appliedReceipts[pruneApprovalReceiptKey(approval.ID, approval.ApprovalScopeDigest)]; ok {
+	if linked, ok := linkedReceipts[pruneApprovalReceiptKey(approval.ID, approval.ApprovalScopeDigest)]; ok {
 		out.LinkedReceiptID = linked.ID
 		out.LinkedReceiptStatus = linked.Status
 		out.Action = "inspect_prune_receipt"
-		out.ReleaseState = "consumed"
-		out.ReleaseReason = "approval has applied or partial prune receipt evidence"
-		out.ReleaseAction = "inspect_prune_receipt"
-		return out
+		switch linked.Status {
+		case control.PruneReceiptApplied, control.PruneReceiptPartial:
+			out.ReleaseState = "consumed"
+			out.ReleaseReason = "approval has applied or partial prune receipt evidence"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		case control.PruneReceiptStarted:
+			out.ReleaseState = "pending_receipt"
+			out.ReleaseReason = "approval has started prune receipt evidence that still requires operator review"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		case control.PruneReceiptFailed:
+			out.ReleaseState = "failed_receipt"
+			out.ReleaseReason = "approval has failed prune receipt evidence that requires operator review"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		default:
+			out.ReleaseState = "receipt_attention"
+			out.ReleaseReason = "approval has prune receipt evidence that requires operator review"
+			out.ReleaseAction = "inspect_prune_receipt"
+			return out
+		}
 	}
 	if approval.Status == "superseded" {
 		out.ReleaseState = "superseded"
@@ -1024,16 +1522,22 @@ func approvalSortTime(approval PruneApproval) string {
 func appliedPruneReceipts(receipts []PruneReceipt) map[string]appliedPruneReceipt {
 	out := map[string]appliedPruneReceipt{}
 	for _, receipt := range receipts {
-		switch receipt.Status {
-		case control.PruneReceiptApplied, control.PruneReceiptPartial:
-			out[pruneApprovalReceiptKey(receipt.ApprovalID, receipt.ApprovalScopeDigest)] = appliedPruneReceipt{
-				ID:     receipt.ID,
-				Status: receipt.Status,
-			}
-		default:
+		key := pruneApprovalReceiptKey(receipt.ApprovalID, receipt.ApprovalScopeDigest)
+		current := appliedPruneReceipt{
+			ID:        receipt.ID,
+			Status:    receipt.Status,
+			StartedAt: receipt.StartedAt,
+		}
+		existing, ok := out[key]
+		if !ok || pruneReceiptSortKey(current) >= pruneReceiptSortKey(existing) {
+			out[key] = current
 		}
 	}
 	return out
+}
+
+func pruneReceiptSortKey(receipt appliedPruneReceipt) string {
+	return receipt.StartedAt + "\x00" + receipt.ID
 }
 
 func pruneApprovalReceiptKey(approvalID string, approvalScopeDigest string) string {
@@ -1062,11 +1566,35 @@ func classifyPruneApprovals(review *PruneReview, dryRun prune.DryRunReport) {
 
 func classifyPruneApproval(approval *PruneApproval, candidates map[string]prune.Candidate, refusals map[string]prune.Refusal, now time.Time) {
 	if approval.LinkedReceiptID != "" {
-		approval.ReleaseState = "consumed"
-		approval.ReleaseReason = "approval has applied or partial prune receipt evidence"
-		approval.ReleaseAction = "inspect_prune_receipt"
-		approval.ReleaseBlocker = false
-		return
+		switch approval.LinkedReceiptStatus {
+		case control.PruneReceiptApplied, control.PruneReceiptPartial:
+			approval.ReleaseState = "consumed"
+			approval.ReleaseReason = "approval has applied or partial prune receipt evidence"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = false
+			return
+		case control.PruneReceiptStarted:
+			approval.Unapplied = false
+			approval.ReleaseState = "pending_receipt"
+			approval.ReleaseReason = "approval has started prune receipt evidence that still requires operator review"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = true
+			return
+		case control.PruneReceiptFailed:
+			approval.Unapplied = false
+			approval.ReleaseState = "failed_receipt"
+			approval.ReleaseReason = "approval has failed prune receipt evidence that requires operator review"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = true
+			return
+		default:
+			approval.Unapplied = false
+			approval.ReleaseState = "receipt_attention"
+			approval.ReleaseReason = "approval has prune receipt evidence that requires operator review"
+			approval.ReleaseAction = "inspect_prune_receipt"
+			approval.ReleaseBlocker = true
+			return
+		}
 	}
 	if approval.Status == "superseded" {
 		approval.Unapplied = false
@@ -1236,6 +1764,49 @@ func countPruneReceiptIssues(receipts []PruneReceipt) int {
 	return issues
 }
 
+func viewReconcileReceipt(path string, receipt reconcile.Receipt) ReconcileReceipt {
+	return ReconcileReceipt{
+		Path:             filepath.ToSlash(path),
+		Action:           reconcileReceiptAction(receipt.Status),
+		ID:               receipt.ID,
+		Status:           receipt.Status,
+		ProfileID:        receipt.ProfileID,
+		TargetID:         receipt.TargetID,
+		SessionID:        receipt.SessionID,
+		StartedAt:        receipt.StartedAt,
+		EndedAt:          receipt.EndedAt,
+		ApplyIntent:      receipt.ApplyIntent,
+		Planned:          receipt.Summary.Planned,
+		Applied:          receipt.Summary.Applied,
+		Noop:             receipt.Summary.Noop,
+		Refused:          receipt.Summary.Refused,
+		ArtifactProblems: receipt.Summary.ArtifactProblems,
+	}
+}
+
+func reconcileReceiptAction(status string) string {
+	switch status {
+	case reconcile.ReceiptStatusApplied:
+		return "inspect_applied_reconcile_receipt"
+	case reconcile.ReceiptStatusStarted, reconcile.ReceiptStatusPartial, reconcile.ReceiptStatusFailed:
+		return "inspect_reconcile_receipt"
+	default:
+		return "inspect_reconcile_receipt"
+	}
+}
+
+func countReconcileReceiptIssues(receipts []ReconcileReceipt) int {
+	issues := 0
+	for _, receipt := range receipts {
+		switch receipt.Status {
+		case reconcile.ReceiptStatusApplied:
+		default:
+			issues++
+		}
+	}
+	return issues
+}
+
 func resolvedPruneSoftDeletes(receipts []PruneReceipt) map[string]struct{} {
 	resolved := map[string]struct{}{}
 	for _, receipt := range receipts {
@@ -1313,9 +1884,20 @@ func evaluatePairing(p *profile.Profile) (PairingState, []ArtifactProblem) {
 		ReceiptID:         strings.TrimSpace(p.Target.PairingReceiptID),
 		TargetDeviceID:    strings.TrimSpace(p.Target.DevicePublicKey),
 		PairedAt:          strings.TrimSpace(p.Target.PairedAt),
+		SourceReceiptPath: strings.TrimSpace(p.Target.LocalPairingReceiptPath),
+		TargetReceiptPath: pairingReceiptProblemPath(*p),
 		EncryptedTransfer: "not_configured",
 	}
-	trust, err := pairing.ValidateProfileTrust(*p)
+	trust, err := pairing.ValidateTargetProfileTrust(*p)
+	receiptSource := "target_control_plane"
+	if err != nil && strings.TrimSpace(p.Target.LocalPairingReceiptPath) != "" {
+		sourceTrust, sourceErr := pairing.ValidateSourceProfileTrust(*p)
+		if sourceErr == nil {
+			trust = sourceTrust
+			err = nil
+			receiptSource = "source_local_export"
+		}
+	}
 	if err == nil {
 		state.Status = PairingStatusValid
 		state.Evidence = "profile_pins_match_pairing_receipt"
@@ -1324,6 +1906,12 @@ func evaluatePairing(p *profile.Profile) (PairingState, []ArtifactProblem) {
 		state.Method = trust.Receipt.Method
 		state.VerifiedAt = trust.Receipt.VerifiedAt
 		state.PairedAt = p.Target.PairedAt
+		state.ReceiptSource = receiptSource
+		if receiptSource == "source_local_export" {
+			state.ReceiptPath = state.SourceReceiptPath
+		} else {
+			state.ReceiptPath = state.TargetReceiptPath
+		}
 		if p.ValidateNetworkClientMaterial() == nil &&
 			networkpush.ValidateProfileForNetworkPush(*p) == nil &&
 			tlsidentity.ValidatePinned(p.Network.LocalTLSIdentity, trust.Receipt.SourceDeviceID, time.Now) == nil {
@@ -1353,9 +1941,19 @@ func evaluatePairing(p *profile.Profile) (PairingState, []ArtifactProblem) {
 	}
 	return state, []ArtifactProblem{{
 		Source: "pairing_receipt",
-		Path:   pairingReceiptProblemPath(*p),
+		Path:   bestPairingReceiptProblemPath(state),
 		Error:  err.Error(),
 	}}
+}
+
+func bestPairingReceiptProblemPath(state PairingState) string {
+	if strings.TrimSpace(state.TargetReceiptPath) != "" {
+		return state.TargetReceiptPath
+	}
+	if strings.TrimSpace(state.SourceReceiptPath) != "" {
+		return filepath.ToSlash(filepath.Clean(state.SourceReceiptPath))
+	}
+	return ""
 }
 
 func pairingReceiptProblemPath(p profile.Profile) string {
@@ -2006,6 +2604,14 @@ func classify(report Report) Status {
 		report.Summary.PruneRefusals > 0 ||
 		report.Summary.PruneUnappliedApprovals > 0 ||
 		report.Summary.PruneReceiptIssues > 0 ||
+		report.Summary.ReconcileReceiptIssues > 0 ||
+		report.Summary.IncrementalSyncQueued > 0 ||
+		report.Summary.IncrementalSyncInFlight > 0 ||
+		report.Summary.IncrementalSyncBackoff > 0 ||
+		report.Summary.IncrementalSyncFailed > 0 ||
+		report.Summary.IncrementalSyncReady > 0 ||
+		report.Summary.IncrementalSyncRetryingRuns > 0 ||
+		report.Summary.IncrementalSyncInFlightRuns > 0 ||
 		report.Summary.TargetDrifts > 0 ||
 		report.Summary.LiveTargetDrifts > 0 ||
 		report.Summary.LiveTargetDriftProblems > 0:
@@ -2069,6 +2675,24 @@ func summarizeIssues(report Report) []string {
 	if report.Summary.PruneReceiptIssues > 0 {
 		issues = append(issues, "prune_receipt_issues")
 	}
+	if report.Summary.ReconcileReceiptIssues > 0 {
+		issues = append(issues, "reconcile_receipt_issues")
+	}
+	if report.Summary.IncrementalSyncQueued > 0 {
+		issues = append(issues, "incremental_sync_queued")
+	}
+	if report.Summary.IncrementalSyncInFlight > 0 {
+		issues = append(issues, "incremental_sync_in_flight")
+	}
+	if report.Summary.IncrementalSyncBackoff > 0 {
+		issues = append(issues, "incremental_sync_backoff")
+	}
+	if report.Summary.IncrementalSyncFailed > 0 {
+		issues = append(issues, "incremental_sync_failed")
+	}
+	if report.Summary.IncrementalSyncRetryingRuns > 0 {
+		issues = append(issues, "incremental_sync_retrying_runs")
+	}
 	if report.Summary.TargetDrifts > 0 {
 		issues = append(issues, "target_drifts")
 	}
@@ -2105,6 +2729,17 @@ func copyStringMap(in map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func copyIntMap(in map[string]int) map[string]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(in))
 	for key, value := range in {
 		out[key] = value
 	}

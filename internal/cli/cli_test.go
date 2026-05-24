@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"math/big"
 	"net"
@@ -24,12 +25,15 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/khicago/supermover/internal/agentdaemon"
 	"github.com/khicago/supermover/internal/control"
+	"github.com/khicago/supermover/internal/incrementalsync"
+	"github.com/khicago/supermover/internal/operatorui"
 	"github.com/khicago/supermover/internal/pairing"
 	"github.com/khicago/supermover/internal/pairserve"
 	"github.com/khicago/supermover/internal/profile"
@@ -41,6 +45,7 @@ import (
 	"github.com/khicago/supermover/internal/reconcile"
 	"github.com/khicago/supermover/internal/report"
 	"github.com/khicago/supermover/internal/scan"
+	"github.com/khicago/supermover/internal/sourceconsistency"
 	"github.com/khicago/supermover/internal/status"
 	"github.com/khicago/supermover/internal/transaction"
 	"github.com/khicago/supermover/internal/transport"
@@ -51,6 +56,64 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, fmt.Errorf("write failed")
+}
+
+type blockingDaemonRunningWriter struct {
+	mu             sync.Mutex
+	buf            bytes.Buffer
+	seenRunning    int
+	blockOnRunning int
+	blocked        chan struct{}
+	release        chan struct{}
+	unblockOnce    sync.Once
+}
+
+func newBlockingDaemonRunningWriter(blockOnRunning int) *blockingDaemonRunningWriter {
+	return &blockingDaemonRunningWriter{
+		blockOnRunning: blockOnRunning,
+		blocked:        make(chan struct{}, 1),
+		release:        make(chan struct{}),
+	}
+}
+
+func (w *blockingDaemonRunningWriter) Write(p []byte) (int, error) {
+	text := string(p)
+	shouldBlock := false
+
+	w.mu.Lock()
+	if strings.Contains(text, "daemon: running") {
+		w.seenRunning++
+		shouldBlock = w.seenRunning == w.blockOnRunning
+	}
+	if !shouldBlock {
+		n, err := w.buf.Write(p)
+		w.mu.Unlock()
+		return n, err
+	}
+	w.mu.Unlock()
+
+	select {
+	case w.blocked <- struct{}{}:
+	default:
+	}
+	<-w.release
+
+	w.mu.Lock()
+	n, err := w.buf.Write(p)
+	w.mu.Unlock()
+	return n, err
+}
+
+func (w *blockingDaemonRunningWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+func (w *blockingDaemonRunningWriter) Unblock() {
+	w.unblockOnce.Do(func() {
+		close(w.release)
+	})
 }
 
 func TestRunHelp(t *testing.T) {
@@ -68,8 +131,9 @@ func TestRunHelp(t *testing.T) {
 	if !strings.Contains(stdout.String(), "Available commands:") {
 		t.Errorf("Run(%v) stdout = %q, want available command section", []string{"help"}, stdout.String())
 	}
-	if strings.Contains(stdout.String(), "incremental sync") {
-		t.Errorf("Run(%v) stdout = %q, should not present incremental sync as current help description", []string{"help"}, stdout.String())
+	assertTextContainsAll(t, "root help", stdout.String(), "bounded local/network runs, foreground loop, and watcher evidence")
+	if strings.Contains(stdout.String(), "ongoing incremental sync") || strings.Contains(stdout.String(), "continuous sync") {
+		t.Errorf("Run(%v) stdout = %q, should not present continuous incremental sync as current help description", []string{"help"}, stdout.String())
 	}
 	availableIndex := strings.Index(stdout.String(), "Available commands:")
 	if availableIndex == -1 {
@@ -192,7 +256,9 @@ func TestReportHelpIsHonest(t *testing.T) {
 		"read-only evidence",
 		"profile-selected target",
 		"persisted network-transfer artifacts",
-		"does not start daemon or transport work",
+		"incremental sync queue/run",
+		"does not start daemon, transport",
+		"watcher, or repair work",
 		"persist live detector output",
 	} {
 		if !strings.Contains(stdout.String(), want) {
@@ -310,6 +376,94 @@ func TestDriftAcknowledgeHelpIsHonest(t *testing.T) {
 	}
 }
 
+func TestDriftExpireHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"drift", "expire", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("drift expire --help exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	for _, want := range []string{
+		"Usage of drift expire",
+		"--profile",
+		"--id",
+		"--reason",
+		"Marks one existing durable .supermover/drift review record expired",
+		"records expiry metadata only",
+		"does not repair target files",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("drift expire --help stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	for _, forbidden := range []string{"--target", "clean target", "background daemon"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("drift expire --help stdout = %q, must not contain %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("drift expire --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestPruneApprovalsHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"prune", "approvals", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune approvals --help exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	for _, want := range []string{
+		"Usage of prune approvals",
+		"--profile",
+		"--format",
+		"Lists current-scope prune approval artifacts",
+		"read-only",
+		"does not supersede approvals",
+		"write prune receipts",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune approvals --help stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune approvals --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestPruneSupersedeHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"prune", "supersede", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune supersede --help exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	for _, want := range []string{
+		"Usage of prune supersede",
+		"--profile",
+		"--id",
+		"--reason",
+		"--reviewer",
+		"Marks one existing current-scope prune approval artifact superseded",
+		"updates durable approval review metadata only",
+		"does not apply prune",
+		"write prune receipts",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune supersede --help stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune supersede --help stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestStatusHelp(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -324,7 +478,7 @@ func TestStatusHelp(t *testing.T) {
 			t.Fatalf("status --help stdout = %q, want %q", stdout.String(), want)
 		}
 	}
-	for _, want := range []string{"target files needed for verification and live drift detection", "output is not persisted"} {
+	for _, want := range []string{"target files needed for verification and live drift detection", "output is not persisted", "incremental sync fields report local", "does not start discovery"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status --help stdout = %q, want honesty note %q", stdout.String(), want)
 		}
@@ -680,6 +834,7 @@ func TestStatusTextEscapesNetworkTransferValues(t *testing.T) {
 		SourceDeviceID:  "sha256:abcdef0123456789",
 		TargetDeviceID:  "sha256:0123456789abcdef",
 		ProtocolVersion: "supermover/1",
+		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
 		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
 		Status:          control.NetworkTransferFailed,
 		Stage:           "transport",
@@ -822,6 +977,7 @@ func TestLeafHelpReturnsSuccess(t *testing.T) {
 		{"profile", "init", "--help"},
 		{"profile", "lint", "--help"},
 		{"profile", "set-target", "--help"},
+		{"profile", "set-network", "--help"},
 		{"scan", "--help"},
 		{"push", "--help"},
 		{"verify", "--help"},
@@ -1061,6 +1217,96 @@ func TestServeStartsPairingOnlyServerAndCancelsCleanly(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(target, ".supermover")); !os.IsNotExist(err) {
 		t.Fatalf("serve .supermover state error = %v, want not exist", err)
+	}
+}
+
+func TestDashboardStartsLoopbackReadOnlyPageAndCancelsCleanly(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	p := profile.NewDefault("profile-local", "Target Dashboard", source, target)
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan operatorui.ReadyInfo, 1)
+	done := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	runner := Runner{
+		Context: ctx,
+		DashboardReady: func(info operatorui.ReadyInfo) {
+			ready <- info
+		},
+	}
+	go func() {
+		done <- runner.Run([]string{"dashboard", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	}()
+	var info operatorui.ReadyInfo
+	select {
+	case info = <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("dashboard did not report ready; stderr=%q", stderr.String())
+	}
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(info.URL)
+	if err != nil {
+		t.Fatalf("GET dashboard page error = %v, want nil", err)
+	}
+	body := readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Run full verification") {
+		t.Fatalf("GET dashboard page status/body = %d/%q, want page", resp.StatusCode, body)
+	}
+	integrityURL := strings.Replace(info.URL, "/?token=", "/api/integrity?token=", 1)
+	req, err := http.NewRequest(http.MethodGet, integrityURL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest(dashboard integrity) error = %v, want nil", err)
+	}
+	req.Header.Set("X-Supermover-Dashboard", "1")
+	resp, err = client.Do(req)
+	if err != nil {
+		t.Fatalf("GET dashboard integrity error = %v, want nil", err)
+	}
+	body = readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `"read_only":true`) || !strings.Contains(body, `"status":"review_required"`) {
+		t.Fatalf("GET dashboard integrity status/body = %d/%q, want read-only no-manifest review", resp.StatusCode, body)
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if got != 0 {
+			t.Fatalf("dashboard exit = %d stderr = %q, want 0", got, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("dashboard did not exit after cancel; stderr=%q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "dashboard: url=http://") || !strings.Contains(stderr.String(), "loopback_only=true") {
+		t.Fatalf("dashboard stderr = %q, want loopback operator URL", stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(target, control.DirName)); !os.IsNotExist(err) {
+		t.Fatalf("dashboard .supermover state error = %v, want no read-only artifact writes", err)
+	}
+}
+
+func TestDashboardRejectsNonLoopbackListener(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	if err := profile.WriteFile(profilePath, profile.NewDefault("profile-local", "Target Dashboard", source, target)); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"dashboard", "--profile", profilePath, "--listen", "0.0.0.0:8787"}, &stdout, &stderr)
+	if got != 2 || !strings.Contains(stderr.String(), "loopback") {
+		t.Fatalf("dashboard non-loopback exit/stderr = %d/%q, want setup refusal", got, stderr.String())
 	}
 }
 
@@ -1446,8 +1692,18 @@ func TestDaemonHelpIncludesLogsAndRestartWithoutOverclaiming(t *testing.T) {
 		"supermover daemon restart --profile <path>",
 		"foreground agent lifecycle evidence",
 		"profile as the runtime SSOT",
+		"profile enables sync.local_polling",
+		"profile enables repair.drift_recording",
+		"without applying\nrepair or reconcile mutations",
+		"profile enables repair.persisted_reconcile_apply",
+		"stops after any refusal for operator review",
+		"profile enables sync.network_polling",
+		"source-side foreground\nnetwork queue worker",
+		"per-entry profile-backed mTLS queue publication",
+		"automatic\ndiscovery-selected sync",
+		"select endpoints automatically",
 	)
-	assertTextContainsNone(t, "daemon help", stdout.String(), "background daemon ready", "LAN browsing ready", "starts ongoing incremental sync")
+	assertTextContainsNone(t, "daemon help", stdout.String(), "background daemon ready", "LAN browsing ready", "starts ongoing incremental sync", "OS file watcher ready", "per-entry network transport ready", "retry policy ready")
 	if stderr.Len() != 0 {
 		t.Fatalf("daemon --help stderr = %q, want empty", stderr.String())
 	}
@@ -1582,8 +1838,10 @@ func TestSyncQueueHelpIsHonest(t *testing.T) {
 		"Usage of sync queue",
 		"supermover sync queue enqueue --profile <path>",
 		"supermover sync queue status --profile <path>",
+		"supermover sync queue list --profile <path>",
 		"supermover sync queue ready --profile <path>",
 		"supermover sync queue cancel --profile <path> --id <entry-id> --reason <text>",
+		"supermover sync queue fail --profile <path> --id <entry-id> --reason <text>",
 		"durable changed-file queue evidence only",
 		"do not watch roots",
 		"copy\nfiles",
@@ -1613,9 +1871,12 @@ func TestSyncQueueUsageErrors(t *testing.T) {
 		{name: "unknown queue action", args: []string{"sync", "queue", "run"}, want: `sync queue: unknown subcommand "run"`},
 		{name: "missing profile", args: []string{"sync", "queue", "status"}, want: "sync queue status: --profile is required"},
 		{name: "unsupported format", args: []string{"sync", "queue", "status", "--profile", "profile.json", "--format", "yaml"}, want: `sync queue status: unsupported format "yaml"`},
+		{name: "list unexpected args", args: []string{"sync", "queue", "list", "--profile", "profile.json", "extra"}, want: `sync queue list: unexpected arguments: extra`},
 		{name: "unexpected args", args: []string{"sync", "queue", "ready", "--profile", "profile.json", "extra\narg"}, want: `sync queue ready: unexpected arguments: "extra\narg"`},
 		{name: "cancel missing id", args: []string{"sync", "queue", "cancel", "--profile", "profile.json", "--reason", "skip"}, want: "sync queue cancel: --id is required"},
 		{name: "cancel missing reason", args: []string{"sync", "queue", "cancel", "--profile", "profile.json", "--id", "entry"}, want: "sync queue cancel: --reason is required"},
+		{name: "fail missing id", args: []string{"sync", "queue", "fail", "--profile", "profile.json", "--reason", "terminal"}, want: "sync queue fail: --id is required"},
+		{name: "fail missing reason", args: []string{"sync", "queue", "fail", "--profile", "profile.json", "--id", "entry"}, want: "sync queue fail: --reason is required"},
 		{name: "state dir flag rejected", args: []string{"sync", "queue", "status", "--profile", "profile.json", "--state-dir", "tmp"}, want: "flag provided but not defined"},
 		{name: "watch flag rejected", args: []string{"sync", "queue", "enqueue", "--profile", "profile.json", "--watch"}, want: "flag provided but not defined"},
 	}
@@ -1744,6 +2005,169 @@ func TestSyncQueueEnqueueReadyStatusAndCancel(t *testing.T) {
 	}
 }
 
+func TestSyncQueueListShowsAllEntryLifecycleDetails(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "secret")
+	mustWrite(t, filepath.Join(source, "visible.txt"), "public")
+	writeDefaultProfile(t, profilePath, source, target)
+	runner := Runner{Now: time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runner.Run([]string{"sync", "queue", "enqueue", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue enqueue exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "ready", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue ready json exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var ready syncQueueEntriesResult
+	if err := json.Unmarshal(stdout.Bytes(), &ready); err != nil {
+		t.Fatalf("json.Unmarshal(sync queue ready stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	hiddenID := findCLIQueuePath(t, ready.Entries, ".hidden/secret.txt").ID
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "fail", "--profile", profilePath, "--id", hiddenID, "--reason", "operator terminal failure"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue fail exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "list", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue list text exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync queue list stderr = %q, want empty", stderr.String())
+	}
+	assertTextContainsAll(t, "sync queue list", stdout.String(),
+		"sync_queue_list",
+		"failed=1",
+		"ready=2",
+		"sync_queue_entry",
+		"path=.hidden%2Fsecret.txt",
+		"path=visible.txt",
+		"status=failed",
+		"last_error=operator%20terminal%20failure",
+		"failed_at=2026-05-21T01:02:03Z",
+		"next_due_at=-",
+		"done_at=-",
+		"enqueued_at=2026-05-21T01:02:03Z",
+	)
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "list", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue list json exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var listed syncQueueEntriesResult
+	if err := json.Unmarshal(stdout.Bytes(), &listed); err != nil {
+		t.Fatalf("json.Unmarshal(sync queue list stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if listed.Operation != "list" || listed.Mode != "queue_only" || listed.Summary.Failed != 1 || listed.Summary.Ready != 2 || len(listed.Entries) != 3 {
+		t.Fatalf("sync queue list json result = %+v, want all persisted entries with failed summary", listed)
+	}
+	failed := findCLIQueuePath(t, listed.Entries, ".hidden/secret.txt")
+	if failed.Status != incrementalsync.StatusFailed || failed.LastError != "operator terminal failure" || failed.FailedAt == "" {
+		t.Fatalf("sync queue list failed entry = %+v, want failed lifecycle detail", failed)
+	}
+}
+
+func TestSyncQueueFailMarksTerminalReviewState(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "secret")
+	writeDefaultProfile(t, profilePath, source, target)
+	runner := Runner{Now: time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runner.Run([]string{"sync", "queue", "enqueue", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue enqueue exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "ready", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue ready json exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var ready syncQueueEntriesResult
+	if err := json.Unmarshal(stdout.Bytes(), &ready); err != nil {
+		t.Fatalf("json.Unmarshal(sync queue ready stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	hiddenID := findCLIQueuePath(t, ready.Entries, ".hidden/secret.txt").ID
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "fail", "--profile", profilePath, "--id", hiddenID, "--reason", "operator terminal failure", "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue fail json exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var failed syncQueueFailResult
+	if err := json.Unmarshal(stdout.Bytes(), &failed); err != nil {
+		t.Fatalf("json.Unmarshal(sync queue fail stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if failed.Operation != "fail" || failed.Mode != "queue_only" || failed.Entry.Status != incrementalsync.StatusFailed || failed.Entry.FailedAt == "" || failed.Entry.LastError != "operator terminal failure" {
+		t.Fatalf("sync queue fail result = %+v, want failed terminal review evidence", failed)
+	}
+	if failed.Summary.Failed != 1 || failed.Summary.Ready != 1 || failed.Summary.Total != 2 {
+		t.Fatalf("sync queue fail summary = %+v, want failed file and still-ready parent directory", failed.Summary)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "ready", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue ready after fail exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if strings.Contains(stdout.String(), "path=.hidden%2Fsecret.txt") {
+		t.Fatalf("sync queue ready after fail stdout = %q, want failed file excluded", stdout.String())
+	}
+	assertTextContainsAll(t, "sync queue ready after fail", stdout.String(), "failed=1", "ready=1", "path=.hidden")
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "run", "--profile", profilePath, "--session", "sync-run-failed-terminal"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync run after fail exit = %d stderr = %q stdout = %q, want 0 for remaining ready directory", got, stderr.String(), stdout.String())
+	}
+	if strings.Contains(stdout.String(), "path=.hidden%2Fsecret.txt") {
+		t.Fatalf("sync run after fail stdout = %q, must not publish failed file entry", stdout.String())
+	}
+	assertTextContainsAll(t, "sync run after fail", stdout.String(), "failed=1", "done=1")
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"status", "--profile", profilePath}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("status after failed queue exit = %d stderr = %q stdout = %q, want review-needed exit 1", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "status after failed queue", stdout.String(),
+		"incremental_sync_status=review_required",
+		"incremental_sync_failed=1",
+		"incremental_sync_ready=0",
+	)
+}
+
 func TestSyncQueueStatusMissingQueueIsReadOnlyEmpty(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -1834,6 +2258,1240 @@ func TestSyncQueueRefusesSymlinkControlSurface(t *testing.T) {
 	}
 }
 
+func TestSyncRunHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"sync", "run", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync run --help exit = %d stderr = %q, want 0", got, stderr.String())
+	}
+	assertTextContainsAll(t, "sync run help", stdout.String(),
+		"Usage of sync run",
+		"supermover sync run --profile <path> --session <id>",
+		"one bounded incremental sync pass",
+		"profile-selected target",
+		"durable changed-file queue",
+		"existing local push safety path",
+		"durable run receipt",
+		"not a file watcher",
+		"background daemon",
+		"bidirectional sync engine",
+		"daemon-integrated network sync",
+		"LAN discovery\nexecutor",
+	)
+	for _, forbidden := range []string{"--state-dir", "--target", "--network", "--watch", "continuous sync ready"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("sync run --help stdout = %q, must not expose %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync run --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSyncLoopHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"sync", "loop", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync loop --help exit = %d stderr = %q, want 0", got, stderr.String())
+	}
+	assertTextContainsAll(t, "sync loop help", stdout.String(),
+		"Usage of sync loop",
+		"supermover sync loop --profile <path> --session-prefix <id>",
+		"foreground local polling loop",
+		"profile-selected target",
+		"durable changed-file queue",
+		"existing local push safety path",
+		"durable\nrun receipt",
+		"--max-runs",
+		"not an OS file watcher",
+		"background daemon",
+		"bidirectional sync engine",
+		"daemon-integrated network sync",
+		"LAN discovery\nexecutor",
+	)
+	for _, forbidden := range []string{"--state-dir", "--target", "--network", "--watch", "detached daemon", "background sync ready"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("sync loop --help stdout = %q, must not expose %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync loop --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSyncWatchHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"sync", "watch", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync watch --help exit = %d stderr = %q, want 0", got, stderr.String())
+	}
+	assertTextContainsAll(t, "sync watch help", stdout.String(),
+		"Usage of sync watch",
+		"supermover sync watch --profile <path> --session-prefix <id>",
+		"foreground OS file watcher",
+		"profile-selected source roots",
+		"existing local push safety path",
+		"durable queue/run receipts",
+		"--max-events",
+		"not a background daemon",
+		"bidirectional sync engine",
+		"daemon-integrated network sync",
+		"LAN discovery executor",
+	)
+	for _, forbidden := range []string{"--state-dir", "--target", "--network", "detached daemon", "network changed-file sync ready"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("sync watch --help stdout = %q, must not expose %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync watch --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSyncNetworkRunHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"sync", "network", "run", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync network run --help exit = %d stderr = %q, want 0", got, stderr.String())
+	}
+	assertTextContainsAll(t, "sync network run help", stdout.String(),
+		"Usage of sync network run",
+		"supermover sync network run --profile <path> --session <id>",
+		"one bounded network incremental pass",
+		"profile-selected target\ncontrol plane",
+		"durable queue/run receipts",
+		"per-entry profile-backed mTLS network manifest",
+		"previous published manifest evidence",
+		"receiver-side\ntarget revalidation",
+		"validates profile trust",
+		"network material",
+		"network push contract before queue mutation",
+		"LAN discovery",
+		"automatic endpoint selection",
+		"foreground watcher",
+		"background daemon",
+		"broad\nrepair",
+		"bidirectional sync",
+	)
+	for _, forbidden := range []string{"--state-dir", "--target", "--address", "--listen", "continuous network sync ready", "LAN browsing ready", "per-entry transport ready"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("sync network run --help stdout = %q, must not expose %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network run --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSyncNetworkDiscoverRunHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"sync", "network", "discover-run", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync network discover-run --help exit = %d stderr = %q, want 0", got, stderr.String())
+	}
+	assertTextContainsAll(t, "sync network discover-run help", stdout.String(),
+		"Usage of sync network discover-run",
+		"supermover sync network discover-run --profile <path> --session <id>",
+		"LAN-discovery-gated network incremental pass",
+		"low-info\navailability hint only",
+		"match the profile-selected\nnetwork.receiver_url host:port",
+		"per-entry profile-pinned mTLS transfer",
+		"previous published\nevidence",
+		"treats discovery as\ntrust",
+		"not automatic endpoint selection",
+		"not profile mutation",
+		"not a foreground watcher",
+		"not a background daemon",
+		"not broad repair",
+		"not bidirectional sync",
+	)
+	for _, forbidden := range []string{"--address", "--target", "trusted=true", "profile update", "per-entry transport ready"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("sync network discover-run --help stdout = %q, must not expose %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network discover-run --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSyncNetworkLoopHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"sync", "network", "loop", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync network loop --help exit = %d stderr = %q, want 0", got, stderr.String())
+	}
+	assertTextContainsAll(t, "sync network loop help", stdout.String(),
+		"Usage of sync network loop",
+		"supermover sync network loop --profile <path> --session-prefix <id>",
+		"foreground network polling loop",
+		"profile-selected target control\nplane",
+		"durable queue/run receipts",
+		"per-entry profile-backed mTLS network manifest",
+		"previous published manifest evidence",
+		"receiver-side target\nrevalidation",
+		"--max-runs",
+		"not LAN discovery",
+		"not automatic endpoint selection",
+		"not an OS file watcher",
+		"not a background daemon",
+		"not broad repair",
+		"not bidirectional sync",
+	)
+	for _, forbidden := range []string{"--state-dir", "--target", "--address", "--listen", "LAN browsing ready", "per-entry transport ready"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("sync network loop --help stdout = %q, must not expose %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network loop --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSyncRunUsageErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing profile", args: []string{"sync", "run", "--session", "sync-run-1"}, want: "sync run: --profile is required"},
+		{name: "missing session", args: []string{"sync", "run", "--profile", "profile.json"}, want: "sync run: --session is required"},
+		{name: "padded session", args: []string{"sync", "run", "--profile", "profile.json", "--session", " sync-run-1"}, want: "sync run: --session must not be padded"},
+		{name: "unsafe session", args: []string{"sync", "run", "--profile", "profile.json", "--session", "../x"}, want: "unsafe session id"},
+		{name: "unsupported format", args: []string{"sync", "run", "--profile", "profile.json", "--session", "sync-run-1", "--format", "yaml"}, want: `sync run: unsupported format "yaml"`},
+		{name: "negative backoff", args: []string{"sync", "run", "--profile", "profile.json", "--session", "sync-run-1", "--retry-backoff", "-1s"}, want: "sync run: --retry-backoff cannot be negative"},
+		{name: "unexpected args", args: []string{"sync", "run", "--profile", "profile.json", "--session", "sync-run-1", "extra\narg"}, want: `sync run: unexpected arguments: "extra\narg"`},
+		{name: "watch flag rejected", args: []string{"sync", "run", "--profile", "profile.json", "--session", "sync-run-1", "--watch"}, want: "flag provided but not defined"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			got := Run(tt.args, &stdout, &stderr)
+
+			if got != 2 {
+				t.Fatalf("Run(%v) exit = %d stderr = %q, want 2", tt.args, got, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("Run(%v) stderr = %q, want %q", tt.args, stderr.String(), tt.want)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("Run(%v) stdout = %q, want empty", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
+func TestSyncLoopUsageErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing profile", args: []string{"sync", "loop", "--session-prefix", "sync-loop"}, want: "sync loop: --profile is required"},
+		{name: "missing session prefix", args: []string{"sync", "loop", "--profile", "profile.json"}, want: "sync loop: --session-prefix is required"},
+		{name: "padded session prefix", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", " sync-loop"}, want: "sync loop: --session-prefix must not be padded"},
+		{name: "unsafe session prefix", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", "../x"}, want: "unsafe session id"},
+		{name: "unsupported format", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", "sync-loop", "--format", "yaml"}, want: `sync loop: unsupported format "yaml"`},
+		{name: "zero interval", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", "sync-loop", "--interval", "0"}, want: "sync loop: --interval must be greater than zero"},
+		{name: "negative max runs", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", "sync-loop", "--max-runs", "-1"}, want: "sync loop: --max-runs cannot be negative"},
+		{name: "negative backoff", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", "sync-loop", "--retry-backoff", "-1s"}, want: "sync loop: --retry-backoff cannot be negative"},
+		{name: "unexpected args", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", "sync-loop", "extra\narg"}, want: `sync loop: unexpected arguments: "extra\narg"`},
+		{name: "watch flag rejected", args: []string{"sync", "loop", "--profile", "profile.json", "--session-prefix", "sync-loop", "--watch"}, want: "flag provided but not defined"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			got := Run(tt.args, &stdout, &stderr)
+
+			if got != 2 {
+				t.Fatalf("Run(%v) exit = %d stderr = %q, want 2", tt.args, got, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("Run(%v) stderr = %q, want %q", tt.args, stderr.String(), tt.want)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("Run(%v) stdout = %q, want empty", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
+func TestSyncWatchUsageErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing profile", args: []string{"sync", "watch", "--session-prefix", "sync-watch"}, want: "sync watch: --profile is required"},
+		{name: "missing session prefix", args: []string{"sync", "watch", "--profile", "profile.json"}, want: "sync watch: --session-prefix is required"},
+		{name: "padded session prefix", args: []string{"sync", "watch", "--profile", "profile.json", "--session-prefix", " sync-watch"}, want: "sync watch: --session-prefix must not be padded"},
+		{name: "unsafe session prefix", args: []string{"sync", "watch", "--profile", "profile.json", "--session-prefix", "../x"}, want: "unsafe session id"},
+		{name: "unsupported format", args: []string{"sync", "watch", "--profile", "profile.json", "--session-prefix", "sync-watch", "--format", "yaml"}, want: `sync watch: unsupported format "yaml"`},
+		{name: "zero settle", args: []string{"sync", "watch", "--profile", "profile.json", "--session-prefix", "sync-watch", "--settle", "0"}, want: "sync watch: --settle must be greater than zero"},
+		{name: "negative max events", args: []string{"sync", "watch", "--profile", "profile.json", "--session-prefix", "sync-watch", "--max-events", "-1"}, want: "sync watch: --max-events cannot be negative"},
+		{name: "negative backoff", args: []string{"sync", "watch", "--profile", "profile.json", "--session-prefix", "sync-watch", "--retry-backoff", "-1s"}, want: "sync watch: --retry-backoff cannot be negative"},
+		{name: "unexpected args", args: []string{"sync", "watch", "--profile", "profile.json", "--session-prefix", "sync-watch", "extra\narg"}, want: `sync watch: unexpected arguments: "extra\narg"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			got := Run(tt.args, &stdout, &stderr)
+
+			if got != 2 {
+				t.Fatalf("Run(%v) exit = %d stderr = %q, want 2", tt.args, got, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("Run(%v) stderr = %q, want %q", tt.args, stderr.String(), tt.want)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("Run(%v) stdout = %q, want empty", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
+func TestSyncNetworkRunUsageErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing network subcommand", args: []string{"sync", "network"}, want: "sync network: missing subcommand"},
+		{name: "unknown network subcommand", args: []string{"sync", "network", "watch"}, want: `sync network: unknown subcommand "watch"`},
+		{name: "missing profile", args: []string{"sync", "network", "run", "--session", "sync-net-1"}, want: "sync network run: --profile is required"},
+		{name: "missing session", args: []string{"sync", "network", "run", "--profile", "profile.json"}, want: "sync network run: --session is required"},
+		{name: "padded session", args: []string{"sync", "network", "run", "--profile", "profile.json", "--session", " sync-net-1"}, want: "sync network run: --session must not be padded"},
+		{name: "unsafe session", args: []string{"sync", "network", "run", "--profile", "profile.json", "--session", "../x"}, want: "unsafe session id"},
+		{name: "unsupported format", args: []string{"sync", "network", "run", "--profile", "profile.json", "--session", "sync-net-1", "--format", "yaml"}, want: `sync network run: unsupported format "yaml"`},
+		{name: "negative backoff", args: []string{"sync", "network", "run", "--profile", "profile.json", "--session", "sync-net-1", "--retry-backoff", "-1s"}, want: "sync network run: --retry-backoff cannot be negative"},
+		{name: "unexpected args", args: []string{"sync", "network", "run", "--profile", "profile.json", "--session", "sync-net-1", "extra\narg"}, want: `sync network run: unexpected arguments: "extra\narg"`},
+		{name: "watch flag rejected", args: []string{"sync", "network", "run", "--profile", "profile.json", "--session", "sync-net-1", "--watch"}, want: "flag provided but not defined"},
+		{name: "discover missing profile", args: []string{"sync", "network", "discover-run", "--session", "sync-net-1"}, want: "sync network discover-run: --profile is required"},
+		{name: "discover missing session", args: []string{"sync", "network", "discover-run", "--profile", "profile.json"}, want: "sync network discover-run: --session is required"},
+		{name: "discover padded session", args: []string{"sync", "network", "discover-run", "--profile", "profile.json", "--session", " sync-net-1"}, want: "sync network discover-run: --session must not be padded"},
+		{name: "discover unsafe session", args: []string{"sync", "network", "discover-run", "--profile", "profile.json", "--session", "../x"}, want: "unsafe session id"},
+		{name: "discover unsupported format", args: []string{"sync", "network", "discover-run", "--profile", "profile.json", "--session", "sync-net-1", "--format", "yaml"}, want: `sync network discover-run: unsupported format "yaml"`},
+		{name: "discover zero timeout", args: []string{"sync", "network", "discover-run", "--profile", "profile.json", "--session", "sync-net-1", "--timeout", "0"}, want: "sync network discover-run: --timeout must be greater than zero"},
+		{name: "discover negative backoff", args: []string{"sync", "network", "discover-run", "--profile", "profile.json", "--session", "sync-net-1", "--retry-backoff", "-1s"}, want: "sync network discover-run: --retry-backoff cannot be negative"},
+		{name: "discover unexpected args", args: []string{"sync", "network", "discover-run", "--profile", "profile.json", "--session", "sync-net-1", "extra\narg"}, want: `sync network discover-run: unexpected arguments: "extra\narg"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			got := Run(tt.args, &stdout, &stderr)
+
+			if got != 2 {
+				t.Fatalf("Run(%v) exit = %d stderr = %q, want 2", tt.args, got, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("Run(%v) stderr = %q, want %q", tt.args, stderr.String(), tt.want)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("Run(%v) stdout = %q, want empty", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
+func TestSyncNetworkLoopUsageErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "missing profile", args: []string{"sync", "network", "loop", "--session-prefix", "sync-net-loop"}, want: "sync network loop: --profile is required"},
+		{name: "missing session prefix", args: []string{"sync", "network", "loop", "--profile", "profile.json"}, want: "sync network loop: --session-prefix is required"},
+		{name: "padded session prefix", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", " sync-net-loop"}, want: "sync network loop: --session-prefix must not be padded"},
+		{name: "unsafe session prefix", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", "../x"}, want: "unsafe session id"},
+		{name: "unsupported format", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", "sync-net-loop", "--format", "yaml"}, want: `sync network loop: unsupported format "yaml"`},
+		{name: "zero interval", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", "sync-net-loop", "--interval", "0"}, want: "sync network loop: --interval must be greater than zero"},
+		{name: "negative max runs", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", "sync-net-loop", "--max-runs", "-1"}, want: "sync network loop: --max-runs cannot be negative"},
+		{name: "negative backoff", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", "sync-net-loop", "--retry-backoff", "-1s"}, want: "sync network loop: --retry-backoff cannot be negative"},
+		{name: "unexpected args", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", "sync-net-loop", "extra\narg"}, want: `sync network loop: unexpected arguments: "extra\narg"`},
+		{name: "watch flag rejected", args: []string{"sync", "network", "loop", "--profile", "profile.json", "--session-prefix", "sync-net-loop", "--watch"}, want: "flag provided but not defined"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			got := Run(tt.args, &stdout, &stderr)
+
+			if got != 2 {
+				t.Fatalf("Run(%v) exit = %d stderr = %q, want 2", tt.args, got, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("Run(%v) stderr = %q, want %q", tt.args, stderr.String(), tt.want)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("Run(%v) stdout = %q, want empty", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
+func TestSyncRunPublishesQueuedChangesAndMarksDone(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "secret")
+	mustWrite(t, filepath.Join(source, "visible.txt"), "public")
+	writeDefaultProfile(t, profilePath, source, target)
+	runner := Runner{Now: time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runner.Run([]string{"sync", "run", "--profile", profilePath, "--session", "sync-run-1", "--format", "json"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync run exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var result syncRunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync run stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Mode != "bounded_queue_consumer" || result.Run.Status != incrementalsync.RunStatusPublished {
+		t.Fatalf("sync run result = %+v, want bounded published run", result)
+	}
+	if result.Run.Summary.Done != 3 || result.Run.Summary.Ready != 0 || result.Run.Summary.InFlight != 0 || result.Run.Summary.Total != 3 {
+		t.Fatalf("sync run summary = %+v, want three done entries", result.Run.Summary)
+	}
+	if !syncRunContainsPath(result.Run.Published, ".hidden/secret.txt") || !syncRunContainsPath(result.Run.Published, "visible.txt") {
+		t.Fatalf("published entries = %+v, want hidden and visible files", result.Run.Published)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, ".hidden", "secret.txt")); gotContent != "secret" {
+		t.Fatalf("target hidden file = %q, want secret", gotContent)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "visible.txt")); gotContent != "public" {
+		t.Fatalf("target visible file = %q, want public", gotContent)
+	}
+	if _, err := os.Stat(result.Run.RunPath); err != nil {
+		t.Fatalf("os.Stat(run receipt %q) error = %v, want nil", result.Run.RunPath, err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"sync", "queue", "status", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue status after run exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "sync queue status after run", stdout.String(), "done=3", "ready=0", "in_flight=0", "mode=queue_only")
+	if strings.Contains(stdout.String(), "watch") || strings.Contains(stdout.String(), "daemon") {
+		t.Fatalf("sync queue status after run stdout = %q, must not imply watcher or daemon", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = runner.Run([]string{"status", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("status after sync run exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "status after sync run", stdout.String(),
+		"incremental_sync_status=no_pending_review",
+		"incremental_sync_action=no_incremental_sync_review_action_required",
+		"incremental_sync_done=3",
+		"incremental_sync_runs=1",
+		"incremental_sync_retrying_runs=0",
+	)
+}
+
+func TestSyncLoopPublishesChangedHiddenFileAcrossForegroundPasses(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustMkdir(t, filepath.Join(source, ".hidden"))
+	mustWrite(t, filepath.Join(source, "visible.txt"), "first")
+	writeDefaultProfile(t, profilePath, source, target)
+	runner := Runner{
+		Now: time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC),
+	}
+	mutated := false
+	runner.syncLoopAfterRun = func(result syncRunResult) {
+		if result.Run.SessionID == "sync-loop-000001" {
+			mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "second")
+			mutated = true
+		}
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runner.Run([]string{"sync", "loop", "--profile", profilePath, "--session-prefix", "sync-loop", "--max-runs", "2", "--interval", "1ms", "--format", "json"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync loop exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var result syncLoopResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync loop stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Mode != "foreground_polling_queue_consumer" || result.Status != "completed" || result.CompletedRuns != 2 || result.PublishedRuns != 2 || result.RetryingRuns != 0 {
+		t.Fatalf("sync loop result = %+v, want two clean foreground polling passes", result)
+	}
+	if len(result.Runs) != 2 || result.Runs[0].Run.SessionID != "sync-loop-000001" || result.Runs[1].Run.SessionID != "sync-loop-000002" {
+		t.Fatalf("sync loop runs = %+v, want generated session ids", result.Runs)
+	}
+	if !mutated {
+		t.Fatalf("sync loop test did not mutate source between passes")
+	}
+	if !syncRunContainsPath(result.Runs[0].Run.Published, "visible.txt") {
+		t.Fatalf("first sync loop pass published = %+v, want visible file", result.Runs[0].Run.Published)
+	}
+	if !syncRunContainsPath(result.Runs[1].Run.Published, ".hidden/secret.txt") {
+		t.Fatalf("second sync loop pass published = %+v, want changed hidden file", result.Runs[1].Run.Published)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, ".hidden", "secret.txt")); gotContent != "second" {
+		t.Fatalf("target hidden file = %q, want second", gotContent)
+	}
+	for _, run := range result.Runs {
+		if _, err := os.Stat(run.Run.RunPath); err != nil {
+			t.Fatalf("os.Stat(run receipt %q) error = %v, want nil", run.Run.RunPath, err)
+		}
+		if run.Mode != "foreground_loop_pass" {
+			t.Fatalf("sync loop run mode = %q, want foreground_loop_pass", run.Mode)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync loop stderr = %q, want empty", stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = runner.Run([]string{"status", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("status after sync loop exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "status after sync loop",
+		stdout.String(),
+		"incremental_sync_status=no_pending_review",
+		"incremental_sync_done=3",
+		"incremental_sync_runs=2",
+		"incremental_sync_retrying_runs=0",
+	)
+}
+
+func TestSyncWatchPublishesChangedHiddenFileFromOSEvent(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustMkdir(t, filepath.Join(source, ".hidden"))
+	mustWrite(t, filepath.Join(source, "visible.txt"), "first")
+	writeDefaultProfile(t, profilePath, source, target)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ready := make(chan struct{}, 1)
+	done := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	runner := Runner{
+		Context: ctx,
+		Now:     time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC),
+		syncWatchReady: func() {
+			ready <- struct{}{}
+		},
+	}
+
+	go func() {
+		done <- runner.Run([]string{"sync", "watch", "--profile", profilePath, "--session-prefix", "sync-watch", "--max-events", "1", "--settle", "25ms", "--format", "json"}, &stdout, &stderr)
+	}()
+
+	select {
+	case <-ready:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("sync watch did not report ready; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "second")
+	select {
+	case got := <-done:
+		if got != 0 {
+			t.Fatalf("sync watch exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("sync watch did not exit after one event batch; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	var result syncWatchResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync watch stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Mode != "foreground_os_watcher_queue_consumer" || result.Status != "completed" || result.EventBatches != 1 || result.EventsSeen == 0 {
+		t.Fatalf("sync watch result = %+v, want one completed event batch", result)
+	}
+	if result.Baseline == nil || result.Baseline.Run.SessionID != "sync-watch-000001" || result.Baseline.Mode != "foreground_watch_baseline" {
+		t.Fatalf("sync watch baseline = %+v, want baseline run sync-watch-000001", result.Baseline)
+	}
+	if len(result.Runs) != 1 || result.Runs[0].Run.SessionID != "sync-watch-000002" || result.Runs[0].Mode != "foreground_watch_event_pass" {
+		t.Fatalf("sync watch event runs = %+v, want one generated event pass", result.Runs)
+	}
+	if !syncRunContainsPath(result.Baseline.Run.Published, "visible.txt") {
+		t.Fatalf("sync watch baseline published = %+v, want visible file", result.Baseline.Run.Published)
+	}
+	if !syncRunContainsPath(result.Runs[0].Run.Published, ".hidden/secret.txt") {
+		t.Fatalf("sync watch event pass published = %+v, want changed hidden file", result.Runs[0].Run.Published)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, ".hidden", "secret.txt")); gotContent != "second" {
+		t.Fatalf("target hidden file = %q, want second", gotContent)
+	}
+	if result.WatchedDirs < 1 || len(result.WatchedRoots) != 1 {
+		t.Fatalf("sync watch watched dirs=%d roots=%#v, want at least source root", result.WatchedDirs, result.WatchedRoots)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync watch stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSyncNetworkRunPublishesQueuedHiddenFileViaNetwork(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	sourceProfilePath := filepath.Join(dir, "source.profile.json")
+	targetProfilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustMkdir(t, filepath.Join(source, ".hidden"))
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "network secret")
+	mustWrite(t, filepath.Join(source, "visible.txt"), "network public")
+	sourceCert := newCLITestCertificate(t, "source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	targetCert := newCLITestCertificate(t, "target", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	peer := cliAuthenticatedPeerForCerts(t, sourceCert, targetCert)
+	sourceProfile := profile.NewDefault(peer.ProfileID, "Source profile", source, target)
+	sourceProfile.Target.TargetID = peer.TargetID
+	sourceProfile.Target.DevicePublicKey = peer.TargetDeviceID
+	sourceProfile.Target.PairingReceiptID = "pairing-1"
+	sourceProfile.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	receiverListener := listenOnReservedTCPAddress(t)
+	t.Cleanup(func() {
+		_ = receiverListener.Close()
+	})
+	receiverAddress := receiverListener.Addr().String()
+	sourceProfile.Network = networkConfigForCLI(t, sourceCert, receiverAddress)
+	targetProfile := sourceProfile
+	targetProfile.Name = "Target profile"
+	targetProfile.Network = networkConfigForCLI(t, targetCert, receiverAddress)
+	if err := profile.WriteFile(sourceProfilePath, sourceProfile); err != nil {
+		t.Fatalf("profile.WriteFile(source) error = %v, want nil", err)
+	}
+	if err := profile.WriteFile(targetProfilePath, targetProfile); err != nil {
+		t.Fatalf("profile.WriteFile(target) error = %v, want nil", err)
+	}
+	writePairingReceiptForCLI(t, target, sourceProfile, func(receipt *control.PairingReceipt) {
+		receipt.SourceDeviceID = peer.SourceDeviceID
+		receipt.TargetDeviceID = peer.TargetDeviceID
+		receipt.DevicePublicKey = peer.TargetDeviceID
+		receipt.VerifiedAt = sourceProfile.Target.PairedAt
+	})
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	pairingReady := make(chan pairserve.ReadyInfo, 1)
+	receiverReady := make(chan receiverserve.ReadyInfo, 1)
+	done := make(chan int, 1)
+	var serveStdout bytes.Buffer
+	var serveStderr bytes.Buffer
+	serveRunner := Runner{
+		Context:                 serveCtx,
+		Now:                     cliTLSNow(),
+		receiverListenerForTest: receiverListener,
+		ServePairingReady: func(info pairserve.ReadyInfo) {
+			pairingReady <- info
+		},
+		ServeReceiverReady: func(info receiverserve.ReadyInfo) {
+			receiverReady <- info
+		},
+	}
+	go func() {
+		done <- serveRunner.Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
+	}()
+	waitServePairingReady(t, pairingReady, &serveStderr)
+	receiverInfo := waitServeReceiverReady(t, receiverReady, &serveStderr)
+	if receiverInfo.Address != receiverAddress || receiverInfo.Peer != peer {
+		t.Fatalf("serve receiver info = %+v, want address %q peer %+v", receiverInfo, receiverAddress, peer)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: cliTLSNow()}.Run([]string{"sync", "network", "run", "--profile", sourceProfilePath, "--session", "sync-net-1", "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync network run exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network run stderr = %q, want empty", stderr.String())
+	}
+	var result syncNetworkRunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync network run stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Mode != "bounded_network_queue_consumer" || result.Run.Status != incrementalsync.RunStatusPublished {
+		t.Fatalf("sync network run result = %+v, want bounded network published run", result)
+	}
+	if result.Network.Transfer != "published" || result.Network.EncryptedTransfer != "tls13_mtls" || result.Network.Status != "published" || result.Network.Stage != "commit" || result.Network.ResumeOutcome != "fresh" {
+		t.Fatalf("sync network result = %+v, want published profile-backed mTLS transfer", result.Network)
+	}
+	if result.Run.Summary.Done != 3 || result.Run.Summary.Backoff != 0 || result.Run.Summary.Ready != 0 || result.Run.Summary.Total != 3 {
+		t.Fatalf("sync network run summary = %+v, want three done entries", result.Run.Summary)
+	}
+	if !syncRunContainsPath(result.Run.Published, ".hidden/secret.txt") || !syncRunContainsPath(result.Run.Published, "visible.txt") {
+		t.Fatalf("published entries = %+v, want hidden and visible files", result.Run.Published)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, ".hidden", "secret.txt")); gotContent != "network secret" {
+		t.Fatalf("target hidden file = %q, want network secret", gotContent)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "visible.txt")); gotContent != "network public" {
+		t.Fatalf("target visible file = %q, want network public", gotContent)
+	}
+	if _, err := os.Stat(result.Run.RunPath); err != nil {
+		t.Fatalf("os.Stat(run receipt %q) error = %v, want nil", result.Run.RunPath, err)
+	}
+	transfer := readNetworkTransferForCLI(t, target, "sync-net-1")
+	if transfer.Status != control.NetworkTransferPublished || transfer.Stage != "commit" || transfer.PrivacyOverhead == nil {
+		t.Fatalf("network transfer = %+v, want published commit with privacy overhead", transfer)
+	}
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "network secret v2")
+	stdout.Reset()
+	stderr.Reset()
+	got = Runner{Now: cliTLSNow().Add(time.Minute)}.Run([]string{"sync", "network", "run", "--profile", sourceProfilePath, "--session", "sync-net-2", "--format", "json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("second sync network run exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("second sync network run stderr = %q, want empty", stderr.String())
+	}
+	var second syncNetworkRunResult
+	if err := json.Unmarshal(stdout.Bytes(), &second); err != nil {
+		t.Fatalf("json.Unmarshal(second sync network run stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if second.Run.Status != incrementalsync.RunStatusPublished || second.Network.Transfer != "published" {
+		t.Fatalf("second sync network run result = %+v, want published per-entry network run", second)
+	}
+	if len(second.Run.Published) != 1 || !syncRunContainsPath(second.Run.Published, ".hidden/secret.txt") {
+		t.Fatalf("second published entries = %+v, want only changed hidden file", second.Run.Published)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, ".hidden", "secret.txt")); gotContent != "network secret v2" {
+		t.Fatalf("target hidden file after second run = %q, want network secret v2", gotContent)
+	}
+	manifestPath, err := control.Path(target, control.ArtifactManifest, "sync-net-2")
+	if err != nil {
+		t.Fatalf("control.Path(second manifest) error = %v, want nil", err)
+	}
+	manifest, err := control.ReadFile[control.Manifest](manifestPath)
+	if err != nil {
+		t.Fatalf("control.ReadFile(second manifest) error = %v, want nil", err)
+	}
+	if len(manifest.Entries) != 1 || manifest.Entries[0].Path != ".hidden/secret.txt" {
+		t.Fatalf("second network manifest entries = %+v, want only hidden file ready entry", manifest.Entries)
+	}
+	if manifest.Entries[0].PreviousSessionID != "sync-net-1" || manifest.Entries[0].PreviousManifestID != "sync-net-1" || manifest.Entries[0].PreviousDigest == "" || !manifest.Entries[0].HasPreviousSizeEvidence() || !manifest.Entries[0].HasPreviousModeEvidence() {
+		t.Fatalf("second network manifest previous evidence = %+v, want previous published file evidence", manifest.Entries[0])
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "visible.txt")); gotContent != "network public" {
+		t.Fatalf("target visible file after second run = %q, want unchanged network public", gotContent)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	got = Runner{Now: cliTLSNow()}.Run([]string{"sync", "queue", "status", "--profile", sourceProfilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue status after network run exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "sync queue status after network run", stdout.String(), "done=3", "ready=0", "backoff=0", "mode=queue_only")
+	cancelServe()
+	select {
+	case serveExit := <-done:
+		if serveExit != 0 {
+			t.Fatalf("serve exit after sync network runs = %d stderr = %q, want 0", serveExit, serveStderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("serve did not exit after cancel; stderr=%q", serveStderr.String())
+	}
+	if serveStdout.Len() != 0 {
+		t.Fatalf("serve stdout = %q, want empty", serveStdout.String())
+	}
+	assertTextContainsAll(t, "serve sync network smoke", serveStderr.String(), "receiver_routes=true", "push_network=true")
+}
+
+func TestSyncNetworkDiscoverRunPublishesAfterMatchingLANCandidate(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	sourceProfilePath := filepath.Join(dir, "source.profile.json")
+	targetProfilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustMkdir(t, filepath.Join(source, ".hidden"))
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "discovery network secret")
+	mustWrite(t, filepath.Join(source, "visible.txt"), "discovery network public")
+	sourceCert := newCLITestCertificate(t, "source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	targetCert := newCLITestCertificate(t, "target", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	peer := cliAuthenticatedPeerForCerts(t, sourceCert, targetCert)
+	sourceProfile := profile.NewDefault(peer.ProfileID, "Source profile", source, target)
+	sourceProfile.Target.TargetID = peer.TargetID
+	sourceProfile.Target.DevicePublicKey = peer.TargetDeviceID
+	sourceProfile.Target.PairingReceiptID = "pairing-1"
+	sourceProfile.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	receiverListener := listenOnReservedTCPAddress(t)
+	t.Cleanup(func() {
+		_ = receiverListener.Close()
+	})
+	receiverAddress := receiverListener.Addr().String()
+	sourceProfile.Network = networkConfigForCLI(t, sourceCert, receiverAddress)
+	targetProfile := sourceProfile
+	targetProfile.Name = "Target profile"
+	targetProfile.Network = networkConfigForCLI(t, targetCert, receiverAddress)
+	targetProfile.Discovery = &profile.DiscoveryConfig{AdvertiseReceiverHint: true}
+	if err := profile.WriteFile(sourceProfilePath, sourceProfile); err != nil {
+		t.Fatalf("profile.WriteFile(source) error = %v, want nil", err)
+	}
+	if err := profile.WriteFile(targetProfilePath, targetProfile); err != nil {
+		t.Fatalf("profile.WriteFile(target) error = %v, want nil", err)
+	}
+	writePairingReceiptForCLI(t, target, sourceProfile, func(receipt *control.PairingReceipt) {
+		receipt.SourceDeviceID = peer.SourceDeviceID
+		receipt.TargetDeviceID = peer.TargetDeviceID
+		receipt.DevicePublicKey = peer.TargetDeviceID
+		receipt.VerifiedAt = sourceProfile.Target.PairedAt
+	})
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	pairingReady := make(chan pairserve.ReadyInfo, 1)
+	receiverReady := make(chan receiverserve.ReadyInfo, 1)
+	serveDone := make(chan int, 1)
+	var serveStdout bytes.Buffer
+	var serveStderr bytes.Buffer
+	serveRunner := Runner{
+		Context:                 serveCtx,
+		Now:                     cliTLSNow(),
+		receiverListenerForTest: receiverListener,
+		ServePairingReady: func(info pairserve.ReadyInfo) {
+			pairingReady <- info
+		},
+		ServeReceiverReady: func(info receiverserve.ReadyInfo) {
+			receiverReady <- info
+		},
+	}
+	go func() {
+		serveDone <- serveRunner.Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
+	}()
+	waitServePairingReady(t, pairingReady, &serveStderr)
+	receiverInfo := waitServeReceiverReady(t, receiverReady, &serveStderr)
+	if receiverInfo.Address != receiverAddress || receiverInfo.Peer != peer {
+		t.Fatalf("serve receiver info = %+v, want address %q peer %+v", receiverInfo, receiverAddress, peer)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	advertiseDone := make(chan int, 1)
+	var advertiseStdout bytes.Buffer
+	var advertiseStderr bytes.Buffer
+	discoverRunner := Runner{
+		Now: cliTLSNow(),
+		DiscoverBrowseReady: func(address string) {
+			go func() {
+				advertiseDone <- Runner{Now: cliTLSNow()}.Run([]string{"discover", "advertise", "--profile", targetProfilePath, "--dest", address, "--duration", "150ms", "--interval", "10ms"}, &advertiseStdout, &advertiseStderr)
+			}()
+		},
+	}
+
+	got := discoverRunner.Run([]string{"sync", "network", "discover-run", "--profile", sourceProfilePath, "--session", "sync-net-discover-1", "--listen", "127.0.0.1:0", "--timeout", "250ms", "--format", "json"}, &stdout, &stderr)
+
+	cancelServe()
+	select {
+	case serveExit := <-serveDone:
+		if serveExit != 0 {
+			t.Fatalf("serve exit after sync network discover-run = %d stderr = %q, want 0", serveExit, serveStderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("serve did not exit after cancel; stderr=%q", serveStderr.String())
+	}
+	if advertiseExit := <-advertiseDone; advertiseExit != 0 {
+		t.Fatalf("discover advertise exit = %d stderr = %q stdout = %q, want 0", advertiseExit, advertiseStderr.String(), advertiseStdout.String())
+	}
+	if got != 0 {
+		t.Fatalf("sync network discover-run exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network discover-run stderr = %q, want empty", stderr.String())
+	}
+	var result syncNetworkDiscoverRunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync network discover-run stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Discovery.Status != "matched" || result.Discovery.ProfileAddress != receiverAddress || result.Discovery.MatchedAddress != receiverAddress || result.Discovery.Trusted {
+		t.Fatalf("discovery gate = %+v, want matched untrusted candidate at receiver address", result.Discovery)
+	}
+	if result.Mode != "lan_discovery_gated_network_queue_consumer" || result.Run.Status != incrementalsync.RunStatusPublished {
+		t.Fatalf("sync network discover-run result = %+v, want LAN-gated published run", result)
+	}
+	if result.Network.Transfer != "published" || result.Network.EncryptedTransfer != "tls13_mtls" || result.Network.Status != "published" || result.Network.Stage != "commit" {
+		t.Fatalf("sync network discover-run network = %+v, want profile-pinned mTLS transfer", result.Network)
+	}
+	if !syncRunContainsPath(result.Run.Published, ".hidden/secret.txt") || !syncRunContainsPath(result.Run.Published, "visible.txt") {
+		t.Fatalf("published entries = %+v, want hidden and visible files", result.Run.Published)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, ".hidden", "secret.txt")); gotContent != "discovery network secret" {
+		t.Fatalf("target hidden file = %q, want discovery network secret", gotContent)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "visible.txt")); gotContent != "discovery network public" {
+		t.Fatalf("target visible file = %q, want discovery network public", gotContent)
+	}
+	raw := stdout.String() + advertiseStdout.String()
+	for _, forbidden := range []string{"trusted=true", "hostname", "file_count"} {
+		if strings.Contains(raw, forbidden) {
+			t.Fatalf("discovery-gated output = %q, must not contain %q", raw, forbidden)
+		}
+	}
+}
+
+func TestSyncNetworkDiscoverRunNoMatchDoesNotMutateQueue(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "source.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	sourceCert := newCLITestCertificate(t, "source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	targetCert := newCLITestCertificate(t, "target", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	peer := cliAuthenticatedPeerForCerts(t, sourceCert, targetCert)
+	p := profile.NewDefault(peer.ProfileID, "Source profile", source, target)
+	p.Target.TargetID = peer.TargetID
+	p.Target.DevicePublicKey = peer.TargetDeviceID
+	p.Target.PairingReceiptID = "pairing-1"
+	p.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	p.Network = networkConfigForCLI(t, sourceCert, net.JoinHostPort("127.0.0.1", "1"))
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	writePairingReceiptForCLI(t, target, p, func(receipt *control.PairingReceipt) {
+		receipt.SourceDeviceID = peer.SourceDeviceID
+		receipt.TargetDeviceID = peer.TargetDeviceID
+		receipt.DevicePublicKey = peer.TargetDeviceID
+		receipt.VerifiedAt = p.Target.PairedAt
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: cliTLSNow()}.Run([]string{"sync", "network", "discover-run", "--profile", profilePath, "--session", "sync-net-no-match", "--listen", "127.0.0.1:0", "--timeout", "20ms", "--format", "json"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("sync network discover-run no-match exit = %d stderr = %q stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network discover-run no-match stderr = %q, want empty", stderr.String())
+	}
+	var result syncNetworkDiscoverRunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync network discover-run no-match stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Discovery.Status != "no_matching_candidate" || result.Discovery.Trusted || result.Run.Status != "" {
+		t.Fatalf("sync network discover-run no-match result = %+v, want discovery gate refusal without run", result)
+	}
+	if _, err := os.Stat(filepath.Join(control.ControlDir(target), "incremental-sync")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("incremental state dir stat error = %v, want no queue/run mutation", err)
+	}
+	if _, err := os.Stat(filepath.Join(control.ControlDir(target), "sessions", "sync-net-no-match")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("session dir stat error = %v, want no network transfer mutation", err)
+	}
+}
+
+func TestSyncNetworkRunIdleDoesNotContactReceiverOrClaimFailure(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "source.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	sourceCert := newCLITestCertificate(t, "source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	targetCert := newCLITestCertificate(t, "target", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	peer := cliAuthenticatedPeerForCerts(t, sourceCert, targetCert)
+	p := profile.NewDefault(peer.ProfileID, "Source profile", source, target)
+	p.Target.TargetID = peer.TargetID
+	p.Target.DevicePublicKey = peer.TargetDeviceID
+	p.Target.PairingReceiptID = "pairing-1"
+	p.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	p.Network = networkConfigForCLI(t, sourceCert, net.JoinHostPort("127.0.0.1", "1"))
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	writePairingReceiptForCLI(t, target, p, func(receipt *control.PairingReceipt) {
+		receipt.SourceDeviceID = peer.SourceDeviceID
+		receipt.TargetDeviceID = peer.TargetDeviceID
+		receipt.DevicePublicKey = peer.TargetDeviceID
+		receipt.VerifiedAt = p.Target.PairedAt
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: cliTLSNow()}.Run([]string{"sync", "network", "run", "--profile", profilePath, "--session", "sync-net-idle", "--format", "json"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("sync network idle exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network idle stderr = %q, want empty", stderr.String())
+	}
+	var result syncNetworkRunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync network idle stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Run.Status != incrementalsync.RunStatusIdle || result.Run.Summary.Total != 0 || result.Run.Summary.Ready != 0 {
+		t.Fatalf("sync network idle run = %+v, want empty idle queue", result.Run)
+	}
+	if result.Network.Transfer != "not_attempted" || result.Network.Status != "idle" || result.Network.Stage != "queue_idle" || result.Network.EncryptedTransfer != "profile_backed_mtls_validated" {
+		t.Fatalf("sync network idle transfer = %+v, want not-attempted validated network plan", result.Network)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".supermover", "sessions", "sync-net-idle", "network-transfer.json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("network-transfer artifact error = %v, want not exist for idle queue", err)
+	}
+}
+
+func TestSyncNetworkRunRejectsMissingNetworkMaterialBeforeQueueMutation(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "source.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "payload")
+	p := profile.NewDefault("profile-local", "Source profile", source, target)
+	p.Target.PairingReceiptID = "pairing-1"
+	p.Target.DevicePublicKey = "sha256:target"
+	p.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: cliTLSNow()}.Run([]string{"sync", "network", "run", "--profile", profilePath, "--session", "sync-net-invalid"}, &stdout, &stderr)
+
+	if got != 2 {
+		t.Fatalf("sync network invalid exit = %d stderr = %q stdout = %q, want 2", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "network.receiver_url is required") {
+		t.Fatalf("sync network invalid stderr = %q, want missing network material", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("sync network invalid stdout = %q, want empty", stdout.String())
+	}
+	if _, err := os.Stat(control.ControlDir(target)); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("control dir stat error = %v, want no target control-plane mutation", err)
+	}
+}
+
+func TestSyncNetworkLoopRunsBoundedForegroundPasses(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	sourceProfilePath := filepath.Join(dir, "source.profile.json")
+	targetProfilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustMkdir(t, filepath.Join(source, ".hidden"))
+	mustWrite(t, filepath.Join(source, ".hidden", "secret.txt"), "network loop secret")
+	mustWrite(t, filepath.Join(source, "visible.txt"), "network loop public")
+	sourceCert := newCLITestCertificate(t, "source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	targetCert := newCLITestCertificate(t, "target", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	peer := cliAuthenticatedPeerForCerts(t, sourceCert, targetCert)
+	sourceProfile := profile.NewDefault(peer.ProfileID, "Source profile", source, target)
+	sourceProfile.Target.TargetID = peer.TargetID
+	sourceProfile.Target.DevicePublicKey = peer.TargetDeviceID
+	sourceProfile.Target.PairingReceiptID = "pairing-1"
+	sourceProfile.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	receiverListener := listenOnReservedTCPAddress(t)
+	t.Cleanup(func() {
+		_ = receiverListener.Close()
+	})
+	receiverAddress := receiverListener.Addr().String()
+	sourceProfile.Network = networkConfigForCLI(t, sourceCert, receiverAddress)
+	targetProfile := sourceProfile
+	targetProfile.Name = "Target profile"
+	targetProfile.Network = networkConfigForCLI(t, targetCert, receiverAddress)
+	if err := profile.WriteFile(sourceProfilePath, sourceProfile); err != nil {
+		t.Fatalf("profile.WriteFile(source) error = %v, want nil", err)
+	}
+	if err := profile.WriteFile(targetProfilePath, targetProfile); err != nil {
+		t.Fatalf("profile.WriteFile(target) error = %v, want nil", err)
+	}
+	writePairingReceiptForCLI(t, target, sourceProfile, func(receipt *control.PairingReceipt) {
+		receipt.SourceDeviceID = peer.SourceDeviceID
+		receipt.TargetDeviceID = peer.TargetDeviceID
+		receipt.DevicePublicKey = peer.TargetDeviceID
+		receipt.VerifiedAt = sourceProfile.Target.PairedAt
+	})
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	pairingReady := make(chan pairserve.ReadyInfo, 1)
+	receiverReady := make(chan receiverserve.ReadyInfo, 1)
+	done := make(chan int, 1)
+	var serveStdout bytes.Buffer
+	var serveStderr bytes.Buffer
+	serveRunner := Runner{
+		Context:                 serveCtx,
+		Now:                     cliTLSNow(),
+		receiverListenerForTest: receiverListener,
+		ServePairingReady: func(info pairserve.ReadyInfo) {
+			pairingReady <- info
+		},
+		ServeReceiverReady: func(info receiverserve.ReadyInfo) {
+			receiverReady <- info
+		},
+	}
+	go func() {
+		done <- serveRunner.Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
+	}()
+	waitServePairingReady(t, pairingReady, &serveStderr)
+	receiverInfo := waitServeReceiverReady(t, receiverReady, &serveStderr)
+	if receiverInfo.Address != receiverAddress || receiverInfo.Peer != peer {
+		t.Fatalf("serve receiver info = %+v, want address %q peer %+v", receiverInfo, receiverAddress, peer)
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: cliTLSNow()}.Run([]string{"sync", "network", "loop", "--profile", sourceProfilePath, "--session-prefix", "sync-net-loop", "--max-runs", "2", "--interval", "1ms", "--format", "json"}, &stdout, &stderr)
+
+	cancelServe()
+	select {
+	case serveExit := <-done:
+		if serveExit != 0 {
+			t.Fatalf("serve exit after sync network loop = %d stderr = %q, want 0", serveExit, serveStderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("serve did not exit after cancel; stderr=%q", serveStderr.String())
+	}
+	if got != 0 {
+		t.Fatalf("sync network loop exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync network loop stderr = %q, want empty", stderr.String())
+	}
+	var result syncNetworkLoopResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync network loop stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Mode != "foreground_network_queue_consumer" || result.Status != "completed" || result.CompletedRuns != 2 || result.PublishedRuns != 1 || result.IdleRuns != 1 || result.RetryingRuns != 0 {
+		t.Fatalf("sync network loop result = %+v, want one published pass and one idle pass", result)
+	}
+	if result.NetworkAttempts != 1 || result.NetworkPublishedRuns != 1 || result.NetworkNotAttemptedRuns != 1 {
+		t.Fatalf("sync network loop network counters = attempts=%d published=%d not_attempted=%d, want 1/1/1", result.NetworkAttempts, result.NetworkPublishedRuns, result.NetworkNotAttemptedRuns)
+	}
+	if len(result.Runs) != 2 || result.Runs[0].Run.SessionID != "sync-net-loop-000001" || result.Runs[1].Run.SessionID != "sync-net-loop-000002" {
+		t.Fatalf("sync network loop runs = %+v, want generated session ids", result.Runs)
+	}
+	if result.Runs[0].Mode != "foreground_network_loop_pass" || result.Runs[0].Network.Transfer != "published" || result.Runs[0].Network.EncryptedTransfer != "tls13_mtls" {
+		t.Fatalf("first sync network loop run = %+v, want published mTLS pass", result.Runs[0])
+	}
+	if result.Runs[1].Mode != "foreground_network_loop_pass" || result.Runs[1].Run.Status != incrementalsync.RunStatusIdle || result.Runs[1].Network.Transfer != "not_attempted" || result.Runs[1].Network.Stage != "queue_idle" {
+		t.Fatalf("second sync network loop run = %+v, want idle not-attempted network pass", result.Runs[1])
+	}
+	if gotContent := readFileString(t, filepath.Join(target, ".hidden", "secret.txt")); gotContent != "network loop secret" {
+		t.Fatalf("target hidden file = %q, want network loop secret", gotContent)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "visible.txt")); gotContent != "network loop public" {
+		t.Fatalf("target visible file = %q, want network loop public", gotContent)
+	}
+	transfer := readNetworkTransferForCLI(t, target, "sync-net-loop-000001")
+	if transfer.Status != control.NetworkTransferPublished || transfer.Stage != "commit" || transfer.PrivacyOverhead == nil {
+		t.Fatalf("network transfer = %+v, want published first loop pass", transfer)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".supermover", "sessions", "sync-net-loop-000002", "network-transfer.json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("second network-transfer artifact error = %v, want not exist for idle queue pass", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	got = Runner{Now: cliTLSNow()}.Run([]string{"sync", "queue", "status", "--profile", sourceProfilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("sync queue status after network loop exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "sync queue status after network loop", stdout.String(), "done=3", "ready=0", "backoff=0", "mode=queue_only")
+}
+
+func TestSyncRunRetriesQueueWhenLocalPushRefusesTargetDrift(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "source")
+	mustWrite(t, filepath.Join(target, "file.txt"), "foreign target")
+	writeDefaultProfile(t, profilePath, source, target)
+	runner := Runner{Now: time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := runner.Run([]string{"sync", "run", "--profile", profilePath, "--session", "sync-run-drift", "--retry-backoff", "10m", "--format", "json"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("sync run drift exit = %d stderr = %q stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("sync run drift stderr = %q, want empty because retry result is stdout evidence", stderr.String())
+	}
+	var result syncRunResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(sync run drift stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if result.Run.Status != incrementalsync.RunStatusRetrying || len(result.Run.Retried) != 1 || result.Run.Summary.Backoff != 1 || result.Run.Summary.Ready != 0 {
+		t.Fatalf("sync run drift result = %+v, want one backoff retry", result)
+	}
+	retried := result.Run.Retried[0]
+	if retried.Path != "file.txt" || retried.Status != incrementalsync.StatusBackoff || retried.Attempts != 1 || retried.NextDueAt != "2026-05-21T01:12:03Z" {
+		t.Fatalf("retried entry = %+v, want file.txt in 10m backoff", retried)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "file.txt")); gotContent != "foreign target" {
+		t.Fatalf("target file after refused sync run = %q, want unchanged foreign target", gotContent)
+	}
+	if _, err := os.Stat(result.Run.RunPath); err != nil {
+		t.Fatalf("os.Stat(run receipt %q) error = %v, want nil", result.Run.RunPath, err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = runner.Run([]string{"report", "--profile", profilePath}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("report after refused sync run exit = %d stderr = %q stdout = %q, want 1 for review-required retry evidence", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "report after refused sync run", stdout.String(),
+		"incremental_sync_backoff=1",
+		"incremental_sync_runs=1",
+		"incremental_sync_retrying_runs=1",
+		"incremental_sync_backoff",
+		"incremental_sync_retrying_runs",
+		"incremental_sync status=review_required action=inspect_incremental_sync_queue",
+		"incremental_sync_run session=sync-run-drift status=retrying",
+	)
+}
+
 func TestReconcileHelpIsHonest(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -1846,20 +3504,58 @@ func TestReconcileHelpIsHonest(t *testing.T) {
 	assertTextContainsAll(t, "reconcile help", stdout.String(),
 		"Usage of reconcile",
 		"supermover reconcile plan --profile <path>",
+		"supermover reconcile review --profile <path>",
 		"supermover reconcile apply --profile <path> --id <persisted-drift-id>",
+		"supermover reconcile apply --profile <path> --all-persisted-planned",
+		"supermover reconcile apply --profile <path> --record-live",
 		"narrow persisted drift repair",
+		"Review is read-only",
+		"record-required inputs",
+		"selects only currently planned persisted actions",
 		"missing regular-file restores",
 		"already-restored resolves",
 		"does not run broad automatic reconcile",
-		"persist apply receipts",
+		"Apply writes durable selected-ID receipts",
+		"conflict_class",
+		"retry_advice",
 	)
-	for _, forbidden := range []string{"--target", "--state-dir", "background scan", "broad repair ready"} {
+	for _, forbidden := range []string{"--target", "--state-dir", "broad repair ready", "or persist apply receipts", "runs automatic retry policy"} {
 		if strings.Contains(stdout.String(), forbidden) {
 			t.Fatalf("reconcile --help stdout = %q, must not expose %q", stdout.String(), forbidden)
 		}
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("reconcile --help stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReconcileApplyHelpIsHonest(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "apply", "--help"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("reconcile apply --help exit = %d stderr = %q, want 0", got, stderr.String())
+	}
+	assertTextContainsAll(t, "reconcile apply help", stdout.String(),
+		"Usage of reconcile apply",
+		"supermover reconcile apply --profile <path> --id <persisted-drift-id>",
+		"supermover reconcile apply --profile <path> --all-persisted-planned",
+		"supermover reconcile apply --profile <path> --record-live",
+		"--record-live is an explicit gate",
+		"first persists current live",
+		"durable drift records",
+		"Planned background boundaries remain non-apply-capable",
+		"not a broad automatic repair or background retry runner",
+	)
+	for _, forbidden := range []string{"--target", "--state-dir", "background repair ready", "runs automatic retry policy"} {
+		if strings.Contains(stdout.String(), forbidden) {
+			t.Fatalf("reconcile apply --help stdout = %q, must not expose %q", stdout.String(), forbidden)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("reconcile apply --help stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -1870,7 +3566,7 @@ func TestReconcileApplyRequiresExplicitSelectionIntentAndReason(t *testing.T) {
 		want string
 	}{
 		{name: "missing profile", args: []string{"reconcile", "apply", "--id", "drift", "--apply", "--reason", "restore"}, want: "reconcile apply: --profile is required"},
-		{name: "missing id", args: []string{"reconcile", "apply", "--profile", "profile.json", "--apply", "--reason", "restore"}, want: "reconcile apply: at least one --id is required"},
+		{name: "missing selection", args: []string{"reconcile", "apply", "--profile", "profile.json", "--apply", "--reason", "restore"}, want: "reconcile apply: at least one --id, --all-persisted-planned, or --record-live is required"},
 		{name: "missing apply", args: []string{"reconcile", "apply", "--profile", "profile.json", "--id", "drift", "--reason", "restore"}, want: "reconcile apply: --apply is required"},
 		{name: "missing reason", args: []string{"reconcile", "apply", "--profile", "profile.json", "--id", "drift", "--apply"}, want: "reconcile apply: --reason is required"},
 		{name: "unsafe id", args: []string{"reconcile", "apply", "--profile", "profile.json", "--id", "../drift", "--apply", "--reason", "restore"}, want: "reconcile apply: --id is invalid"},
@@ -1894,6 +3590,300 @@ func TestReconcileApplyRequiresExplicitSelectionIntentAndReason(t *testing.T) {
 				t.Fatalf("Run(%v) stdout = %q, want empty", tt.args, stdout.String())
 			}
 		})
+	}
+}
+
+func TestReconcileReviewReportsBoundariesWithoutMutation(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "aaaaaaa")
+	writeDefaultProfile(t, profilePath, source, target)
+	drift := cliMissingFileDrift("drift-reconcile-review")
+	writePublishedSessionForReconcileCLI(t, target, drift.SessionID)
+	writeTargetDriftForReconcileCLI(t, target, drift)
+	before := mustSnapshotTree(t, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "review", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("reconcile review exit = %d stderr = %q stdout = %q, want review-required 1", got, stderr.String(), stdout.String())
+	}
+	var review reconcile.Review
+	if err := json.Unmarshal(stdout.Bytes(), &review); err != nil {
+		t.Fatalf("json.Unmarshal(reconcile review stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if review.Schema != reconcile.SchemaReview || review.Summary.PersistedPlanned != 1 || review.Summary.LiveTargetDrifts != 0 {
+		t.Fatalf("reconcile review = %+v, want persisted plan with covered live detector evidence excluded from live-only inputs", review)
+	}
+	assertReviewBoundaryForCLI(t, review, reconcile.BoundaryPersistentDrift, reconcile.BoundaryStatusWiredReadOnly, true)
+	assertReviewBoundaryForCLI(t, review, reconcile.BoundaryLiveOnlyDrift, reconcile.BoundaryStatusWiredReadOnly, false)
+	assertReviewBoundaryForCLI(t, review, reconcile.BoundaryBackgroundScan, reconcile.BoundaryStatusPlanned, false)
+	assertReviewBoundaryForCLI(t, review, reconcile.BoundaryManifestRewrite, reconcile.BoundaryStatusPlanned, false)
+	assertReviewBoundaryForCLI(t, review, reconcile.BoundaryDaemonSync, reconcile.BoundaryStatusPlanned, false)
+	assertReviewBoundaryForCLI(t, review, reconcile.BoundaryDriftToPrune, reconcile.BoundaryStatusPlanned, false)
+	assertReviewBoundaryForCLI(t, review, reconcile.BoundaryAutomaticRetry, reconcile.BoundaryStatusPlanned, false)
+	after := mustSnapshotTree(t, target)
+	if strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("reconcile review changed target tree\nbefore:\n%s\nafter:\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("reconcile review stderr = %q, want empty", stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	got = Run([]string{"reconcile", "review", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("reconcile review text exit = %d stderr = %q stdout = %q, want review-required 1", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile review text", stdout.String(),
+		"reconcile_review",
+		"review_required=true",
+		"persisted_planned=1",
+		"live_target_drifts=0",
+		"reconcile_live_input",
+		"action=no_live_repair_inputs",
+		"reconcile_boundary name=persisted_drift_reconcile status=wired_read_only",
+		"reconcile_boundary name=live_only_repair_inputs status=wired_read_only",
+		"reconcile_boundary name=background_scans status=planned",
+		"reconcile_boundary name=manifest_rewrite status=planned",
+		"reconcile_boundary name=daemon_ongoing_sync_integration status=planned",
+		"reconcile_boundary name=drift_to_prune_handoff status=planned",
+		"reconcile_boundary name=automatic_retry_policy status=planned",
+	)
+	if strings.Contains(stdout.String(), "status=applied") || strings.Contains(stdout.String(), "receipt_path=") {
+		t.Fatalf("reconcile review stdout = %q, must not claim apply or receipt writes", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("reconcile review text stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReconcileReviewReportsLiveOnlyDriftAsRecordRequired(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "aaaaaaa")
+	writeDefaultProfile(t, profilePath, source, target)
+	writePublishedSessionForReconcileCLI(t, target, "session-one")
+	before := mustSnapshotTree(t, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "review", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("reconcile review live-only exit = %d stderr = %q stdout = %q, want review-required 1", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile review live-only", stdout.String(),
+		"reconcile_review",
+		"persisted_planned=0",
+		"live_target_drifts=1",
+		"action=run_drift_record_before_reconcile_apply",
+		"reconcile_live_drift",
+		"reconcile_boundary name=live_only_repair_inputs status=record_required",
+	)
+	after := mustSnapshotTree(t, target)
+	if strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("reconcile review live-only changed target tree\nbefore:\n%s\nafter:\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("reconcile review live-only stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReconcileApplyAllPersistedPlannedAppliesOnlyDurablePlannedActions(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "aaaaaaa")
+	mustWrite(t, filepath.Join(source, "other.txt"), "bbbbbbb")
+	writeDefaultProfile(t, profilePath, source, target)
+	drift := cliMissingFileDrift("drift-reconcile-all")
+	writePublishedSessionForReconcileCLI(t, target, drift.SessionID)
+	writeTargetDriftForReconcileCLI(t, target, drift)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: time.Date(2026, 5, 21, 2, 3, 4, 0, time.UTC)}.Run([]string{"reconcile", "apply", "--profile", profilePath, "--all-persisted-planned", "--apply", "--reason", "restore all persisted planned", "--reviewer", "ops", "--format", "json"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("reconcile apply --all-persisted-planned exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var receipt reconcile.Receipt
+	if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil {
+		t.Fatalf("json.Unmarshal(reconcile apply all stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if receipt.Schema != reconcile.SchemaApplyReceipt || !receipt.ApplyIntent || receipt.Summary.Applied != 1 || receipt.Actions[0].DriftID != drift.ID {
+		t.Fatalf("reconcile apply --all-persisted-planned receipt = %+v, want one applied persisted action", receipt)
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "file.txt")); gotContent != "aaaaaaa" {
+		t.Fatalf("restored target content = %q, want source payload", gotContent)
+	}
+	if _, err := os.Lstat(filepath.Join(target, "other.txt")); !os.IsNotExist(err) {
+		t.Fatalf("live-only source file target state err = %v, want untouched missing file", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("reconcile apply --all-persisted-planned stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReconcileApplyAllPersistedPlannedRequiresDurablePlannedActions(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "aaaaaaa")
+	writeDefaultProfile(t, profilePath, source, target)
+	writePublishedSessionForReconcileCLI(t, target, "session-one")
+	before := mustSnapshotTree(t, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "apply", "--profile", profilePath, "--all-persisted-planned", "--apply", "--reason", "restore all persisted planned"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("reconcile apply --all-persisted-planned exit = %d stderr = %q stdout = %q, want 1 for live-only inputs", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile apply all no persisted planned", stderr.String(),
+		"reconcile apply: --all-persisted-planned found no persisted planned reconcile actions",
+		"run drift record before reconcile apply",
+	)
+	after := mustSnapshotTree(t, target)
+	if strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("reconcile apply all live-only changed target tree\nbefore:\n%s\nafter:\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("reconcile apply all live-only stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestReconcileApplyAllPersistedPlannedRejectsMixedExplicitIDs(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "apply", "--profile", profilePath, "--id", "drift-one", "--all-persisted-planned", "--apply", "--reason", "restore all persisted planned"}, &stdout, &stderr)
+
+	if got != 2 {
+		t.Fatalf("reconcile apply mixed ids exit = %d stderr = %q stdout = %q, want usage 2", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile apply mixed ids", stderr.String(), "reconcile apply: only one of --id, --all-persisted-planned, or --record-live is allowed")
+	if stdout.Len() != 0 {
+		t.Fatalf("reconcile apply mixed ids stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestReconcileApplyRecordLivePersistsThenAppliesLiveOnlyMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "aaaaaaa")
+	writeDefaultProfile(t, profilePath, source, target)
+	writePublishedSessionForReconcileCLI(t, target, "session-one")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: time.Date(2026, 5, 21, 2, 3, 4, 0, time.UTC)}.Run([]string{"reconcile", "apply", "--profile", profilePath, "--record-live", "--apply", "--reason", "record and restore live missing file", "--reviewer", "ops", "--format", "json"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("reconcile apply --record-live exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var receipt reconcile.Receipt
+	if err := json.Unmarshal(stdout.Bytes(), &receipt); err != nil {
+		t.Fatalf("json.Unmarshal(reconcile apply record-live stdout) error = %v stdout = %q, want nil", err, stdout.String())
+	}
+	if receipt.Schema != reconcile.SchemaApplyReceipt || !receipt.ApplyIntent || receipt.Summary.Applied != 1 || receipt.Summary.Refused != 0 || len(receipt.Actions) != 1 {
+		t.Fatalf("reconcile apply --record-live receipt = %+v, want one applied persisted action", receipt)
+	}
+	if receipt.Actions[0].Path != "file.txt" || receipt.Actions[0].Action != reconcile.ActionRestoreFile {
+		t.Fatalf("reconcile apply --record-live action = %+v, want file restore", receipt.Actions[0])
+	}
+	if gotContent := readFileString(t, filepath.Join(target, "file.txt")); gotContent != "aaaaaaa" {
+		t.Fatalf("restored target content = %q, want source payload", gotContent)
+	}
+	persisted := readTargetDriftForReconcileCLI(t, target, receipt.Actions[0].DriftID)
+	if persisted.ReviewState != "resolved" || persisted.ReviewAction != "resolve" || persisted.ReviewedBy != "ops" || persisted.ReviewReason != "record and restore live missing file" {
+		t.Fatalf("persisted drift after record-live apply = %+v, want resolved review metadata", persisted)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("reconcile apply --record-live stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReconcileApplyRecordLiveRequiresLiveDrift(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "aaaaaaa")
+	mustWriteWithModTime(t, filepath.Join(target, "file.txt"), "aaaaaaa", 0o644, "2026-05-18T00:00:00Z")
+	writeDefaultProfile(t, profilePath, source, target)
+	writePublishedSessionForReconcileCLI(t, target, "session-one")
+	before := mustSnapshotTree(t, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "apply", "--profile", profilePath, "--record-live", "--apply", "--reason", "record and restore live drift"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("reconcile apply --record-live clean exit = %d stderr = %q stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile apply record-live clean", stderr.String(), "reconcile apply: --record-live found no live target drift records to persist before reconcile apply")
+	after := mustSnapshotTree(t, target)
+	if strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("reconcile apply record-live clean changed target tree\nbefore:\n%s\nafter:\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("reconcile apply record-live clean stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestReconcileApplyRecordLiveRejectsMixedSelection(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "apply", "--profile", profilePath, "--record-live", "--all-persisted-planned", "--apply", "--reason", "record and restore live drift"}, &stdout, &stderr)
+
+	if got != 2 {
+		t.Fatalf("reconcile apply record-live mixed exit = %d stderr = %q stdout = %q, want usage 2", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile apply record-live mixed", stderr.String(), "reconcile apply: only one of --id, --all-persisted-planned, or --record-live is allowed")
+	if stdout.Len() != 0 {
+		t.Fatalf("reconcile apply record-live mixed stdout = %q, want empty", stdout.String())
 	}
 }
 
@@ -1941,6 +3931,22 @@ func TestReconcilePlanAndApplyMissingFileRestore(t *testing.T) {
 	stdout.Reset()
 	stderr.Reset()
 
+	got = Run([]string{"reconcile", "plan", "--profile", profilePath, "--id", drift.ID}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("reconcile text plan exit = %d stderr = %q stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile text plan", stdout.String(),
+		"reconcile_plan",
+		"planned=1",
+		"refused=0",
+	)
+	if strings.Contains(stdout.String(), "conflict_class=") || strings.Contains(stdout.String(), "retry_advice=") {
+		t.Fatalf("reconcile text plan stdout = %q, must not emit empty refusal taxonomy fields on planned actions", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
 	runner := Runner{Now: time.Date(2026, 5, 21, 2, 3, 4, 0, time.UTC)}
 	got = runner.Run([]string{"reconcile", "apply", "--profile", profilePath, "--id", drift.ID, "--apply", "--reason", "restore from source evidence", "--reviewer", "ops"}, &stdout, &stderr)
 
@@ -1950,6 +3956,9 @@ func TestReconcilePlanAndApplyMissingFileRestore(t *testing.T) {
 	assertTextContainsAll(t, "reconcile apply", stdout.String(),
 		"reconcile_apply",
 		"apply_intent=true",
+		"receipt=reconcile-",
+		"status=applied",
+		"receipt_path=",
 		"applied=1",
 		"refused=0",
 		"action=restore_file",
@@ -1963,8 +3972,57 @@ func TestReconcilePlanAndApplyMissingFileRestore(t *testing.T) {
 	if persisted.ReviewState != "resolved" || persisted.ReviewAction != "resolve" || persisted.ReviewedBy != "ops" || persisted.ReviewReason != "restore from source evidence" {
 		t.Fatalf("persisted drift = %+v, want resolved review metadata", persisted)
 	}
+	receiptDir := filepath.Join(target, control.DirName, "reconcile", "receipts")
+	entries, err := os.ReadDir(receiptDir)
+	if err != nil {
+		t.Fatalf("ReadDir(%q) error = %v, want reconcile receipt", receiptDir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("reconcile receipt count = %d, want one", len(entries))
+	}
+	artifact, err := control.ReadFile[reconcile.Receipt](filepath.Join(receiptDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("control.ReadFile(reconcile receipt) error = %v, want nil", err)
+	}
+	if artifact.Status != reconcile.ReceiptStatusApplied || artifact.Summary.Applied != 1 || artifact.Actions[0].DriftID != drift.ID {
+		t.Fatalf("durable reconcile receipt = %+v, want applied drift receipt", artifact)
+	}
 	if stderr.Len() != 0 {
 		t.Fatalf("reconcile apply stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReconcileTextRefusalIncludesConflictClassAndRetryAdvice(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "file.txt"), "aaaaaaa")
+	writeDefaultProfile(t, profilePath, source, target)
+	drift := cliMissingFileDrift("drift-reconcile-conflict")
+	writePublishedSessionForReconcileCLI(t, target, drift.SessionID)
+	writeTargetDriftForReconcileCLI(t, target, drift)
+	mustWrite(t, filepath.Join(target, "file.txt"), "operator")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"reconcile", "plan", "--profile", profilePath, "--id", drift.ID}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("reconcile conflict plan exit = %d stderr = %q stdout = %q, want review-required 1", got, stderr.String(), stdout.String())
+	}
+	assertTextContainsAll(t, "reconcile conflict plan", stdout.String(),
+		"reconcile_plan",
+		"refused=1",
+		"reconcile_refusal",
+		"reason=ambiguous_state",
+		"conflict_class=target_state_conflict",
+		"retry_advice=review_target_state_before_retry",
+	)
+	if stderr.Len() != 0 {
+		t.Fatalf("reconcile conflict plan stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -2003,8 +4061,9 @@ func TestDaemonStopDoesNotMutateForeignState(t *testing.T) {
 	if got != 0 {
 		t.Fatalf("daemon status exit = %d stderr = %q, want 0", got, stderr.String())
 	}
-	assertTextContainsAll(t, "daemon status foreign", stdout.String(), "state=scope_mismatch", "scope_issues=state_scope_mismatch")
-	assertTextContainsNone(t, "daemon status foreign", stdout.String(), "state_profile=/profiles/other.json", "pid=99")
+	statusLine := firstLineWithPrefix(stdout.String(), "daemon_status ")
+	assertTextContainsAll(t, "daemon status foreign", statusLine, "state=scope_mismatch", "scope_issues=state_scope_mismatch", "state_profile=-", "pid=0")
+	assertTextContainsNone(t, "daemon status foreign", statusLine, "state_profile=/profiles/other.json", "pid=99 ")
 }
 
 func TestDaemonRunScopedStartupCleanupOnlyRemovesOlderScopedStopIntent(t *testing.T) {
@@ -2196,6 +4255,637 @@ func TestDaemonRunForegroundConsumesRestartIntentAndKeepsRunning(t *testing.T) {
 	}
 }
 
+func TestDaemonRunForegroundSignalsReadyBeforeRunningStdoutAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writeDefaultProfile(t, profilePath, source, target)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	daemonReady := make(chan agentdaemon.State, 2)
+	done := make(chan int, 1)
+	stdout := newBlockingDaemonRunningWriter(2)
+	defer stdout.Unblock()
+	var stderr bytes.Buffer
+	now := time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)
+	runner := Runner{
+		Context: ctx,
+		Now:     now,
+		DaemonReady: func(state agentdaemon.State) {
+			daemonReady <- state
+		},
+	}
+
+	go func() {
+		done <- runner.Run([]string{"daemon", "run", "--foreground", "--profile", profilePath, "--listen", "127.0.0.1:0"}, stdout, &stderr)
+	}()
+
+	first := waitDaemonReadyState(t, daemonReady, stdout, &stderr)
+	var restartStdout bytes.Buffer
+	var restartStderr bytes.Buffer
+	if got := (Runner{Now: now.Add(time.Second)}).Run([]string{"daemon", "restart", "--profile", profilePath, "--reason", "test restart"}, &restartStdout, &restartStderr); got != 0 {
+		t.Fatalf("daemon restart exit = %d stderr = %q, want 0", got, restartStderr.String())
+	}
+	select {
+	case <-stdout.blocked:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("daemon run did not reach blocked second running stdout; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	select {
+	case second := <-daemonReady:
+		if second.PairingAddress == "" || second.ProfileID != first.ProfileID || second.TargetID != first.TargetID {
+			t.Fatalf("second daemon ready state = %+v, want same scope with new running address", second)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatalf("daemon ready hook waited behind running stdout; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+
+	stdout.Unblock()
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if got := (Runner{Now: now.Add(2 * time.Second)}).Run([]string{"daemon", "stop", "--profile", profilePath, "--reason", "test stop"}, &stopStdout, &stopStderr); got != 0 {
+		t.Fatalf("daemon stop exit = %d stderr = %q, want 0", got, stopStderr.String())
+	}
+	select {
+	case got := <-done:
+		if got != 0 {
+			t.Fatalf("daemon run exit = %d stderr = %q, want 0", got, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("daemon run did not exit after stop intent; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestDaemonRunForegroundRunsProfileBackedLocalPollingSyncAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, ".hidden", "first.txt"), "first")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Sync = &profile.SyncConfig{LocalPolling: &profile.LocalPollingSyncConfig{
+		Enabled:            true,
+		IntervalMillis:     60000,
+		RetryBackoffMillis: 10,
+		SessionPrefix:      "daemon-sync",
+	}}
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	daemonReady := make(chan agentdaemon.State, 2)
+	done := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	now := time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)
+	runner := Runner{
+		Context: ctx,
+		Now:     now,
+		DaemonReady: func(state agentdaemon.State) {
+			daemonReady <- state
+		},
+	}
+
+	go func() {
+		done <- runner.Run([]string{"daemon", "run", "--foreground", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	}()
+
+	first := waitDaemonReadyState(t, daemonReady, &stdout, &stderr)
+	waitForFile(t, filepath.Join(target, ".hidden", "first.txt"), 2*time.Second, &stdout, &stderr)
+	scheduler, err := incrementalsync.Open(incrementalsync.Options{
+		StateDir: filepath.Join(control.ControlDir(target), "incremental-sync"),
+		Now:      func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("incrementalsync.Open() error = %v, want nil", err)
+	}
+	waitForPublishedRunSessions(t, scheduler, incrementalsync.Scope{ProfileID: p.ProfileID, TargetID: p.Target.TargetID}, 2*time.Second, "daemon-sync-000001")
+
+	mustWrite(t, filepath.Join(source, "after-restart.txt"), "second")
+	var restartStdout bytes.Buffer
+	var restartStderr bytes.Buffer
+	if got := (Runner{Now: now.Add(time.Second)}).Run([]string{"daemon", "restart", "--profile", profilePath, "--reason", "sync restart"}, &restartStdout, &restartStderr); got != 0 {
+		t.Fatalf("daemon restart exit = %d stderr = %q, want 0", got, restartStderr.String())
+	}
+	second := waitDaemonReadyState(t, daemonReady, &stdout, &stderr)
+	if second.PairingAddress == "" || second.ProfileID != first.ProfileID || second.TargetID != first.TargetID {
+		t.Fatalf("second daemon ready state = %+v, want same scope with new running address", second)
+	}
+	waitForFile(t, filepath.Join(target, "after-restart.txt"), 2*time.Second, &stdout, &stderr)
+	waitForPublishedRunSessions(t, scheduler, incrementalsync.Scope{ProfileID: p.ProfileID, TargetID: p.Target.TargetID}, 2*time.Second, "daemon-sync-000001", "daemon-sync-000002")
+
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if got := (Runner{Now: now.Add(2 * time.Second)}).Run([]string{"daemon", "stop", "--profile", profilePath, "--reason", "test stop"}, &stopStdout, &stopStderr); got != 0 {
+		t.Fatalf("daemon stop exit = %d stderr = %q, want 0", got, stopStderr.String())
+	}
+	select {
+	case got := <-done:
+		if got != 0 {
+			t.Fatalf("daemon run exit = %d stderr = %q, want 0", got, stderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("daemon run did not exit after stop intent; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	assertTextContainsAll(t, "daemon run with local polling sync", stdout.String(), "daemon: sync_local_polling", "session=daemon-sync-000001")
+	events, err := agentdaemon.ListLifecycleEvents(target)
+	if err != nil {
+		t.Fatalf("ListLifecycleEvents() error = %v, want nil", err)
+	}
+	if !lifecycleEventTypesContain(events, "daemon_sync_started", "daemon_sync_pass", "daemon_sync_stopped", "daemon_restart_consumed") {
+		t.Fatalf("daemon lifecycle event types = %#v, want sync start/pass/stop and restart consume", lifecycleEventTypes(events))
+	}
+}
+
+func TestDaemonRunForegroundRecordsProfileBackedLiveDriftWithoutRepair(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writePublishedSessionForReconcileCLI(t, target, "session-one")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Repair = &profile.RepairConfig{DriftRecording: &profile.DriftRecordingRepairConfig{
+		Enabled:        true,
+		IntervalMillis: 60000,
+	}}
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	daemonReady := make(chan agentdaemon.State, 1)
+	done := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	now := time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)
+	runner := Runner{
+		Context: ctx,
+		Now:     now,
+		DaemonReady: func(state agentdaemon.State) {
+			daemonReady <- state
+		},
+	}
+
+	go func() {
+		done <- runner.Run([]string{"daemon", "run", "--foreground", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	}()
+
+	state := waitDaemonReadyState(t, daemonReady, &stdout, &stderr)
+	if state.Status != agentdaemon.StatusRunning || state.Mode != "pairing-only" {
+		t.Fatalf("daemon ready state = %+v, want running pairing-only", state)
+	}
+	drift := waitForTargetDriftByPath(t, target, "file.txt", "missing", 2*time.Second, &stdout, &stderr)
+	if drift.ReviewState != "needs_review" || drift.ProfileID != p.ProfileID || drift.TargetID != p.Target.TargetID {
+		t.Fatalf("recorded drift = %+v, want needs_review in profile scope", drift)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target file stat error = %v, want still missing because drift recording does not repair", err)
+	}
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if got := (Runner{Now: now.Add(time.Second)}).Run([]string{"daemon", "stop", "--profile", profilePath, "--reason", "drift recording test stop"}, &stopStdout, &stopStderr); got != 0 {
+		t.Fatalf("daemon stop exit = %d stderr = %q, want 0", got, stopStderr.String())
+	}
+	select {
+	case got := <-done:
+		if got != 0 {
+			t.Fatalf("daemon run exit = %d stderr = %q stdout=%q, want 0", got, stderr.String(), stdout.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("daemon run did not exit after stop intent; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	assertTextContainsAll(t, "daemon drift recording", stdout.String(), "daemon: drift_recording", "detected=1", "recorded=1", "repair=not_applied", "reconcile=not_applied")
+	assertTextContainsNone(t, "daemon drift recording stderr", stderr.String(), "drift recording:")
+	events, err := agentdaemon.ListLifecycleEvents(target)
+	if err != nil {
+		t.Fatalf("ListLifecycleEvents() error = %v, want nil", err)
+	}
+	if !lifecycleEventTypesContain(events, "daemon_drift_recording_started", "daemon_drift_recording_pass", "daemon_drift_recording_stopped", "daemon_stopped") {
+		t.Fatalf("daemon lifecycle event types = %#v, want drift recording start/pass/stop and daemon stop", lifecycleEventTypes(events))
+	}
+}
+
+func TestDaemonRunForegroundAppliesProfileBackedPersistedReconcileWithoutLiveRecord(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWriteWithModTime(t, filepath.Join(source, "file.txt"), "aaaaaaa", 0o644, "2026-05-18T00:00:00Z")
+	drift := cliMissingFileDrift("drift-daemon-reconcile")
+	writePublishedSessionForReconcileCLI(t, target, drift.SessionID)
+	writeTargetDriftForReconcileCLI(t, target, drift)
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Repair = &profile.RepairConfig{PersistedReconcileApply: &profile.PersistedReconcileApplyRepairConfig{
+		Enabled:        true,
+		IntervalMillis: 60000,
+		Reason:         "restore persisted drift from daemon profile policy",
+		Reviewer:       "daemon-repair",
+	}}
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	daemonReady := make(chan agentdaemon.State, 1)
+	done := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	now := time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)
+	runner := Runner{
+		Context: ctx,
+		Now:     now,
+		DaemonReady: func(state agentdaemon.State) {
+			daemonReady <- state
+		},
+	}
+
+	go func() {
+		done <- runner.Run([]string{"daemon", "run", "--foreground", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	}()
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("daemon run did not exit after test cleanup cancellation; stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+	}()
+
+	_ = waitDaemonReadyState(t, daemonReady, &stdout, &stderr)
+	receipt := waitForLatestReconcileReceipt(t, target, reconcile.ReceiptStatusApplied, 2*time.Second, &stdout, &stderr)
+	waitForFile(t, filepath.Join(target, "file.txt"), 2*time.Second, &stdout, &stderr)
+	persisted := readTargetDriftForReconcileCLI(t, target, drift.ID)
+	if persisted.ReviewState != "resolved" || persisted.ReviewAction != "resolve" || persisted.ReviewedBy != "daemon-repair" || persisted.ReviewReason != "restore persisted drift from daemon profile policy" {
+		t.Fatalf("daemon persisted reconcile drift = %+v, want resolved by profile-backed daemon apply", persisted)
+	}
+	if receipt.Summary.Applied != 1 || receipt.Summary.Refused != 0 || receipt.Actions[0].DriftID != drift.ID {
+		t.Fatalf("daemon reconcile receipt = %+v, want one applied action for %q", receipt, drift.ID)
+	}
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if got := (Runner{Now: now.Add(time.Second)}).Run([]string{"daemon", "stop", "--profile", profilePath, "--reason", "daemon reconcile test stop"}, &stopStdout, &stopStderr); got != 0 {
+		t.Fatalf("daemon stop exit = %d stderr = %q, want 0", got, stopStderr.String())
+	}
+	select {
+	case got := <-done:
+		finished = true
+		if got != 0 {
+			t.Fatalf("daemon run exit = %d stderr = %q stdout=%q, want 0", got, stderr.String(), stdout.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("daemon run did not exit after stop intent; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	assertTextContainsAll(t, "daemon reconcile apply", stdout.String(), "daemon: reconcile_apply", "selection=persisted_planned", "status=applied", "applied=1", "live_record=not_called", "manifest_rewrite=not_applied", "prune=not_applied")
+	assertTextContainsNone(t, "daemon reconcile apply stderr", stderr.String(), "reconcile apply:")
+	events, err := agentdaemon.ListLifecycleEvents(target)
+	if err != nil {
+		t.Fatalf("ListLifecycleEvents() error = %v, want nil", err)
+	}
+	if !lifecycleEventTypesContain(events, "daemon_reconcile_apply_started", "daemon_reconcile_apply_pass", "daemon_reconcile_apply_stopped", "daemon_stopped") {
+		t.Fatalf("daemon lifecycle event types = %#v, want reconcile apply start/pass/stop and daemon stop", lifecycleEventTypes(events))
+	}
+}
+
+func TestDaemonRunForegroundPersistedReconcileApplyDoesNotConsumeLiveOnlyDrift(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	writePublishedSessionForReconcileCLI(t, target, "session-one")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Repair = &profile.RepairConfig{PersistedReconcileApply: &profile.PersistedReconcileApplyRepairConfig{
+		Enabled:        true,
+		IntervalMillis: 60000,
+		Reason:         "restore persisted drift from daemon profile policy",
+	}}
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	daemonReady := make(chan agentdaemon.State, 1)
+	done := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	now := time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)
+	runner := Runner{
+		Context: ctx,
+		Now:     now,
+		DaemonReady: func(state agentdaemon.State) {
+			daemonReady <- state
+		},
+	}
+
+	go func() {
+		done <- runner.Run([]string{"daemon", "run", "--foreground", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	}()
+	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("daemon run did not exit after test cleanup cancellation; stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+	}()
+
+	_ = waitDaemonReadyState(t, daemonReady, &stdout, &stderr)
+	waitForDaemonLifecycleEventType(t, target, "daemon_reconcile_apply_pass", 2*time.Second)
+	if _, err := os.Stat(filepath.Join(target, control.DirName, "drift")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("drift directory stat error = %v, want no live-only drift recording", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, "file.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target file stat error = %v, want live-only drift left unmodified", err)
+	}
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if got := (Runner{Now: now.Add(time.Second)}).Run([]string{"daemon", "stop", "--profile", profilePath, "--reason", "daemon reconcile noop stop"}, &stopStdout, &stopStderr); got != 0 {
+		t.Fatalf("daemon stop exit = %d stderr = %q, want 0", got, stopStderr.String())
+	}
+	select {
+	case got := <-done:
+		finished = true
+		if got != 0 {
+			t.Fatalf("daemon run exit = %d stderr = %q stdout=%q, want 0", got, stderr.String(), stdout.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("daemon run did not exit after stop intent; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	assertTextContainsAll(t, "daemon reconcile no planned", stdout.String(), "daemon: reconcile_apply", "selection=persisted_planned", "planned=0", "status=noop")
+	assertTextContainsNone(t, "daemon reconcile no planned stderr", stderr.String(), "reconcile apply:")
+}
+
+func TestDaemonRunForegroundRunsProfileBackedNetworkPollingSync(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	sourceProfilePath := filepath.Join(dir, "source.profile.json")
+	targetProfilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustMkdir(t, filepath.Join(source, ".hidden"))
+	mustWrite(t, filepath.Join(source, ".hidden", "daemon-network.txt"), "daemon network secret")
+	sourceCert := newCLITestCertificate(t, "source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	targetCert := newCLITestCertificate(t, "target", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	peer := cliAuthenticatedPeerForCerts(t, sourceCert, targetCert)
+	sourceProfile := profile.NewDefault(peer.ProfileID, "Source profile", source, target)
+	sourceProfile.Target.TargetID = peer.TargetID
+	sourceProfile.Target.DevicePublicKey = peer.TargetDeviceID
+	sourceProfile.Target.PairingReceiptID = "pairing-1"
+	sourceProfile.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	receiverListener := listenOnReservedTCPAddress(t)
+	t.Cleanup(func() {
+		_ = receiverListener.Close()
+	})
+	receiverAddress := receiverListener.Addr().String()
+	sourceProfile.Network = networkConfigForCLI(t, sourceCert, receiverAddress)
+	sourceProfile.Sync = &profile.SyncConfig{NetworkPolling: &profile.NetworkPollingSyncConfig{
+		Enabled:            true,
+		IntervalMillis:     60000,
+		RetryBackoffMillis: 10,
+		SessionPrefix:      "daemon-network-sync",
+	}}
+	targetProfile := sourceProfile
+	targetProfile.Name = "Target profile"
+	targetProfile.Network = networkConfigForCLI(t, targetCert, receiverAddress)
+	targetProfile.Sync = nil
+	if err := profile.WriteFile(sourceProfilePath, sourceProfile); err != nil {
+		t.Fatalf("profile.WriteFile(source) error = %v, want nil", err)
+	}
+	if err := profile.WriteFile(targetProfilePath, targetProfile); err != nil {
+		t.Fatalf("profile.WriteFile(target) error = %v, want nil", err)
+	}
+	writePairingReceiptForCLI(t, target, sourceProfile, func(receipt *control.PairingReceipt) {
+		receipt.SourceDeviceID = peer.SourceDeviceID
+		receipt.TargetDeviceID = peer.TargetDeviceID
+		receipt.DevicePublicKey = peer.TargetDeviceID
+		receipt.VerifiedAt = sourceProfile.Target.PairedAt
+	})
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	pairingReady := make(chan pairserve.ReadyInfo, 1)
+	receiverReady := make(chan receiverserve.ReadyInfo, 1)
+	serveDone := make(chan int, 1)
+	var serveStdout bytes.Buffer
+	var serveStderr bytes.Buffer
+	serveRunner := Runner{
+		Context:                 serveCtx,
+		Now:                     cliTLSNow(),
+		receiverListenerForTest: receiverListener,
+		ServePairingReady: func(info pairserve.ReadyInfo) {
+			pairingReady <- info
+		},
+		ServeReceiverReady: func(info receiverserve.ReadyInfo) {
+			receiverReady <- info
+		},
+	}
+	go func() {
+		serveDone <- serveRunner.Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
+	}()
+	waitServePairingReady(t, pairingReady, &serveStderr)
+	receiverInfo := waitServeReceiverReady(t, receiverReady, &serveStderr)
+	if receiverInfo.Address != receiverAddress || receiverInfo.Peer != peer {
+		t.Fatalf("serve receiver info = %+v, want address %q peer %+v", receiverInfo, receiverAddress, peer)
+	}
+	ctx, cancelDaemon := context.WithCancel(context.Background())
+	defer cancelDaemon()
+	daemonReady := make(chan agentdaemon.State, 1)
+	daemonDone := make(chan int, 1)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	daemonRunner := Runner{
+		Context: ctx,
+		Now:     cliTLSNow(),
+		DaemonReady: func(state agentdaemon.State) {
+			daemonReady <- state
+		},
+	}
+	go func() {
+		daemonDone <- daemonRunner.Run([]string{"daemon", "run", "--foreground", "--profile", sourceProfilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+	}()
+
+	state := waitDaemonReadyState(t, daemonReady, &stdout, &stderr)
+	if state.Status != agentdaemon.StatusRunning || state.Mode != "network-polling" || state.PairingAddress != "" || state.ReceiverAddress != "" {
+		t.Fatalf("daemon network polling ready state = %+v, want network-polling without serve listeners", state)
+	}
+	waitForFile(t, filepath.Join(target, ".hidden", "daemon-network.txt"), 2*time.Second, &stdout, &stderr)
+	scheduler, err := incrementalsync.Open(incrementalsync.Options{
+		StateDir: filepath.Join(control.ControlDir(target), "incremental-sync"),
+		Now:      func() time.Time { return cliTLSNow() },
+	})
+	if err != nil {
+		t.Fatalf("incrementalsync.Open() error = %v, want nil", err)
+	}
+	waitForPublishedRunSessions(t, scheduler, incrementalsync.Scope{ProfileID: sourceProfile.ProfileID, TargetID: sourceProfile.Target.TargetID}, 2*time.Second, "daemon-network-sync-000001")
+	var stopStdout bytes.Buffer
+	var stopStderr bytes.Buffer
+	if got := (Runner{Now: cliTLSNow().Add(time.Second)}).Run([]string{"daemon", "stop", "--profile", sourceProfilePath, "--reason", "test stop"}, &stopStdout, &stopStderr); got != 0 {
+		t.Fatalf("daemon stop exit = %d stderr = %q, want 0", got, stopStderr.String())
+	}
+	select {
+	case got := <-daemonDone:
+		if got != 0 {
+			t.Fatalf("daemon run exit = %d stderr = %q stdout=%q, want 0", got, stderr.String(), stdout.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("daemon run did not exit after stop intent; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	assertTextContainsAll(t, "daemon run with network polling sync", stdout.String(), "daemon: running", "mode=network-polling", "daemon: sync_network_polling", "session=daemon-network-sync-000001", "network_transfer=published")
+	if stderr.Len() != 0 {
+		t.Fatalf("daemon network polling stderr = %q, want empty", stderr.String())
+	}
+	events, err := agentdaemon.ListLifecycleEvents(target)
+	if err != nil {
+		t.Fatalf("ListLifecycleEvents() error = %v, want nil", err)
+	}
+	if !lifecycleEventTypesContain(events, "daemon_sync_started", "daemon_sync_pass", "daemon_sync_stopped", "daemon_stopped") {
+		t.Fatalf("daemon lifecycle event types = %#v, want network sync start/pass/stop and daemon stop", lifecycleEventTypes(events))
+	}
+	transfer := readNetworkTransferForCLI(t, target, "daemon-network-sync-000001")
+	if transfer.Status != control.NetworkTransferPublished || transfer.Stage != "commit" {
+		t.Fatalf("network transfer = %+v, want published commit", transfer)
+	}
+
+	mustWrite(t, filepath.Join(source, "after-network-restart.txt"), "after restart")
+	ctx2, cancelDaemon2 := context.WithCancel(context.Background())
+	defer cancelDaemon2()
+	daemonReady2 := make(chan agentdaemon.State, 1)
+	daemonDone2 := make(chan int, 1)
+	var stdout2 bytes.Buffer
+	var stderr2 bytes.Buffer
+	daemonRunner2 := Runner{
+		Context: ctx2,
+		Now:     cliTLSNow().Add(2 * time.Second),
+		DaemonReady: func(state agentdaemon.State) {
+			daemonReady2 <- state
+		},
+	}
+	go func() {
+		daemonDone2 <- daemonRunner2.Run([]string{"daemon", "run", "--foreground", "--profile", sourceProfilePath, "--listen", "127.0.0.1:0"}, &stdout2, &stderr2)
+	}()
+	state2 := waitDaemonReadyState(t, daemonReady2, &stdout2, &stderr2)
+	if state2.Status != agentdaemon.StatusRunning || state2.Mode != "network-polling" {
+		t.Fatalf("second daemon network polling ready state = %+v, want network-polling", state2)
+	}
+	waitForFile(t, filepath.Join(target, "after-network-restart.txt"), 2*time.Second, &stdout2, &stderr2)
+	waitForPublishedRunSessions(t, scheduler, incrementalsync.Scope{ProfileID: sourceProfile.ProfileID, TargetID: sourceProfile.Target.TargetID}, 2*time.Second, "daemon-network-sync-000001", "daemon-network-sync-000002")
+	var stopStdout2 bytes.Buffer
+	var stopStderr2 bytes.Buffer
+	if got := (Runner{Now: cliTLSNow().Add(3 * time.Second)}).Run([]string{"daemon", "stop", "--profile", sourceProfilePath, "--reason", "second test stop"}, &stopStdout2, &stopStderr2); got != 0 {
+		t.Fatalf("second daemon stop exit = %d stderr = %q, want 0", got, stopStderr2.String())
+	}
+	select {
+	case got := <-daemonDone2:
+		if got != 0 {
+			t.Fatalf("second daemon run exit = %d stderr = %q stdout=%q, want 0", got, stderr2.String(), stdout2.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("second daemon run did not exit after stop intent; stdout=%q stderr=%q", stdout2.String(), stderr2.String())
+	}
+	assertTextContainsAll(t, "second daemon run with network polling sync", stdout2.String(), "daemon: running", "mode=network-polling", "daemon: sync_network_polling", "session=daemon-network-sync-000002", "network_transfer=published")
+	if stderr2.Len() != 0 {
+		t.Fatalf("second daemon network polling stderr = %q, want empty", stderr2.String())
+	}
+	transfer2 := readNetworkTransferForCLI(t, target, "daemon-network-sync-000002")
+	if transfer2.Status != control.NetworkTransferPublished || transfer2.Stage != "commit" {
+		t.Fatalf("second network transfer = %+v, want published commit", transfer2)
+	}
+	cancelServe()
+	select {
+	case serveExit := <-serveDone:
+		if serveExit != 0 {
+			t.Fatalf("serve exit after daemon network polling = %d stderr = %q, want 0", serveExit, serveStderr.String())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("serve did not exit after cancel; stderr=%q", serveStderr.String())
+	}
+}
+
+func TestDaemonRunForegroundLocalPollingSyncResumesSessionSequenceFromReceipts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "target.profile.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "first.txt"), "first")
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Sync = &profile.SyncConfig{LocalPolling: &profile.LocalPollingSyncConfig{
+		Enabled:            true,
+		IntervalMillis:     60000,
+		RetryBackoffMillis: 10,
+		SessionPrefix:      "daemon-sync",
+	}}
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	now := time.Date(2026, 5, 21, 1, 2, 3, 0, time.UTC)
+	runDaemonUntilSynced := func(label string, runNow time.Time, wantSession string) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		daemonReady := make(chan agentdaemon.State, 1)
+		done := make(chan int, 1)
+		var stdout bytes.Buffer
+		var stderr bytes.Buffer
+		runner := Runner{
+			Context: ctx,
+			Now:     runNow,
+			DaemonReady: func(state agentdaemon.State) {
+				daemonReady <- state
+			},
+		}
+		go func() {
+			done <- runner.Run([]string{"daemon", "run", "--foreground", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &stdout, &stderr)
+		}()
+		_ = waitDaemonReadyState(t, daemonReady, &stdout, &stderr)
+		scheduler, err := incrementalsync.Open(incrementalsync.Options{
+			StateDir: filepath.Join(control.ControlDir(target), "incremental-sync"),
+			Now:      func() time.Time { return now },
+		})
+		if err != nil {
+			t.Fatalf("%s: incrementalsync.Open() error = %v, want nil", label, err)
+		}
+		waitForPublishedRunSessions(t, scheduler, incrementalsync.Scope{ProfileID: p.ProfileID, TargetID: p.Target.TargetID}, 2*time.Second, wantSession)
+		var stopStdout bytes.Buffer
+		var stopStderr bytes.Buffer
+		if got := (Runner{Now: runNow.Add(time.Second)}).Run([]string{"daemon", "stop", "--profile", profilePath, "--reason", label}, &stopStdout, &stopStderr); got != 0 {
+			t.Fatalf("%s: daemon stop exit = %d stderr = %q, want 0", label, got, stopStderr.String())
+		}
+		select {
+		case got := <-done:
+			if got != 0 {
+				t.Fatalf("%s: daemon run exit = %d stderr = %q stdout=%q, want 0", label, got, stderr.String(), stdout.String())
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: daemon run did not exit after stop; stdout=%q stderr=%q", label, stdout.String(), stderr.String())
+		}
+	}
+
+	runDaemonUntilSynced("first daemon run", now, "daemon-sync-000001")
+	mustWrite(t, filepath.Join(source, "second.txt"), "second")
+	runDaemonUntilSynced("second daemon run", now.Add(2*time.Second), "daemon-sync-000002")
+}
+
 func TestDaemonRunForegroundDoesNotDropStopDuringRestartWindow(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -2355,1028 +5045,6 @@ func TestDaemonRunRequiresForeground(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("daemon run without foreground stdout = %q, want empty", stdout.String())
-	}
-}
-
-func TestPairWritesReceiptAndUpdatesProfilePins(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
-	now := time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)
-	serveCtx, cancelServe := context.WithCancel(context.Background())
-	defer cancelServe()
-	ready := make(chan pairserve.ReadyInfo, 1)
-	done := make(chan int, 1)
-	serverRunner := Runner{
-		Context: serveCtx,
-		Now:     now,
-		ServePairingReady: func(info pairserve.ReadyInfo) {
-			ready <- info
-		},
-	}
-	var serveStdout bytes.Buffer
-	var serveStderr bytes.Buffer
-	go func() {
-		done <- serverRunner.Run([]string{"serve", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
-	}()
-	info := waitServePairingReady(t, ready, &serveStderr)
-	var pairStdout bytes.Buffer
-	var pairStderr bytes.Buffer
-	pairRunner := Runner{Now: now.Add(time.Second)}
-
-	got := pairRunner.Run([]string{"pair", "--profile", profilePath, "--target", info.Address, "--verification-code", info.VerificationCode}, &pairStdout, &pairStderr)
-
-	if got != 0 {
-		t.Fatalf("pair exit = %d stderr = %q, want 0", got, pairStderr.String())
-	}
-	if !strings.Contains(pairStdout.String(), "pinned target identity") || !strings.Contains(pairStdout.String(), "transfer=false") {
-		t.Fatalf("pair stdout = %q, want pinned identity with transfer=false", pairStdout.String())
-	}
-	for _, forbidden := range []string{"encrypted", "sync ready", "trusted=true"} {
-		if strings.Contains(pairStdout.String(), forbidden) {
-			t.Fatalf("pair stdout = %q, must not contain %q", pairStdout.String(), forbidden)
-		}
-	}
-	updated, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if updated.Target.DevicePublicKey != info.TargetDeviceID || updated.Target.PairingReceiptID == "" || updated.Target.PairedAt == "" {
-		t.Fatalf("updated target = %#v, want pinned target device/receipt/time", updated.Target)
-	}
-	state, err := pairing.ValidateProfileTrust(updated)
-	if err != nil {
-		t.Fatalf("ValidateProfileTrust(updated) error = %v, want nil", err)
-	}
-	if state.TargetDeviceID != info.TargetDeviceID {
-		t.Fatalf("ValidateProfileTrust TargetDeviceID = %q, want %q", state.TargetDeviceID, info.TargetDeviceID)
-	}
-	if state.Receipt.Method != "sas" || state.Receipt.VerificationHash == "" || state.Receipt.SourceDeviceID == "" {
-		t.Fatalf("pairing receipt = %#v, want method/hash/source evidence", state.Receipt)
-	}
-	snapshotPath, err := control.Path(target, control.ArtifactProfileSnapshot, "profile-"+updated.Target.PairingReceiptID)
-	if err != nil {
-		t.Fatalf("control.Path(snapshot) error = %v, want nil", err)
-	}
-	if _, err := os.Lstat(snapshotPath); err != nil {
-		t.Fatalf("profile snapshot %q error = %v, want exists", snapshotPath, err)
-	}
-	snapshot, err := control.ReadFile[control.ProfileSnapshot](snapshotPath)
-	if err != nil {
-		t.Fatalf("control.ReadFile(snapshot) error = %v, want nil", err)
-	}
-	var snapProfile profile.Profile
-	if err := json.Unmarshal(snapshot.Profile, &snapProfile); err != nil {
-		t.Fatalf("snapshot profile decode error = %v, want nil", err)
-	}
-	if snapProfile.Target.PairingReceiptID != updated.Target.PairingReceiptID || snapProfile.Target.DevicePublicKey != updated.Target.DevicePublicKey {
-		t.Fatalf("snapshot profile target = %#v, want updated pins %#v", snapProfile.Target, updated.Target)
-	}
-	if snapProfile.PrivacyPolicy.TrafficLevel != 2 ||
-		snapProfile.PrivacyPolicy.PaddingBucketBytes != updated.PrivacyPolicy.PaddingBucketBytes ||
-		snapProfile.PrivacyPolicy.BatchMaxBytes != updated.PrivacyPolicy.BatchMaxBytes ||
-		snapProfile.PrivacyPolicy.BatchMaxCount != updated.PrivacyPolicy.BatchMaxCount ||
-		snapProfile.PrivacyPolicy.JitterBudgetMillis != updated.PrivacyPolicy.JitterBudgetMillis ||
-		!snapProfile.PrivacyPolicy.DiscoveryLowInfo {
-		t.Fatalf("snapshot privacy policy = %+v, want pinned profile level 2 bounds %+v", snapProfile.PrivacyPolicy, updated.PrivacyPolicy)
-	}
-	cancelServe()
-	select {
-	case got := <-done:
-		if got != 0 {
-			t.Fatalf("serve exit after cancel = %d stderr = %q, want 0", got, serveStderr.String())
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("serve did not exit after cancel")
-	}
-}
-
-func TestPairRejectsWrongVerificationCodeWithoutMutatingProfile(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
-	serveCtx, cancelServe := context.WithCancel(context.Background())
-	defer cancelServe()
-	ready := make(chan pairserve.ReadyInfo, 1)
-	done := make(chan int, 1)
-	var serveStdout bytes.Buffer
-	var serveStderr bytes.Buffer
-	go func() {
-		done <- Runner{
-			Context: serveCtx,
-			ServePairingReady: func(info pairserve.ReadyInfo) {
-				ready <- info
-			},
-		}.Run([]string{"serve", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
-	}()
-	info := waitServePairingReady(t, ready, &serveStderr)
-	var pairStdout bytes.Buffer
-	var pairStderr bytes.Buffer
-
-	got := Runner{}.Run([]string{"pair", "--profile", profilePath, "--target", info.Address, "--verification-code", "000000"}, &pairStdout, &pairStderr)
-
-	if got != 2 {
-		t.Fatalf("pair wrong code exit = %d stderr = %q, want 2", got, pairStderr.String())
-	}
-	if !strings.Contains(pairStderr.String(), "pairing verification failed") {
-		t.Fatalf("pair wrong code stderr = %q, want verification failure", pairStderr.String())
-	}
-	updated, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if updated.Target.DevicePublicKey != "" || updated.Target.PairingReceiptID != "" || updated.Target.PairedAt != "" {
-		t.Fatalf("wrong code updated target = %#v, want no pairing pins", updated.Target)
-	}
-	if _, err := os.Lstat(filepath.Join(target, ".supermover")); !os.IsNotExist(err) {
-		t.Fatalf("wrong code .supermover state error = %v, want not exist", err)
-	}
-	cancelServe()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("serve did not exit after cancel")
-	}
-}
-
-func TestPairRejectsAlreadyPairedDifferentIdentity(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	p := profile.NewDefault("profile-local", "Local profile", source, target)
-	p.Target.DevicePublicKey = "sha256:0123456789abcdef"
-	p.Target.PairingReceiptID = "pairing-1"
-	p.Target.PairedAt = "2026-05-16T00:00:00Z"
-	if err := profile.WriteFile(profilePath, p); err != nil {
-		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
-	}
-	writePairingReceiptForCLI(t, target, p)
-	otherBootstrap := pairing.Bootstrap{
-		ProtocolVersion: protocol.Version,
-		Status:          "pairing_ready",
-		TargetDeviceID:  "sha256:fedcba9876543210",
-		ChallengeID:     "pair-other",
-		ExpiresAt:       time.Now().Add(time.Minute).UTC(),
-		Trusted:         false,
-		TransferEnabled: false,
-	}
-	otherBootstrap.VerificationHash = pairing.VerificationHash(otherBootstrap.TargetDeviceID, otherBootstrap.ChallengeID, "123456")
-	endpoint := httptestPairingServer(t, otherBootstrap)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Runner{}.Run([]string{"pair", "--profile", profilePath, "--target", endpoint, "--verification-code", "123456"}, &stdout, &stderr)
-
-	if got != 2 {
-		t.Fatalf("pair already paired exit = %d stderr = %q, want 2", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "target_device_id does not match profile target identity") {
-		t.Fatalf("pair already paired stderr = %q, want target identity mismatch", stderr.String())
-	}
-	updated, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if updated.Target.DevicePublicKey != p.Target.DevicePublicKey || updated.Target.PairingReceiptID != p.Target.PairingReceiptID || updated.Target.PairedAt != p.Target.PairedAt {
-		t.Fatalf("already paired target = %#v, want pins preserved", updated.Target)
-	}
-}
-
-func TestPairRejectsFirstPairMismatchedTargetIdentityWithoutMutatingProfile(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
-	otherBootstrap := pairing.Bootstrap{
-		ProtocolVersion: protocol.Version,
-		Status:          "pairing_ready",
-		TargetDeviceID:  "sha256:fedcba9876543210",
-		ChallengeID:     "pair-other",
-		ExpiresAt:       time.Now().Add(time.Minute).UTC(),
-		Trusted:         false,
-		TransferEnabled: false,
-	}
-	otherBootstrap.VerificationHash = pairing.VerificationHash(otherBootstrap.TargetDeviceID, otherBootstrap.ChallengeID, "123456")
-	endpoint := httptestPairingServer(t, otherBootstrap)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Runner{}.Run([]string{"pair", "--profile", profilePath, "--target", endpoint, "--verification-code", "123456"}, &stdout, &stderr)
-
-	if got != 2 {
-		t.Fatalf("pair first mismatch exit = %d stderr = %q, want 2", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "target_device_id does not match profile target identity") {
-		t.Fatalf("pair first mismatch stderr = %q, want target identity mismatch", stderr.String())
-	}
-	updated, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if updated.Target.DevicePublicKey != "" || updated.Target.PairingReceiptID != "" || updated.Target.PairedAt != "" {
-		t.Fatalf("first mismatch target = %#v, want no pairing pins", updated.Target)
-	}
-	if _, err := os.Lstat(filepath.Join(target, ".supermover")); !os.IsNotExist(err) {
-		t.Fatalf("first mismatch .supermover state error = %v, want not exist", err)
-	}
-}
-
-func TestPairRejectsExpiredBootstrapWithoutMutatingProfile(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
-	p := mustReadProfile(t, profilePath)
-	targetDeviceID, err := pairing.TargetDeviceID(p)
-	if err != nil {
-		t.Fatalf("pairing.TargetDeviceID() error = %v, want nil", err)
-	}
-	bootstrap := pairing.Bootstrap{
-		ProtocolVersion: protocol.Version,
-		Status:          "pairing_ready",
-		TargetDeviceID:  targetDeviceID,
-		ChallengeID:     "pair-expired",
-		ExpiresAt:       time.Date(2026, 5, 16, 9, 59, 0, 0, time.UTC),
-		Trusted:         false,
-		TransferEnabled: false,
-	}
-	bootstrap.VerificationHash = pairing.VerificationHash(bootstrap.TargetDeviceID, bootstrap.ChallengeID, "123456")
-	endpoint := httptestPairingServer(t, bootstrap)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Runner{Now: time.Date(2026, 5, 16, 10, 0, 0, 0, time.UTC)}.Run([]string{"pair", "--profile", profilePath, "--target", endpoint, "--verification-code", "123456"}, &stdout, &stderr)
-
-	if got != 2 {
-		t.Fatalf("pair expired bootstrap exit = %d stderr = %q, want 2", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "challenge expired") {
-		t.Fatalf("pair expired bootstrap stderr = %q, want challenge expired", stderr.String())
-	}
-	updated, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if updated.Target.DevicePublicKey != "" || updated.Target.PairingReceiptID != "" || updated.Target.PairedAt != "" {
-		t.Fatalf("expired bootstrap target = %#v, want no pairing pins", updated.Target)
-	}
-	if _, err := os.Lstat(filepath.Join(target, ".supermover")); !os.IsNotExist(err) {
-		t.Fatalf("expired bootstrap .supermover state error = %v, want not exist", err)
-	}
-}
-
-func TestPairRejectsUnsafeControlPlaneSymlinkWithoutMutatingProfile(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	outside := filepath.Join(dir, "outside")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	mustMkdir(t, outside)
-	writeDefaultProfile(t, profilePath, source, target)
-	p := mustReadProfile(t, profilePath)
-	targetDeviceID, err := pairing.TargetDeviceID(p)
-	if err != nil {
-		t.Fatalf("pairing.TargetDeviceID() error = %v, want nil", err)
-	}
-	if err := os.Symlink(outside, filepath.Join(target, ".supermover")); err != nil {
-		t.Skipf("os.Symlink() unavailable: %v", err)
-	}
-	bootstrap := pairing.Bootstrap{
-		ProtocolVersion: protocol.Version,
-		Status:          "pairing_ready",
-		TargetDeviceID:  targetDeviceID,
-		ChallengeID:     "pair-symlink",
-		ExpiresAt:       time.Now().Add(time.Minute).UTC(),
-		Trusted:         false,
-		TransferEnabled: false,
-	}
-	bootstrap.VerificationHash = pairing.VerificationHash(bootstrap.TargetDeviceID, bootstrap.ChallengeID, "123456")
-	endpoint := httptestPairingServer(t, bootstrap)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Runner{}.Run([]string{"pair", "--profile", profilePath, "--target", endpoint, "--verification-code", "123456"}, &stdout, &stderr)
-
-	if got != 1 {
-		t.Fatalf("pair symlink control plane exit = %d stderr = %q, want 1", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "symlink") {
-		t.Fatalf("pair symlink control plane stderr = %q, want symlink refusal", stderr.String())
-	}
-	updated, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if updated.Target.DevicePublicKey != "" || updated.Target.PairingReceiptID != "" || updated.Target.PairedAt != "" {
-		t.Fatalf("symlink control plane target = %#v, want no pairing pins", updated.Target)
-	}
-	if _, err := os.Lstat(filepath.Join(outside, "pairings", "pair-symlink.json")); !os.IsNotExist(err) {
-		t.Fatalf("outside receipt state error = %v, want no external write", err)
-	}
-}
-
-func TestPairRejectsExistingPairingArtifactWithoutOverwrite(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
-	p := mustReadProfile(t, profilePath)
-	targetDeviceID, err := pairing.TargetDeviceID(p)
-	if err != nil {
-		t.Fatalf("pairing.TargetDeviceID() error = %v, want nil", err)
-	}
-	bootstrap := pairing.Bootstrap{
-		ProtocolVersion: protocol.Version,
-		Status:          "pairing_ready",
-		TargetDeviceID:  targetDeviceID,
-		ChallengeID:     "pair-collision",
-		ExpiresAt:       time.Now().Add(time.Minute).UTC(),
-		Trusted:         false,
-		TransferEnabled: false,
-	}
-	bootstrap.VerificationHash = pairing.VerificationHash(bootstrap.TargetDeviceID, bootstrap.ChallengeID, "123456")
-	existingID := localPairingReceiptID(p, bootstrap)
-	receiptPath, err := control.Path(target, control.ArtifactPairingReceipt, existingID)
-	if err != nil {
-		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
-	}
-	mustWrite(t, receiptPath, `{"preserve":"audit"}`)
-	endpoint := httptestPairingServer(t, bootstrap)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Runner{}.Run([]string{"pair", "--profile", profilePath, "--target", endpoint, "--verification-code", "123456"}, &stdout, &stderr)
-
-	if got != 1 {
-		t.Fatalf("pair existing artifact exit = %d stderr = %q, want 1", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "already exists") {
-		t.Fatalf("pair existing artifact stderr = %q, want no-replace refusal", stderr.String())
-	}
-	gotBytes, err := os.ReadFile(receiptPath)
-	if err != nil {
-		t.Fatalf("os.ReadFile(%q) error = %v, want nil", receiptPath, err)
-	}
-	if string(gotBytes) != `{"preserve":"audit"}` {
-		t.Fatalf("existing receipt = %q, want preserved audit evidence", string(gotBytes))
-	}
-	updated := mustReadProfile(t, profilePath)
-	if updated.Target.DevicePublicKey != "" || updated.Target.PairingReceiptID != "" || updated.Target.PairedAt != "" {
-		t.Fatalf("existing artifact target = %#v, want no pairing pins", updated.Target)
-	}
-}
-
-func TestPairRejectsExistingProfileSnapshotBeforeWritingReceipt(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
-	p := mustReadProfile(t, profilePath)
-	targetDeviceID, err := pairing.TargetDeviceID(p)
-	if err != nil {
-		t.Fatalf("pairing.TargetDeviceID() error = %v, want nil", err)
-	}
-	bootstrap := pairing.Bootstrap{
-		ProtocolVersion: protocol.Version,
-		Status:          "pairing_ready",
-		TargetDeviceID:  targetDeviceID,
-		ChallengeID:     "pair-snapshot-collision",
-		ExpiresAt:       time.Now().Add(time.Minute).UTC(),
-		Trusted:         false,
-		TransferEnabled: false,
-	}
-	bootstrap.VerificationHash = pairing.VerificationHash(bootstrap.TargetDeviceID, bootstrap.ChallengeID, "123456")
-	receiptID := localPairingReceiptID(p, bootstrap)
-	snapshotPath, err := control.Path(target, control.ArtifactProfileSnapshot, "profile-"+receiptID)
-	if err != nil {
-		t.Fatalf("control.Path(snapshot) error = %v, want nil", err)
-	}
-	mustWrite(t, snapshotPath, `{"preserve":"snapshot"}`)
-	receiptPath, err := control.Path(target, control.ArtifactPairingReceipt, receiptID)
-	if err != nil {
-		t.Fatalf("control.Path(receipt) error = %v, want nil", err)
-	}
-	endpoint := httptestPairingServer(t, bootstrap)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Runner{}.Run([]string{"pair", "--profile", profilePath, "--target", endpoint, "--verification-code", "123456"}, &stdout, &stderr)
-
-	if got != 1 {
-		t.Fatalf("pair existing snapshot exit = %d stderr = %q, want 1", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "already exists") {
-		t.Fatalf("pair existing snapshot stderr = %q, want no-replace refusal", stderr.String())
-	}
-	if _, err := os.Lstat(receiptPath); !os.IsNotExist(err) {
-		t.Fatalf("receipt state after snapshot preflight error = %v, want no receipt write", err)
-	}
-	gotBytes, err := os.ReadFile(snapshotPath)
-	if err != nil {
-		t.Fatalf("os.ReadFile(%q) error = %v, want nil", snapshotPath, err)
-	}
-	if string(gotBytes) != `{"preserve":"snapshot"}` {
-		t.Fatalf("existing snapshot = %q, want preserved audit evidence", string(gotBytes))
-	}
-	updated := mustReadProfile(t, profilePath)
-	if updated.Target.DevicePublicKey != "" || updated.Target.PairingReceiptID != "" || updated.Target.PairedAt != "" {
-		t.Fatalf("existing snapshot target = %#v, want no pairing pins", updated.Target)
-	}
-}
-
-func TestPairRejectsSymlinkedProfileBeforeWritingControlPlane(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	realProfilePath := filepath.Join(dir, "real.profile.json")
-	profilePath := filepath.Join(dir, "source.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, realProfilePath, source, target)
-	if err := os.Symlink(realProfilePath, profilePath); err != nil {
-		t.Skipf("os.Symlink() unavailable: %v", err)
-	}
-	p := mustReadProfile(t, profilePath)
-	targetDeviceID, err := pairing.TargetDeviceID(p)
-	if err != nil {
-		t.Fatalf("pairing.TargetDeviceID() error = %v, want nil", err)
-	}
-	bootstrap := pairing.Bootstrap{
-		ProtocolVersion: protocol.Version,
-		Status:          "pairing_ready",
-		TargetDeviceID:  targetDeviceID,
-		ChallengeID:     "pair-profile-symlink",
-		ExpiresAt:       time.Now().Add(time.Minute).UTC(),
-		Trusted:         false,
-		TransferEnabled: false,
-	}
-	bootstrap.VerificationHash = pairing.VerificationHash(bootstrap.TargetDeviceID, bootstrap.ChallengeID, "123456")
-	endpoint := httptestPairingServer(t, bootstrap)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Runner{}.Run([]string{"pair", "--profile", profilePath, "--target", endpoint, "--verification-code", "123456"}, &stdout, &stderr)
-
-	if got != 1 {
-		t.Fatalf("pair symlink profile exit = %d stderr = %q, want 1", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "profile file") || !strings.Contains(stderr.String(), "symlink") {
-		t.Fatalf("pair symlink profile stderr = %q, want profile symlink refusal", stderr.String())
-	}
-	updated := mustReadProfile(t, realProfilePath)
-	if updated.Target.DevicePublicKey != "" || updated.Target.PairingReceiptID != "" || updated.Target.PairedAt != "" {
-		t.Fatalf("symlink profile target = %#v, want no pairing pins", updated.Target)
-	}
-	if _, err := os.Lstat(filepath.Join(target, ".supermover")); !os.IsNotExist(err) {
-		t.Fatalf("symlink profile .supermover state error = %v, want not exist", err)
-	}
-}
-
-func TestServeValidatesProfileAndTargetRoot(t *testing.T) {
-	tests := []struct {
-		name    string
-		profile func(t *testing.T) string
-		want    string
-	}{
-		{
-			name: "missing profile",
-			profile: func(t *testing.T) string {
-				return filepath.Join(t.TempDir(), "missing.profile.json")
-			},
-			want: "no such file",
-		},
-		{
-			name: "missing target local path",
-			profile: func(t *testing.T) string {
-				dir := t.TempDir()
-				path := filepath.Join(dir, "profile.json")
-				p := profile.NewDefault("profile-local", "Local profile", filepath.Join(dir, "source"), filepath.Join(dir, "target"))
-				p.Target.LocalPath = ""
-				if err := profile.WriteFile(path, p); err != nil {
-					t.Fatalf("profile.WriteFile(%q) error = %v, want nil", path, err)
-				}
-				return path
-			},
-			want: "target.local_path is required",
-		},
-		{
-			name: "target root symlink",
-			profile: func(t *testing.T) string {
-				dir := t.TempDir()
-				realTarget := filepath.Join(dir, "real-target")
-				mustMkdir(t, realTarget)
-				linkTarget := filepath.Join(dir, "target-link")
-				if err := os.Symlink(realTarget, linkTarget); err != nil {
-					t.Skipf("os.Symlink() unavailable: %v", err)
-				}
-				path := filepath.Join(dir, "profile.json")
-				p := profile.NewDefault("profile-local", "Local profile", filepath.Join(dir, "source"), linkTarget)
-				if err := profile.WriteFile(path, p); err != nil {
-					t.Fatalf("profile.WriteFile(%q) error = %v, want nil", path, err)
-				}
-				return path
-			},
-			want: "symlink",
-		},
-		{
-			name: "target control plane symlink",
-			profile: func(t *testing.T) string {
-				dir := t.TempDir()
-				target := filepath.Join(dir, "target")
-				mustMkdir(t, target)
-				if err := os.Symlink(t.TempDir(), filepath.Join(target, ".supermover")); err != nil {
-					t.Skipf("os.Symlink() unavailable: %v", err)
-				}
-				path := filepath.Join(dir, "profile.json")
-				p := profile.NewDefault("profile-local", "Local profile", filepath.Join(dir, "source"), target)
-				if err := profile.WriteFile(path, p); err != nil {
-					t.Fatalf("profile.WriteFile(%q) error = %v, want nil", path, err)
-				}
-				return path
-			},
-			want: "symlink",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-
-			got := RunContext(context.Background(), []string{"serve", "--profile", tt.profile(t)}, &stdout, &stderr)
-
-			if got != 2 {
-				t.Fatalf("serve invalid profile exit = %d stderr = %q, want 2", got, stderr.String())
-			}
-			if !strings.Contains(stderr.String(), tt.want) {
-				t.Fatalf("serve invalid profile stderr = %q, want %q", stderr.String(), tt.want)
-			}
-			if stdout.Len() != 0 {
-				t.Fatalf("serve invalid profile stdout = %q, want empty", stdout.String())
-			}
-		})
-	}
-}
-
-func TestServePortBindFailure(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "target.profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("net.Listen() error = %v, want nil", err)
-	}
-	defer listener.Close()
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := RunContext(context.Background(), []string{"serve", "--profile", profilePath, "--listen", listener.Addr().String()}, &stdout, &stderr)
-
-	if got != 1 {
-		t.Fatalf("serve occupied port exit = %d stderr = %q, want 1", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "listen") {
-		t.Fatalf("serve occupied port stderr = %q, want listen error", stderr.String())
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("serve occupied port stdout = %q, want empty", stdout.String())
-	}
-	if _, err := os.Lstat(filepath.Join(target, ".supermover")); !os.IsNotExist(err) {
-		t.Fatalf("serve occupied port .supermover state error = %v, want not exist", err)
-	}
-}
-
-func TestDiscoverReturnsNoTrustedHintsWhenNoAdapterSource(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Run([]string{"discover", "--timeout", "1ms"}, &stdout, &stderr)
-
-	if got != 0 {
-		t.Fatalf("discover no source exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), "discover: hints=0 trusted=false") {
-		t.Fatalf("discover no source stdout = %q, want no trusted hints", stdout.String())
-	}
-	if strings.Contains(stdout.String(), "trusted=true") || strings.Contains(stdout.String(), "identity verified") {
-		t.Fatalf("discover no source stdout = %q, must not imply trust", stdout.String())
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("discover no source stderr = %q, want empty", stderr.String())
-	}
-}
-
-func TestDiscoverExplicitAddressHintText(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	runner := Runner{Now: time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)}
-
-	got := runner.Run([]string{"discover", "--timeout", "50ms", "--address", "127.0.0.1:9000"}, &stdout, &stderr)
-
-	if got != 0 {
-		t.Fatalf("discover explicit address exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	for _, want := range []string{"discover: hints=1 trusted=false", "address=127.0.0.1:9000", "service=_supermover._tcp", "protocol=supermover/1", "trusted=false"} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("discover explicit address stdout = %q, want %q", stdout.String(), want)
-		}
-	}
-	for _, forbidden := range []string{"profile", "target_id", "device_public_key", "receipt", "file_count", "trusted=true"} {
-		if strings.Contains(stdout.String(), forbidden) {
-			t.Fatalf("discover explicit address stdout = %q, must not contain %q", stdout.String(), forbidden)
-		}
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("discover explicit address stderr = %q, want empty", stderr.String())
-	}
-}
-
-func TestDiscoverExplicitAddressHintJSON(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	runner := Runner{Now: time.Date(2026, 5, 16, 8, 0, 0, 0, time.UTC)}
-
-	got := runner.Run([]string{"discover", "--timeout", "50ms", "--format", "json", "--address", "127.0.0.1:9000"}, &stdout, &stderr)
-
-	if got != 0 {
-		t.Fatalf("discover json exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	var hints []map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &hints); err != nil {
-		t.Fatalf("discover json stdout = %q, decode error = %v", stdout.String(), err)
-	}
-	if len(hints) != 1 {
-		t.Fatalf("discover json hints len = %d, want 1", len(hints))
-	}
-	if hints[0]["address"] != "127.0.0.1:9000" || hints[0]["trusted"] != false {
-		t.Fatalf("discover json hint = %#v, want untrusted address hint", hints[0])
-	}
-	raw := stdout.String()
-	for _, forbidden := range []string{"profile_id", "target_id", "device_public_key", "pairing_receipt_id", "file_count", "hostname"} {
-		if strings.Contains(raw, forbidden) {
-			t.Fatalf("discover json stdout = %q, must not contain %q", raw, forbidden)
-		}
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("discover json stderr = %q, want empty", stderr.String())
-	}
-}
-
-func TestLANTrustCommandsUsageErrors(t *testing.T) {
-	tests := []struct {
-		args []string
-		want string
-	}{
-		{args: []string{"serve"}, want: "serve: --profile is required"},
-		{args: []string{"serve", "--profile", "   "}, want: "serve: --profile is required"},
-		{args: []string{"serve", "--profile", "target.profile.json", "extra"}, want: "serve: unexpected arguments: extra"},
-		{args: []string{"serve", "--profile", "target.profile.json", "--listen", "   "}, want: "serve: --listen is required"},
-		{args: []string{"discover", "--timeout", "soon"}, want: "discover: invalid --timeout"},
-		{args: []string{"discover", "--timeout", "0s"}, want: "discover: invalid --timeout"},
-		{args: []string{"discover", "--timeout", "-1s"}, want: "discover: invalid --timeout"},
-		{args: []string{"discover", "--format", "yaml"}, want: `discover: unsupported format "yaml"`},
-		{args: []string{"discover", "--address", "alice-mbp.local:9000"}, want: "discover: invalid address hint"},
-		{args: []string{"pair", "--target", "127.0.0.1:9000"}, want: "pair: --profile and --target are required"},
-		{args: []string{"pair", "--profile", "source.profile.json"}, want: "pair: --profile and --target are required"},
-		{args: []string{"pair", "--profile", "   ", "--target", "127.0.0.1:9000"}, want: "pair: --profile and --target are required"},
-		{args: []string{"pair", "--profile", "source.profile.json", "--target", "   "}, want: "pair: --profile and --target are required"},
-		{args: []string{"pair", "--profile", "source.profile.json", "--target", "127.0.0.1:9000", "--verification-code", "123456", "--method", "sms"}, want: `pair: unsupported --method "sms"`},
-	}
-	for _, tt := range tests {
-		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-
-			got := Run(tt.args, &stdout, &stderr)
-
-			if got != 2 {
-				t.Fatalf("Run(%v) exit = %d, stderr = %q, want 2", tt.args, got, stderr.String())
-			}
-			if !strings.Contains(stderr.String(), tt.want) {
-				t.Fatalf("Run(%v) stderr = %q, want %q", tt.args, stderr.String(), tt.want)
-			}
-			if stdout.Len() != 0 {
-				t.Fatalf("Run(%v) stdout = %q, want empty", tt.args, stdout.String())
-			}
-		})
-	}
-}
-
-func TestReportHelpWritesStdout(t *testing.T) {
-	tests := [][]string{
-		{"report", "--help"},
-		{"report", "-help"},
-		{"report", "-h"},
-	}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			var stdout bytes.Buffer
-			var stderr bytes.Buffer
-
-			got := Run(args, &stdout, &stderr)
-
-			if got != 0 {
-				t.Fatalf("Run(%v) exit = %d, stderr = %q, want 0", args, got, stderr.String())
-			}
-			if !strings.Contains(stdout.String(), "Usage of report") {
-				t.Fatalf("Run(%v) stdout = %q, want flag usage", args, stdout.String())
-			}
-			if stderr.Len() != 0 {
-				t.Fatalf("Run(%v) stderr = %q, want empty", args, stderr.String())
-			}
-		})
-	}
-}
-
-func TestReportUnsupportedFormatReturnsUsageBeforeTargetRead(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "missing-target")
-	profilePath := filepath.Join(dir, "profile.json")
-	mustMkdir(t, source)
-	writeDefaultProfile(t, profilePath, source, target)
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Run([]string{"report", "--profile", profilePath, "--format", "yaml"}, &stdout, &stderr)
-
-	if got != 2 {
-		t.Fatalf("report unsupported format exit = %d, stderr = %q, want 2", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), `unsupported format "yaml"`) {
-		t.Fatalf("report unsupported format stderr = %q, want unsupported format", stderr.String())
-	}
-	if stdout.Len() != 0 {
-		t.Fatalf("report unsupported format stdout = %q, want empty", stdout.String())
-	}
-}
-
-func TestRunUnknownCommand(t *testing.T) {
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-
-	got := Run([]string{"missing"}, &stdout, &stderr)
-
-	if got != 2 {
-		t.Errorf("Run(%v) exit = %d, want %d", []string{"missing"}, got, 2)
-	}
-	if !strings.Contains(stderr.String(), `unknown command "missing"`) {
-		t.Errorf("Run(%v) stderr = %q, want unknown command message", []string{"missing"}, stderr.String())
-	}
-}
-
-func TestProfileInitAndLint(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	profilePath := filepath.Join(dir, "profile.json")
-	mustMkdir(t, source)
-	mustMkdir(t, target)
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	got := Run([]string{"profile", "init", "--profile", profilePath, "--source", source, "--target", target}, &stdout, &stderr)
-	if got != 0 {
-		t.Fatalf("profile init exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	p, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if p.Roots[0].Path != source {
-		t.Errorf("profile root path = %q, want %q", p.Roots[0].Path, source)
-	}
-	if p.Target.LocalPath != target {
-		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, target)
-	}
-	if p.Target.TargetID == filepath.Clean(target) {
-		t.Errorf("profile target id = %q, want identity separate from local path", p.Target.TargetID)
-	}
-
-	stdout.Reset()
-	stderr.Reset()
-	got = Run([]string{"profile", "lint", "--profile", profilePath}, &stdout, &stderr)
-	if got != 0 {
-		t.Fatalf("profile lint exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	for _, want := range []string{
-		"profile ok",
-		"privacy policy=status=profile_contract_only",
-		"traffic_level=2",
-		"claim=bounded_reduction_only",
-		"configured_reductions=",
-		"overhead_status=not_applied",
-		"overhead_source=profile_contract",
-		"residual_leakage=",
-		"total_bytes",
-		"duration",
-		"peer_ip",
-		"lan_presence",
-		"supermover_use",
-		"local_push=traffic_shaping_not_applied",
-		"network_transfer=not_configured",
-	} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Errorf("profile lint stdout = %q, want %q", stdout.String(), want)
-		}
-	}
-	for _, forbidden := range []string{"anonymous", "anonymity", "transfer_ready=true", "network_ready=true"} {
-		if strings.Contains(stdout.String(), forbidden) {
-			t.Errorf("profile lint stdout = %q, must not contain %q", stdout.String(), forbidden)
-		}
-	}
-}
-
-func TestProfileSetTargetUpdatesProfileSSOT(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	nextTarget := filepath.Join(dir, "next-target")
-	profilePath := filepath.Join(dir, "profile.json")
-	mustMkdir(t, source)
-	writeDefaultProfile(t, profilePath, source, target)
-	before, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) before set-target error = %v, want nil", profilePath, err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--name", "Next target"}, &stdout, &stderr)
-	if got != 0 {
-		t.Fatalf("profile set-target exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	p, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if p.Target.LocalPath != nextTarget {
-		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, nextTarget)
-	}
-	if p.Target.Name != "Next target" {
-		t.Errorf("profile target name = %q, want %q", p.Target.Name, "Next target")
-	}
-	if p.Target.TargetID != before.Target.TargetID {
-		t.Errorf("profile target id = %q, want unchanged %q without --target-id", p.Target.TargetID, before.Target.TargetID)
-	}
-}
-
-func TestProfileSetTargetExplicitlyUpdatesTargetID(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	nextTarget := filepath.Join(dir, "next-target")
-	profilePath := filepath.Join(dir, "profile.json")
-	mustMkdir(t, source)
-	writeDefaultProfile(t, profilePath, source, target)
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--target-id", "local:next-target"}, &stdout, &stderr)
-	if got != 0 {
-		t.Fatalf("profile set-target --target-id exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	p, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if p.Target.TargetID != "local:next-target" {
-		t.Errorf("profile target id = %q, want local:next-target", p.Target.TargetID)
-	}
-	if p.Target.LocalPath != nextTarget {
-		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, nextTarget)
-	}
-}
-
-func TestProfileSetTargetRejectsTargetIDChangeForPairedProfile(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	nextTarget := filepath.Join(dir, "next-target")
-	profilePath := filepath.Join(dir, "profile.json")
-	mustMkdir(t, source)
-	p := profile.NewDefault("profile-local", "Profile", source, target)
-	p.Target.DevicePublicKey = "sha256:0123456789abcdef"
-	p.Target.PairingReceiptID = "pairing-1"
-	p.Target.PairedAt = "2026-05-16T00:00:00Z"
-	if err := profile.WriteFile(profilePath, p); err != nil {
-		t.Fatalf("profile.WriteFile(%q) error = %v", profilePath, err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--target-id", "local:next-target"}, &stdout, &stderr)
-	if got != 2 {
-		t.Fatalf("profile set-target paired --target-id exit = %d, stderr = %q, want 2", got, stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "cannot change target-id for a paired profile") {
-		t.Fatalf("profile set-target paired --target-id stderr = %q, want paired profile refusal", stderr.String())
-	}
-}
-
-func TestProfileSetTargetAllowsLocalPathChangeForPairedProfile(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	nextTarget := filepath.Join(dir, "next-target")
-	profilePath := filepath.Join(dir, "profile.json")
-	mustMkdir(t, source)
-	p := profile.NewDefault("profile-local", "Profile", source, target)
-	p.Target.DevicePublicKey = "sha256:0123456789abcdef"
-	p.Target.PairingReceiptID = "pairing-1"
-	p.Target.PairedAt = "2026-05-16T00:00:00Z"
-	if err := profile.WriteFile(profilePath, p); err != nil {
-		t.Fatalf("profile.WriteFile(%q) error = %v", profilePath, err)
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--name", "Mounted target"}, &stdout, &stderr)
-	if got != 0 {
-		t.Fatalf("profile set-target paired local path exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	updated, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if updated.Target.LocalPath != filepath.Clean(nextTarget) || updated.Target.TargetID != p.Target.TargetID {
-		t.Fatalf("paired profile target = %#v, want local path changed and target_id unchanged", updated.Target)
-	}
-	if updated.Target.DevicePublicKey != p.Target.DevicePublicKey || updated.Target.PairingReceiptID != p.Target.PairingReceiptID || updated.Target.PairedAt != p.Target.PairedAt {
-		t.Fatalf("paired profile target = %#v, want pairing pins preserved", updated.Target)
-	}
-}
-
-func TestProfileSetTargetRepairsLegacyPathTargetID(t *testing.T) {
-	dir := t.TempDir()
-	source := filepath.Join(dir, "source")
-	target := filepath.Join(dir, "target")
-	nextTarget := filepath.Join(dir, "next-target")
-	profilePath := filepath.Join(dir, "profile.json")
-	mustMkdir(t, source)
-	p := profile.NewDefault("profile-local", "Local profile", source, target)
-	p.Target.TargetID = filepath.Clean(target)
-	data := `{
-  "version": 1,
-  "profile_id": "` + p.ProfileID + `",
-  "name": "` + p.Name + `",
-  "roots": [{"id": "root", "path": "` + filepath.ToSlash(source) + `"}],
-  "include": [{"pattern": "**"}],
-  "consistency": "strict",
-  "delete_policy": {"mode": "record", "require_review": true, "retention_days": 30},
-  "metadata_policy": {"mode": "basic", "preserve_permissions": true, "preserve_mod_time": true},
-  "privacy_policy": {"mode": "plaintext", "traffic_level": 2, "allow_plaintext_restore": true, "allow_hidden_files": true, "allow_sensitive_filenames": true, "padding_bucket_bytes": 65536, "batch_max_bytes": 1048576, "batch_max_count": 64, "jitter_budget_millis": 250, "discovery_low_info": true},
-  "target": {"target_id": "` + filepath.ToSlash(target) + `", "name": "target", "local_path": "` + filepath.ToSlash(target) + `"},
-  "agent_knowledge": {}
-}
-`
-	if err := os.WriteFile(profilePath, []byte(data), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v, want nil", profilePath, err)
-	}
-	if _, err := profile.ReadFile(profilePath); err == nil {
-		t.Fatalf("profile.ReadFile(legacy path identity) error = nil, want validation error before repair")
-	}
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", nextTarget, "--target-id", "local:repaired"}, &stdout, &stderr)
-	if got != 0 {
-		t.Fatalf("profile set-target repair exit = %d, stderr = %q, want 0", got, stderr.String())
-	}
-	repaired, err := profile.ReadFile(profilePath)
-	if err != nil {
-		t.Fatalf("profile.ReadFile(%q) after repair error = %v, want nil", profilePath, err)
-	}
-	if repaired.Target.TargetID != "local:repaired" || repaired.Target.LocalPath != filepath.Clean(nextTarget) {
-		t.Fatalf("repaired target = %#v, want explicit id and next target path", repaired.Target)
 	}
 }
 
@@ -3742,8 +5410,8 @@ func TestPushNetworkRejectsMismatchedPairingReceipt(t *testing.T) {
 	if got != 2 {
 		t.Fatalf("push --network mismatched receipt exit = %d, stderr = %q, want 2", got, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "pairing receipt does not match profile") {
-		t.Fatalf("push --network mismatched receipt stderr = %q, want mismatch refusal", stderr.String())
+	if !strings.Contains(stderr.String(), "validate local TLS identity files") {
+		t.Fatalf("push --network mismatched receipt stderr = %q, want local TLS identity refusal", stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("push --network mismatched receipt stdout = %q, want empty", stdout.String())
@@ -5107,6 +6775,136 @@ func TestPushNetworkJSONReportsContractWithoutTransferReadiness(t *testing.T) {
 	}
 }
 
+func TestPushNetworkJSONWritesSourceBaselineWhenRequested(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	baselinePath := filepath.Join(dir, "baseline.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "data.txt"), "json\n")
+	sourceCert := newCLITestCertificate(t, "source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	targetCert := newCLITestCertificate(t, "target", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	peer := cliAuthenticatedPeerForCerts(t, sourceCert, targetCert)
+	p := profile.NewDefault(peer.ProfileID, "Local profile", source, target)
+	p.Target.TargetID = peer.TargetID
+	p.Target.DevicePublicKey = peer.TargetDeviceID
+	p.Target.PairingReceiptID = "pairing-1"
+	p.Target.PairedAt = cliTLSNow().Format(time.RFC3339)
+	p.Network = networkConfigForCLI(t, sourceCert, net.JoinHostPort("127.0.0.1", "1"))
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	writePairingReceiptForCLI(t, target, p, func(receipt *control.PairingReceipt) {
+		receipt.SourceDeviceID = peer.SourceDeviceID
+		receipt.TargetDeviceID = peer.TargetDeviceID
+		receipt.DevicePublicKey = peer.TargetDeviceID
+		receipt.VerifiedAt = p.Target.PairedAt
+	})
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Runner{Now: cliTLSNow()}.Run([]string{
+		"push", "--network",
+		"--profile", profilePath,
+		"--dry-run",
+		"--format", "json",
+		"--source-baseline", baselinePath,
+	}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("push --network --source-baseline exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var plan networkPushPlan
+	if err := json.Unmarshal(stdout.Bytes(), &plan); err != nil {
+		t.Fatalf("json.Unmarshal(push --network --source-baseline stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if plan.SourceBaseline != baselinePath {
+		t.Fatalf("push --network plan = %+v, want source_baseline=%q", plan, baselinePath)
+	}
+	data, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v, want nil", baselinePath, err)
+	}
+	var baseline sourceconsistency.Baseline
+	if err := json.Unmarshal(data, &baseline); err != nil {
+		t.Fatalf("json.Unmarshal(source baseline) error = %v, data = %q", err, string(data))
+	}
+	if baseline.Schema != sourceconsistency.Schema || baseline.ProfileID != p.ProfileID || baseline.RootID != p.Roots[0].ID || len(baseline.Entries) != 1 || baseline.Entries[0].Path != "data.txt" {
+		t.Fatalf("source baseline = %+v, want exact transfer baseline for data.txt", baseline)
+	}
+}
+
+func TestVerifySourceConsistencyJSONPassesAndFailsOnCurrentSourceChanges(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	baselinePath := filepath.Join(dir, "baseline.json")
+	mustMkdir(t, source)
+	mustMkdir(t, target)
+	mustWrite(t, filepath.Join(source, "data.txt"), "json\n")
+	p := profile.NewDefault("profile-source", "Local profile", source, target)
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
+	baseline, entries, err := buildSourceConsistencyBaseline(p, "session-source-1", Runner{Now: cliTLSNow()}.nowFunc())
+	if err != nil {
+		t.Fatalf("buildSourceConsistencyBaseline error = %v, want nil", err)
+	}
+	if len(entries) != 1 || entries[0].Path != "data.txt" {
+		t.Fatalf("buildSourceConsistencyBaseline entries = %+v, want data.txt transfer entry", entries)
+	}
+	if err := writeSourceConsistencyBaseline(baselinePath, baseline); err != nil {
+		t.Fatalf("writeSourceConsistencyBaseline(%q) error = %v, want nil", baselinePath, err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Runner{Now: cliTLSNow()}.Run([]string{
+		"verify", "source-consistency",
+		"--profile", profilePath,
+		"--baseline", baselinePath,
+		"--format", "json",
+	}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("verify source-consistency pass exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var report sourceconsistency.Report
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal(verify source-consistency stdout) error = %v, stdout = %q", err, stdout.String())
+	}
+	if report.Status != sourceconsistency.StatusPass || report.Mode != sourceconsistency.ModeCurrentVerified || report.MismatchCount != 0 {
+		t.Fatalf("verify source-consistency pass report = %+v, want pass/current_source_verified with zero mismatches", report)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("verify source-consistency pass stderr = %q, want empty", stderr.String())
+	}
+
+	mustWrite(t, filepath.Join(source, "data.txt"), "changed\n")
+	stdout.Reset()
+	stderr.Reset()
+	got = Runner{Now: cliTLSNow().Add(time.Minute)}.Run([]string{
+		"verify", "source-consistency",
+		"--profile", profilePath,
+		"--baseline", baselinePath,
+		"--format", "json",
+	}, &stdout, &stderr)
+	if got != 1 {
+		t.Fatalf("verify source-consistency changed exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("json.Unmarshal(changed verify source-consistency stdout) error = %v, stdout = %q", err, stdout.String())
+	}
+	if report.Status != sourceconsistency.StatusBlocked || report.Mode != sourceconsistency.ModeCurrentMismatch || report.MismatchCount == 0 {
+		t.Fatalf("verify source-consistency changed report = %+v, want blocked/current_source_mismatch", report)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("verify source-consistency changed stderr = %q, want empty", stderr.String())
+	}
+}
+
 func TestPruneValidatesProfilePolicyButDoesNotMutateTarget(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -5584,6 +7382,299 @@ func TestPruneApproveWritesApprovalWithoutDeletingTarget(t *testing.T) {
 	}
 }
 
+func TestPruneApprovalsListsCurrentScopeArtifacts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-authored", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got := Run([]string{"prune", "approvals", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune approvals exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"prune_approvals",
+		"approvals=1",
+		"read_only=true",
+		"prune_approval id=approval-authored",
+		"status=approved",
+		"approved_by=cli-reviewer",
+		"approval_reason=reviewed%20stale%20file",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune approvals stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune approvals stderr = %q, want empty", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"prune", "approvals", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune approvals json exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	var result prune.ListApprovalsResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("json.Unmarshal(prune approvals stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if result.ProfileID != "profile-local" || result.TargetID != "local:profile-local" || len(result.Approvals) != 1 || result.Approvals[0].ID != "approval-authored" || result.Approvals[0].Status != "approved" {
+		t.Fatalf("prune approvals json result = %+v, want one current-scope approval", result)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune approvals json stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestPruneSupersedeMarksApprovalWithoutDeletingTarget(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-authored", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+
+	runner = Runner{Now: time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	got := runner.Run([]string{"prune", "supersede", "--profile", profilePath, "--id", "approval-authored", "--reason", "replaced by newer approval", "--reviewer", "release-reviewer"}, &stdout, &stderr)
+
+	if got != 0 {
+		t.Fatalf("prune supersede exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"prune_approval_supersede",
+		"id=approval-authored",
+		"status=superseded",
+		"approved_by=cli-reviewer",
+		"superseded_by=release-reviewer",
+		"superseded_at=2026-05-18T11:00:00Z",
+		"review_tool=supermover%20prune%20supersede",
+		"refusal_reason=replaced%20by%20newer%20approval",
+		"physical_pruning=not_applied",
+		"receipt_writing=not_written_by_supersede",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("prune supersede stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("prune supersede stderr = %q, want empty", stderr.String())
+	}
+	if _, err := os.Lstat(filepath.Join(target, "gone.txt")); err != nil {
+		t.Fatalf("Lstat(target after supersede) error = %v, want retained target file", err)
+	}
+	if _, err := os.Lstat(receiptPathForCLI(t, target, "approval-authored")); !os.IsNotExist(err) {
+		t.Fatalf("Lstat(receipt after supersede) error = %v, want no receipt", err)
+	}
+	approval, err := control.ReadFile[control.PruneApproval](approvalPathForCLI(t, target, "approval-authored"))
+	if err != nil {
+		t.Fatalf("control.ReadFile(superseded approval) error = %v, want nil", err)
+	}
+	if approval.Status != "superseded" || approval.RefusalReason != "replaced by newer approval" || approval.ApprovedBy != "cli-reviewer" || approval.SupersededBy != "release-reviewer" || approval.SupersededAt != "2026-05-18T11:00:00Z" || approval.ReviewTool != "supermover prune supersede" {
+		t.Fatalf("superseded approval = %+v, want superseded review metadata", approval)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"report", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("report after prune supersede exit = %d, stderr = %q, stdout = %q, want review-needed 1", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"prune_approval id=approval-authored",
+		"status=superseded",
+		"release_state=superseded",
+		"release_action=inspect_superseded_prune_approval",
+		"unapplied=false",
+		"superseded_by=release-reviewer",
+		"superseded_at=2026-05-18T11:00:00Z",
+		"refusal_reason=replaced%20by%20newer%20approval",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("report after prune supersede stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+}
+
+func TestPruneApprovalsRejectsMismatchedApprovalPath(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+	approval := pruneApprovalForCLI(t, profilePath, target, "approval-real", softDeleteID)
+	writePruneApprovalForCLI(t, target, approval)
+	mismatchPath := filepath.Join(target, control.DirName, "prune", "approvals", "approval-path.json")
+	if err := control.WriteNewFile(mismatchPath, approval); err != nil {
+		t.Fatalf("control.WriteNewFile(mismatched approval path) error = %v, want nil", err)
+	}
+	if err := os.Remove(approvalPathForCLI(t, target, "approval-real")); err != nil {
+		t.Fatalf("os.Remove(original approval path) error = %v, want nil", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got := Run([]string{"prune", "approvals", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("prune approvals mismatched path exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "does not match path id") {
+		t.Fatalf("prune approvals mismatched path stderr = %q, want path/id mismatch", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("prune approvals mismatched path stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestPruneSupersedeRejectsLinkedReceiptEvidence(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-authored", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"prune", "--profile", profilePath, "--apply", "--approval", "approval-authored"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune apply exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+
+	runner = Runner{Now: time.Date(2026, 5, 18, 11, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	got := runner.Run([]string{"prune", "supersede", "--profile", profilePath, "--id", "approval-authored", "--reason", "replaced by newer approval", "--reviewer", "release-reviewer"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("prune supersede linked receipt exit = %d, stderr = %q, stdout = %q, want 1", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "already has prune receipt evidence") {
+		t.Fatalf("prune supersede linked receipt stderr = %q, want linked receipt refusal", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("prune supersede linked receipt stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestPruneSupersedeRequiresReviewer(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	got := Run([]string{"prune", "supersede", "--profile", "profile.json", "--id", "approval", "--reason", "replaced"}, &stdout, &stderr)
+
+	if got != 2 {
+		t.Fatalf("prune supersede missing reviewer exit = %d, stderr = %q, stdout = %q, want 2", got, stderr.String(), stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--reviewer is required") {
+		t.Fatalf("prune supersede missing reviewer stderr = %q, want reviewer-required", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("prune supersede missing reviewer stdout = %q, want empty", stdout.String())
+	}
+}
+
 func TestReportAndStatusShowAuthoredPruneApprovalInventory(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -5692,8 +7783,16 @@ func TestReportAndStatusShowAuthoredPruneApprovalInventory(t *testing.T) {
 	for _, want := range []string{
 		"status:",
 		"review_required=true",
+		"prune_review_status=review_required",
+		"prune_review_action=inspect_prune_review_before_release",
 		"prune_approvals=1",
 		"prune_unapplied_approvals=1",
+		"prune_active_approvals=1",
+		"prune_stale_approvals=0",
+		"prune_expired_approvals=0",
+		"prune_consumed_approvals=0",
+		"prune_receipts=0",
+		"prune_receipt_issues=0",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status after prune approve stdout = %q, want %q", stdout.String(), want)
@@ -5714,8 +7813,11 @@ func TestReportAndStatusShowAuthoredPruneApprovalInventory(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &statusJSON); err != nil {
 		t.Fatalf("json.Unmarshal(status stdout) error = %v, stdout = %q, want nil", err, stdout.String())
 	}
-	if statusJSON.Counts.PruneApprovals != 1 || statusJSON.Counts.PruneUnappliedApprovals != 1 {
-		t.Fatalf("status json counts = %+v, want compact approval counts", statusJSON.Counts)
+	if statusJSON.PruneReview.Status != string(report.PruneReviewReviewRequired) || statusJSON.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("status json prune review = %+v, want compact review-required action", statusJSON.PruneReview)
+	}
+	if statusJSON.Counts.PruneApprovals != 1 || statusJSON.Counts.PruneUnappliedApprovals != 1 || statusJSON.Counts.PruneActiveApprovals != 1 || statusJSON.Counts.PruneStaleApprovals != 0 || statusJSON.Counts.PruneExpiredApprovals != 0 || statusJSON.Counts.PruneConsumedApprovals != 0 || statusJSON.Counts.PruneReceipts != 0 || statusJSON.Counts.PruneReceiptIssues != 0 {
+		t.Fatalf("status json counts = %+v, want compact prune readiness counts", statusJSON.Counts)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("status json after prune approve stderr = %q, want empty", stderr.String())
@@ -5888,6 +7990,91 @@ func TestPruneReviewCleanPlanExitsZero(t *testing.T) {
 	after := mustSnapshotTree(t, target)
 	if strings.Join(after, "\n") != strings.Join(before, "\n") {
 		t.Fatalf("prune review clean changed target tree\nbefore:\n%s\nafter:\n%s", strings.Join(before, "\n"), strings.Join(after, "\n"))
+	}
+}
+
+func TestStatusSurfacesStalePruneApprovalReadinessCounts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	mustWrite(t, filepath.Join(source, "keep.txt"), "keep")
+	mustWrite(t, filepath.Join(source, "gone.txt"), "gone")
+	writeDefaultProfile(t, profilePath, source, target)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-one"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("first push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if err := os.Remove(filepath.Join(source, "gone.txt")); err != nil {
+		t.Fatalf("os.Remove(source gone) error = %v, want nil", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if got := Run([]string{"push", "--profile", profilePath, "--session", "session-two"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("second push exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	enablePrunePolicy(t, profilePath)
+	softDeleteID := softDeleteIDForCLI(t, target, "gone.txt")
+
+	runner := Runner{Now: time.Date(2026, 5, 18, 10, 0, 0, 0, time.UTC)}
+	stdout.Reset()
+	stderr.Reset()
+	if got := runner.Run([]string{"prune", "approve", "--profile", profilePath, "--id", "approval-stale", "--soft-delete", softDeleteID, "--reason", "reviewed stale file", "--reviewer", "cli-reviewer"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("prune approve exit = %d, stderr = %q, stdout = %q, want 0", got, stderr.String(), stdout.String())
+	}
+	if err := os.WriteFile(filepath.Join(target, "gone.txt"), []byte("changed"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(changed target) error = %v, want nil", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got := Run([]string{"status", "--profile", profilePath}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("status stale prune approval exit = %d, stderr = %q, stdout = %q, want review-needed 1", got, stderr.String(), stdout.String())
+	}
+	for _, want := range []string{
+		"status:",
+		"review_required=true",
+		"prune_review_status=review_required",
+		"prune_review_action=inspect_prune_review_before_release",
+		"prune_approvals=1",
+		"prune_unapplied_approvals=1",
+		"prune_active_approvals=0",
+		"prune_stale_approvals=1",
+		"prune_expired_approvals=0",
+		"prune_consumed_approvals=0",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status stale prune approval stdout = %q, want %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("status stale prune approval stderr = %q, want empty", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"status", "--profile", profilePath, "--format", "json"}, &stdout, &stderr)
+
+	if got != 1 {
+		t.Fatalf("status stale prune approval json exit = %d, stderr = %q, stdout = %q, want review-needed 1", got, stderr.String(), stdout.String())
+	}
+	var statusJSON status.Report
+	if err := json.Unmarshal(stdout.Bytes(), &statusJSON); err != nil {
+		t.Fatalf("json.Unmarshal(status stdout) error = %v, stdout = %q, want nil", err, stdout.String())
+	}
+	if statusJSON.PruneReview.Status != string(report.PruneReviewReviewRequired) || statusJSON.PruneReview.Action != "inspect_prune_review_before_release" {
+		t.Fatalf("status stale prune approval prune review = %+v, want review-required action", statusJSON.PruneReview)
+	}
+	if statusJSON.Counts.PruneApprovals != 1 || statusJSON.Counts.PruneUnappliedApprovals != 1 || statusJSON.Counts.PruneActiveApprovals != 0 || statusJSON.Counts.PruneStaleApprovals != 1 || statusJSON.Counts.PruneExpiredApprovals != 0 || statusJSON.Counts.PruneConsumedApprovals != 0 {
+		t.Fatalf("status stale prune approval counts = %+v, want stale approval compact counts", statusJSON.Counts)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("status stale prune approval json stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -6449,6 +8636,7 @@ func TestHealthTextShowsNetworkTransferEvidence(t *testing.T) {
 		SourceDeviceID:  "sha256:abcdef0123456789",
 		TargetDeviceID:  "sha256:0123456789abcdef",
 		ProtocolVersion: "supermover/1",
+		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
 		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
 		Status:          control.NetworkTransferAuthRefused,
 		Stage:           "begin",
@@ -6647,6 +8835,7 @@ func TestReportShowsNetworkTransferPrivacyOverhead(t *testing.T) {
 		SourceDeviceID:  "sha256:abcdef0123456789",
 		TargetDeviceID:  "sha256:0123456789abcdef",
 		ProtocolVersion: "supermover/1",
+		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
 		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
 		PrivacyOverhead: &control.NetworkTransferPrivacyOverhead{
 			FramePlainBytes:      512,
@@ -6736,6 +8925,7 @@ func TestReportJSONShowsNetworkTransferJitterOverhead(t *testing.T) {
 		SourceDeviceID:  "sha256:abcdef0123456789",
 		TargetDeviceID:  "sha256:0123456789abcdef",
 		ProtocolVersion: "supermover/1",
+		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
 		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
 		PrivacyOverhead: &control.NetworkTransferPrivacyOverhead{
 			JitteredRequests:     4,
@@ -7432,6 +9622,25 @@ func writeTargetDriftForReconcileCLI(t *testing.T, target string, drift control.
 	}
 }
 
+func assertReviewBoundaryForCLI(t *testing.T, review reconcile.Review, name string, status string, applyCapable bool) {
+	t.Helper()
+	var boundary reconcile.RepairBoundary
+	found := false
+	for _, candidate := range review.Boundaries {
+		if candidate.Name == name {
+			boundary = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("boundary %q not found in %+v", name, review.Boundaries)
+	}
+	if boundary.Status != status || boundary.ApplyCapable != applyCapable {
+		t.Fatalf("boundary %q = %+v, want status=%s apply_capable=%t", name, boundary, status, applyCapable)
+	}
+}
+
 func readTargetDriftForReconcileCLI(t *testing.T, target string, id string) control.TargetDrift {
 	t.Helper()
 	path, err := control.Path(target, control.ArtifactTargetDrift, id)
@@ -7479,7 +9688,7 @@ func waitServePairingReady(t *testing.T, ready <-chan pairserve.ReadyInfo, stder
 	return pairserve.ReadyInfo{}
 }
 
-func waitDaemonReadyState(t *testing.T, ready <-chan agentdaemon.State, stdout *bytes.Buffer, stderr *bytes.Buffer) agentdaemon.State {
+func waitDaemonReadyState(t *testing.T, ready <-chan agentdaemon.State, stdout fmt.Stringer, stderr fmt.Stringer) agentdaemon.State {
 	t.Helper()
 	select {
 	case state := <-ready:
@@ -7488,6 +9697,171 @@ func waitDaemonReadyState(t *testing.T, ready <-chan agentdaemon.State, stdout *
 		t.Fatalf("daemon run did not report ready; stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 	return agentdaemon.State{}
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration, stdout *bytes.Buffer, stderr *bytes.Buffer) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("file %q was not published before timeout; stdout=%q stderr=%q", path, stdout.String(), stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForTargetDriftByPath(t *testing.T, target string, relPath string, change string, timeout time.Duration, stdout *bytes.Buffer, stderr *bytes.Buffer) control.TargetDrift {
+	t.Helper()
+	driftDir := filepath.Join(target, control.DirName, "drift")
+	deadline := time.Now().Add(timeout)
+	var lastIDs []string
+	var lastErr error
+	for {
+		entries, err := os.ReadDir(driftDir)
+		if err == nil {
+			lastIDs = lastIDs[:0]
+			for _, entry := range entries {
+				name := entry.Name()
+				if entry.IsDir() || !strings.HasSuffix(name, ".json") {
+					continue
+				}
+				id := strings.TrimSuffix(name, ".json")
+				lastIDs = append(lastIDs, id)
+				drift, readErr := readTargetDriftForReconcileCLINoFatal(target, id)
+				if readErr != nil {
+					lastErr = readErr
+					continue
+				}
+				if drift.Path == relPath && drift.Change == change {
+					return drift
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("target drift path=%q change=%q not recorded before timeout; ids=%v err=%v stdout=%q stderr=%q", relPath, change, lastIDs, lastErr, stdout.String(), stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForLatestReconcileReceipt(t *testing.T, target string, status string, timeout time.Duration, stdout *bytes.Buffer, stderr *bytes.Buffer) reconcile.Receipt {
+	t.Helper()
+	dir := filepath.Join(target, control.DirName, "reconcile", "receipts")
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		entries, err := os.ReadDir(dir)
+		if err == nil {
+			var receipts []reconcile.Receipt
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+					continue
+				}
+				path := filepath.Join(dir, entry.Name())
+				receipt, readErr := control.ReadFile[reconcile.Receipt](path)
+				if readErr != nil {
+					lastErr = readErr
+					continue
+				}
+				if receipt.Status == status {
+					receipts = append(receipts, receipt)
+				}
+			}
+			if len(receipts) > 0 {
+				sort.Slice(receipts, func(i, j int) bool {
+					if receipts[i].StartedAt == receipts[j].StartedAt {
+						return receipts[i].ID < receipts[j].ID
+					}
+					return receipts[i].StartedAt < receipts[j].StartedAt
+				})
+				return receipts[len(receipts)-1]
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reconcile receipt status=%q not written before timeout; err=%v stdout=%q stderr=%q", status, lastErr, stdout.String(), stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func waitForDaemonLifecycleEventType(t *testing.T, target string, eventType string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastTypes []string
+	var lastErr error
+	for {
+		events, err := agentdaemon.ListLifecycleEvents(target)
+		if err == nil {
+			lastTypes = lifecycleEventTypes(events)
+			for _, got := range lastTypes {
+				if got == eventType {
+					return
+				}
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("daemon lifecycle event %q not observed before timeout; events=%v err=%v", eventType, lastTypes, lastErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func readTargetDriftForReconcileCLINoFatal(target string, id string) (control.TargetDrift, error) {
+	path, err := control.Path(target, control.ArtifactTargetDrift, id)
+	if err != nil {
+		return control.TargetDrift{}, err
+	}
+	return control.ReadFile[control.TargetDrift](path)
+}
+
+func waitForPublishedRunSessions(t *testing.T, scheduler *incrementalsync.Scheduler, scope incrementalsync.Scope, timeout time.Duration, sessions ...string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastRuns []incrementalsync.RunResult
+	var lastProblems []incrementalsync.ArtifactProblem
+	var lastErr error
+	for {
+		lastRuns, lastProblems, lastErr = scheduler.RunResults(scope)
+		if lastErr == nil && len(lastProblems) == 0 && runResultsContainPublishedSessions(lastRuns, sessions...) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("RunResults() sessions = %#v problems=%#v err=%v, want published %v", runResultSessions(lastRuns), lastProblems, lastErr, sessions)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func runResultsContainPublishedSessions(runs []incrementalsync.RunResult, sessions ...string) bool {
+	seen := map[string]bool{}
+	for _, run := range runs {
+		if run.Status == incrementalsync.RunStatusPublished {
+			seen[run.SessionID] = true
+		}
+	}
+	for _, session := range sessions {
+		if !seen[session] {
+			return false
+		}
+	}
+	return true
+}
+
+func runResultSessions(runs []incrementalsync.RunResult) []string {
+	sessions := make([]string, 0, len(runs))
+	for _, run := range runs {
+		sessions = append(sessions, run.SessionID+":"+run.Status)
+	}
+	return sessions
 }
 
 func waitServeReceiverReady(t *testing.T, ready <-chan receiverserve.ReadyInfo, stderr *bytes.Buffer) receiverserve.ReadyInfo {
@@ -8017,18 +10391,6 @@ func fileSizeForCLI(t *testing.T, path string) int64 {
 	return info.Size()
 }
 
-func readFilePrefixForCLI(t *testing.T, path string, size int) []byte {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("os.ReadFile(%q) error = %v, want nil", path, err)
-	}
-	if len(data) < size {
-		t.Fatalf("file %q size = %d, want at least %d", path, len(data), size)
-	}
-	return append([]byte(nil), data[:size]...)
-}
-
 func writePatternFileForCLI(t *testing.T, path string, size int) {
 	t.Helper()
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -8078,6 +10440,23 @@ func mustWrite(t *testing.T, path string, content string) {
 	}
 }
 
+func mustWriteWithModTime(t *testing.T, path string, content string, mode os.FileMode, modTime string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v, want nil", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), mode); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v, want nil", path, err)
+	}
+	ts, err := time.Parse(time.RFC3339Nano, modTime)
+	if err != nil {
+		t.Fatalf("time.Parse(%q) error = %v, want nil", modTime, err)
+	}
+	if err := os.Chtimes(path, ts, ts); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v, want nil", path, err)
+	}
+}
+
 func readFileString(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -8085,6 +10464,26 @@ func readFileString(t *testing.T, path string) string {
 		t.Fatalf("os.ReadFile(%q) error = %v, want nil", path, err)
 	}
 	return string(data)
+}
+
+func syncRunContainsPath(entries []incrementalsync.QueueEntry, path string) bool {
+	for _, entry := range entries {
+		if entry.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+func findCLIQueuePath(t *testing.T, entries []incrementalsync.QueueEntry, path string) incrementalsync.QueueEntry {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.Path == path {
+			return entry
+		}
+	}
+	t.Fatalf("queue path %q not found in entries %+v", path, entries)
+	return incrementalsync.QueueEntry{}
 }
 
 func mustSnapshotTree(t *testing.T, root string) []string {
@@ -8178,6 +10577,15 @@ func assertTextContainsNone(t *testing.T, label string, text string, forbidden .
 			t.Fatalf("%s text = %q, must not contain %q", label, text, value)
 		}
 	}
+}
+
+func firstLineWithPrefix(text string, prefix string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
 }
 
 func lifecycleEventTypes(events []agentdaemon.LifecycleEvent) []string {

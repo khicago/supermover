@@ -37,6 +37,13 @@ type Entry struct {
 	Digest        string      `json:"digest,omitempty"`
 	SymlinkTarget string      `json:"symlink_target,omitempty"`
 
+	PreviousSessionID  string  `json:"previous_session_id,omitempty"`
+	PreviousManifestID string  `json:"previous_manifest_id,omitempty"`
+	PreviousSize       *int64  `json:"previous_size,omitempty"`
+	PreviousDigest     string  `json:"previous_digest,omitempty"`
+	PreviousMode       *uint32 `json:"previous_mode,omitempty"`
+	PreviousModTime    string  `json:"previous_mod_time,omitempty"`
+
 	observed fs.FileInfo
 }
 
