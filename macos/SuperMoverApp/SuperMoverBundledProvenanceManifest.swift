@@ -1,0 +1,3 @@
+import SuperMoverAppSupport
+
+typealias SuperMoverBundledProvenanceManifest = SuperMoverAppSupport.SuperMoverBundledProvenanceManifest
