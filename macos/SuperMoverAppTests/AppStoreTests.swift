@@ -1689,8 +1689,8 @@ final class AppStoreTests: XCTestCase {
         store.profilePath = "/tmp/source.profile.json"
 
         XCTAssertTrue(store.isProfileSelected)
-        XCTAssertEqual(store.selectedProfileDisplayTitle, "New source migration config")
-        XCTAssertEqual(store.selectedProfileDisplayDetail, "Choose source and target roots, then create it.")
+        XCTAssertEqual(store.selectedProfileDisplayTitle, "Custom setup location")
+        XCTAssertEqual(store.selectedProfileDisplayDetail, "Choose folders, then create the setup.")
         XCTAssertEqual(store.selectedProfileDisplayMetadata, "Ready to create through the selected file.")
         XCTAssertEqual(store.selectedProfileRawPath, "/tmp/source.profile.json")
         XCTAssertEqual(store.selectedProfileRawPathLabel, "File location")
@@ -1751,8 +1751,8 @@ final class AppStoreTests: XCTestCase {
         store.profilePath = "/tmp/other-profile.json"
 
         XCTAssertNil(store.statusSnapshot)
-        XCTAssertEqual(store.selectedProfileDisplayTitle, "New source migration config")
-        XCTAssertEqual(store.selectedProfileDisplayDetail, "Choose source and target roots, then create it.")
+        XCTAssertEqual(store.selectedProfileDisplayTitle, "Custom setup location")
+        XCTAssertEqual(store.selectedProfileDisplayDetail, "Choose folders, then create the setup.")
         XCTAssertEqual(store.selectedProfileDisplayMetadata, "Ready to create through the selected file.")
         XCTAssertEqual(store.selectedProfileRawPath, "/tmp/other-profile.json")
         XCTAssertNil(store.selectedProfileEvidenceID)
@@ -1896,15 +1896,15 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(guide.title, "Prepare this Source")
         XCTAssertEqual(guide.steps.map(\.title), [
             "Migration config file",
-            "Source and target root inputs",
+            "Choose folders",
             "Validate before moving",
         ])
         XCTAssertEqual(guide.steps.map(\.state), [.pending, .neutral, .pending])
-        XCTAssertEqual(guide.steps[0].primaryActionTitle, "Create Recommended Config")
+        XCTAssertEqual(guide.steps[0].primaryActionTitle, "Create Migration Setup")
         XCTAssertEqual(guide.steps[0].primaryTask, .profileInit)
-        XCTAssertEqual(guide.steps[0].secondaryActionTitle, "Open Existing Config")
-        XCTAssertEqual(guide.steps[0].detail, "Choose roots, then create a recommended config in ~/.supermover, or open an existing migration config file.")
-        XCTAssertEqual(guide.steps[1].detail, "Use these folders when creating a new config or explicitly updating the selected config. Lint and Status read the selected config file.")
+        XCTAssertNil(guide.steps[0].secondaryActionTitle)
+        XCTAssertEqual(guide.steps[0].detail, "Choose folders, then create the recommended setup. Existing and custom config files live in Advanced.")
+        XCTAssertEqual(guide.steps[1].detail, "Choose the folder to move and the destination folder. Lint and Status read the saved setup.")
         XCTAssertEqual(guide.steps[2].detail, "Create or open the config, then run Lint Config before treating setup as ready.")
     }
 
@@ -1917,22 +1917,22 @@ final class AppStoreTests: XCTestCase {
         let localizedGuide = store.localizedSetupGuide(using: localization)
 
         XCTAssertEqual(localizedGuide.title, "准备这台源端 Mac")
-        XCTAssertEqual(localizedGuide.subtitle, "选择角色和迁移配置文件，然后验证 CLI 将使用的目录。")
+        XCTAssertEqual(localizedGuide.subtitle, "选择角色和目录，然后创建或检查迁移设置。")
         XCTAssertEqual(localizedGuide.steps.map(\.title), [
             "迁移配置文件",
-            "源端和目标端根目录输入",
+            "选择目录",
             "迁移前验证",
         ])
         XCTAssertEqual(localizedGuide.steps.map(\.state), [.pending, .neutral, .pending])
-        XCTAssertEqual(localizedGuide.steps[0].primaryActionTitle, "创建推荐配置")
+        XCTAssertEqual(localizedGuide.steps[0].primaryActionTitle, "创建迁移设置")
         XCTAssertEqual(localizedGuide.steps[0].primaryTask, .profileInit)
-        XCTAssertEqual(localizedGuide.steps[0].secondaryActionTitle, "打开现有配置")
-        XCTAssertEqual(localizedGuide.steps[0].detail, "选择根目录后，在 ~/.supermover 下创建推荐配置；也可以打开现有迁移配置文件。")
+        XCTAssertNil(localizedGuide.steps[0].secondaryActionTitle)
+        XCTAssertEqual(localizedGuide.steps[0].detail, "选择目录后创建推荐设置；已有配置和自定义位置在高级选项里。")
         XCTAssertEqual(localizedGuide.steps[1].statusLabel, "创建或更新时可选")
         XCTAssertEqual(localizedGuide.steps[2].statusLabel, "未验证")
 
         XCTAssertEqual(store.setupGuide.title, "Prepare this Source")
-        XCTAssertEqual(store.setupGuide.steps[0].primaryActionTitle, "Create Recommended Config")
+        XCTAssertEqual(store.setupGuide.steps[0].primaryActionTitle, "Create Migration Setup")
         XCTAssertEqual(store.setupGuide.steps[0].primaryTask, .profileInit)
     }
 
@@ -1981,7 +1981,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(guide.steps[0].state, .pass)
         XCTAssertEqual(guide.steps[0].primaryActionTitle, "Open Existing Config")
         XCTAssertNil(guide.steps[0].secondaryActionTitle)
-        XCTAssertEqual(guide.steps[1].title, "Target root input")
+        XCTAssertEqual(guide.steps[1].title, "Destination folder")
         XCTAssertEqual(guide.steps[1].state, .pass)
         XCTAssertEqual(guide.steps[2].detail, "Run Lint Config or Read Status to confirm the selected config still matches durable evidence.")
         XCTAssertEqual(guide.steps[2].primaryActionTitle, "Lint Existing Config")
@@ -2007,7 +2007,7 @@ final class AppStoreTests: XCTestCase {
 
         XCTAssertEqual(localizedGuide.title, "准备这台目标端 Mac")
         XCTAssertEqual(localizedGuide.steps[0].statusLabel, "现有配置文件")
-        XCTAssertEqual(localizedGuide.steps[1].title, "目标端根目录输入")
+        XCTAssertEqual(localizedGuide.steps[1].title, "目标目录")
         XCTAssertEqual(localizedGuide.steps[1].statusLabel, "目标端可写")
         XCTAssertEqual(localizedGuide.steps[2].detail, "运行 Lint Config 或 Read Status，确认所选配置仍匹配持久证据。")
         XCTAssertEqual(localizedGuide.steps[2].primaryActionTitle, "检查现有配置")
@@ -2021,23 +2021,23 @@ final class AppStoreTests: XCTestCase {
         let localization = AppChromeLocalization(language: .simplifiedChinese)
 
         var display = store.localizedProfileSelectionContext(using: localization)
-        XCTAssertEqual(display.title, "未选择迁移配置")
-        XCTAssertEqual(display.detail, "创建 ~/.supermover 下的推荐迁移配置，或打开现有迁移配置文件。")
+        XCTAssertEqual(display.title, "推荐设置")
+        XCTAssertEqual(display.detail, "不用手动选择配置文件。选好目录后创建迁移设置即可。")
         XCTAssertEqual(display.rawPathLabel, "文件位置")
         XCTAssertNil(display.rawPath)
         XCTAssertNil(display.metadata)
-        XCTAssertEqual(store.selectedProfileDisplayTitle, "No migration config selected")
+        XCTAssertEqual(store.selectedProfileDisplayTitle, "Recommended setup")
         XCTAssertEqual(store.missingProfileCommandPreviewValue, "<Config File Required>")
 
         store.applyProfileDestinationSelection("/tmp/studio.profile.json")
 
         display = store.localizedProfileSelectionContext(using: localization)
-        XCTAssertEqual(display.title, "新源端迁移配置")
-        XCTAssertEqual(display.detail, "选择源端和目标端根目录，然后创建配置。")
+        XCTAssertEqual(display.title, "自定义设置位置")
+        XCTAssertEqual(display.detail, "选择目录，然后创建迁移设置。")
         XCTAssertEqual(display.metadata, "将通过所选文件创建。")
         XCTAssertEqual(display.rawPathLabel, "文件位置")
         XCTAssertEqual(display.rawPath, "/tmp/studio.profile.json")
-        XCTAssertEqual(store.selectedProfileDisplayTitle, "New source migration config")
+        XCTAssertEqual(store.selectedProfileDisplayTitle, "Custom setup location")
         XCTAssertEqual(store.selectedProfileCommandPreviewValue, "<Selected Config: studio.profile.json>")
         XCTAssertEqual(
             store.commandPreviewArguments(for: .lintProfile),
@@ -2140,10 +2140,10 @@ final class AppStoreTests: XCTestCase {
 
         let guide = store.setupGuide
 
-        XCTAssertEqual(guide.steps[1].title, "Target root input")
+        XCTAssertEqual(guide.steps[1].title, "Destination folder")
         XCTAssertEqual(
             guide.steps[1].detail,
-            "Use this folder only when explicitly updating the selected config target. Lint and Status read the selected config file."
+            "Use this folder only when explicitly updating the selected setup target. Lint and Status read the saved setup."
         )
         XCTAssertEqual(guide.steps[1].state, .neutral)
         XCTAssertEqual(guide.steps[1].statusLabel, "optional unless updating")

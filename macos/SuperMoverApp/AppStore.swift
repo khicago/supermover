@@ -816,16 +816,11 @@ struct SetupGuide: Equatable {
         let primaryActionTitle: String?
         let primaryTask: SuperMoverTaskKind?
         let secondaryActionTitle: String?
-        let secondaryAction: SetupGuideAction?
     }
 
     let title: String
     let subtitle: String
     let steps: [Step]
-}
-
-enum SetupGuideAction: Equatable {
-    case openConfig
 }
 
 enum ProfileDestinationPlan: Equatable {
@@ -2954,10 +2949,10 @@ final class AppStore: ObservableObject {
         guard path != nil else {
             let emptyDetail =
                 selectedRole == .source
-                ? "Create a recommended migration config in ~/.supermover, or open an existing migration config file."
+                ? "No file picking needed. Choose folders, then create the setup."
                 : "Open an existing migration config file to load roots, pairing, network pins, and evidence links."
             return ProfileSelectionContext(
-                title: "No migration config selected",
+                title: selectedRole == .source ? "Recommended setup" : "No migration config selected",
                 detail: emptyDetail,
                 metadata: nil,
                 rawPathLabel: rawPathLabel,
@@ -2991,8 +2986,8 @@ final class AppStore: ObservableObject {
             let isRecommendedDestination = isRecommendedProfileDestination(path)
             return ProfileSelectionContext(
                 title: explicitProfileName
-                    ?? (isRecommendedDestination ? "Recommended source migration config" : "New source migration config"),
-                detail: explicitProfileID.map { "ID: \($0)" } ?? "Choose source and target roots, then create it.",
+                    ?? (isRecommendedDestination ? "Recommended setup ready" : "Custom setup location"),
+                detail: explicitProfileID.map { "ID: \($0)" } ?? "Choose folders, then create the setup.",
                 metadata: isRecommendedDestination
                     ? "Recommended location selected."
                     : "Ready to create through the selected file.",
@@ -3056,7 +3051,7 @@ final class AppStore: ObservableObject {
             )
         case .none:
             return ProfileSelectionContext(
-                title: "No migration config selected",
+                title: selectedRole == .source ? "Recommended setup" : "No migration config selected",
                 detail: nil,
                 metadata: nil,
                 rawPathLabel: rawPathLabel,
@@ -3137,26 +3132,23 @@ final class AppStore: ObservableObject {
         let primaryTitle: String?
         let primaryTask: SuperMoverTaskKind?
         let secondaryTitle: String?
-        let secondaryAction: SetupGuideAction?
 
         switch selectedProfilePathState {
         case .none:
             state = .pending
             detail =
                 selectedRole == .source
-                ? "Choose roots, then create a recommended config in ~/.supermover, or open an existing migration config file."
+                ? "Choose folders, then create the recommended setup. Existing and custom config files live in Advanced."
                 : "Open an existing migration config file before reading evidence or running role tasks."
-            primaryTitle = selectedRole == .source ? "Create Recommended Config" : "Open Existing Config"
+            primaryTitle = selectedRole == .source ? "Create Migration Setup" : "Open Existing Config"
             primaryTask = selectedRole == .source ? .profileInit : nil
-            secondaryTitle = selectedRole == .source ? "Open Existing Config" : nil
-            secondaryAction = selectedRole == .source ? .openConfig : nil
+            secondaryTitle = nil
         case .existingFile:
             state = .pass
             detail = "Existing migration config selected. It remains the source of truth for CLI execution."
             primaryTitle = "Open Existing Config"
             primaryTask = nil
             secondaryTitle = nil
-            secondaryAction = nil
         case .newDestination:
             state = selectedRole == .source ? .review : .blocked
             detail =
@@ -3165,24 +3157,21 @@ final class AppStore: ObservableObject {
                 : "Targets and observers need an existing migration config file."
             primaryTitle = selectedRole == .source ? "Create New Config File" : "Open Existing Config"
             primaryTask = selectedRole == .source ? .profileInit : nil
-            secondaryTitle = selectedRole == .source ? "Open Existing Config" : nil
-            secondaryAction = selectedRole == .source ? .openConfig : nil
+            secondaryTitle = nil
         case .missingFile:
             state = .blocked
             detail = selectedRole == .source
-                ? "Selected config file is missing. Create the recommended config instead, or open an existing file."
+                ? "Selected config file is missing. Create the recommended setup instead, or open an existing file from Advanced."
                 : "Selected config file is missing. Open an existing migration config file."
-            primaryTitle = selectedRole == .source ? "Create Recommended Config" : "Open Existing Config"
+            primaryTitle = selectedRole == .source ? "Create Migration Setup" : "Open Existing Config"
             primaryTask = selectedRole == .source ? .profileInit : nil
-            secondaryTitle = selectedRole == .source ? "Open Existing Config" : nil
-            secondaryAction = selectedRole == .source ? .openConfig : nil
+            secondaryTitle = nil
         case .directory:
             state = .blocked
             detail = "A folder is selected. Choose a .json migration config file."
             primaryTitle = "Open Existing Config"
             primaryTask = nil
             secondaryTitle = nil
-            secondaryAction = nil
         }
 
         return SetupGuide.Step(
@@ -3194,8 +3183,7 @@ final class AppStore: ObservableObject {
             state: state,
             primaryActionTitle: primaryTitle,
             primaryTask: primaryTask,
-            secondaryActionTitle: secondaryTitle,
-            secondaryAction: secondaryAction
+            secondaryActionTitle: secondaryTitle
         )
     }
 
@@ -3210,8 +3198,8 @@ final class AppStore: ObservableObject {
 
         switch selectedRole {
         case .source:
-            title = "Source and target root inputs"
-            detail = "Use these folders when creating a new config or explicitly updating the selected config. Lint and Status read the selected config file."
+            title = "Choose folders"
+            detail = "Choose the folder to move and the destination folder. Lint and Status read the saved setup."
             if creatingConfig || hasSourceRootInput || hasTargetRootInput {
                 statusLabel = "source \(sourceReadiness) / target \(targetReadiness)"
                 state = (sourceReadiness == "readable" && targetReadiness == "writable") ? .pass : .pending
@@ -3220,8 +3208,8 @@ final class AppStore: ObservableObject {
                 state = .neutral
             }
         case .target:
-            title = "Target root input"
-            detail = "Use this folder only when explicitly updating the selected config target. Lint and Status read the selected config file."
+            title = "Destination folder"
+            detail = "Use this folder only when explicitly updating the selected setup target. Lint and Status read the saved setup."
             if hasTargetRootInput {
                 statusLabel = "target \(targetReadiness)"
                 state = targetReadiness == "writable" ? .pass : .pending
@@ -3245,8 +3233,7 @@ final class AppStore: ObservableObject {
             state: state,
             primaryActionTitle: selectedRole == .observer ? nil : "Choose Folder",
             primaryTask: nil,
-            secondaryActionTitle: nil,
-            secondaryAction: nil
+            secondaryActionTitle: nil
         )
     }
 
@@ -3289,8 +3276,7 @@ final class AppStore: ObservableObject {
             state: isValidated ? .pass : .pending,
             primaryActionTitle: primaryTitle,
             primaryTask: primaryTask,
-            secondaryActionTitle: selectedRole == .target ? "Read Status" : nil,
-            secondaryAction: nil
+            secondaryActionTitle: selectedRole == .target ? "Read Status" : nil
         )
     }
 
@@ -3300,7 +3286,6 @@ final class AppStore: ObservableObject {
         let primaryTitle: String?
         let primaryTask: SuperMoverTaskKind?
         let secondaryTitle: String?
-        let secondaryAction: SetupGuideAction?
 
         switch selectedProfilePathState {
         case .none:
@@ -3312,15 +3297,13 @@ final class AppStore: ObservableObject {
                 ? localization.text(.setupActionCreateRecommendedConfig)
                 : localization.text(.setupActionOpenExistingConfig)
             primaryTask = selectedRole == .source ? .profileInit : nil
-            secondaryTitle = selectedRole == .source ? localization.text(.setupActionOpenExistingConfig) : nil
-            secondaryAction = selectedRole == .source ? .openConfig : nil
+            secondaryTitle = nil
         case .existingFile:
             state = .pass
             detail = localization.text(.setupConfigDetailExistingFile)
             primaryTitle = localization.text(.setupActionOpenExistingConfig)
             primaryTask = nil
             secondaryTitle = nil
-            secondaryAction = nil
         case .newDestination:
             state = selectedRole == .source ? .review : .blocked
             detail = selectedRole == .source
@@ -3330,8 +3313,7 @@ final class AppStore: ObservableObject {
                 ? localization.text(.setupActionCreateNewConfigFile)
                 : localization.text(.setupActionOpenExistingConfig)
             primaryTask = selectedRole == .source ? .profileInit : nil
-            secondaryTitle = selectedRole == .source ? localization.text(.setupActionOpenExistingConfig) : nil
-            secondaryAction = selectedRole == .source ? .openConfig : nil
+            secondaryTitle = nil
         case .missingFile:
             state = .blocked
             detail = selectedRole == .source
@@ -3341,15 +3323,13 @@ final class AppStore: ObservableObject {
                 ? localization.text(.setupActionCreateRecommendedConfig)
                 : localization.text(.setupActionOpenExistingConfig)
             primaryTask = selectedRole == .source ? .profileInit : nil
-            secondaryTitle = selectedRole == .source ? localization.text(.setupActionOpenExistingConfig) : nil
-            secondaryAction = selectedRole == .source ? .openConfig : nil
+            secondaryTitle = nil
         case .directory:
             state = .blocked
             detail = localization.text(.setupConfigDetailDirectory)
             primaryTitle = localization.text(.setupActionOpenExistingConfig)
             primaryTask = nil
             secondaryTitle = nil
-            secondaryAction = nil
         }
 
         return SetupGuide.Step(
@@ -3362,8 +3342,7 @@ final class AppStore: ObservableObject {
             state: state,
             primaryActionTitle: primaryTitle,
             primaryTask: primaryTask,
-            secondaryActionTitle: secondaryTitle,
-            secondaryAction: secondaryAction
+            secondaryActionTitle: secondaryTitle
         )
     }
 
@@ -3420,8 +3399,7 @@ final class AppStore: ObservableObject {
             state: state,
             primaryActionTitle: selectedRole == .observer ? nil : localization.text(.setupActionChooseFolder),
             primaryTask: nil,
-            secondaryActionTitle: nil,
-            secondaryAction: nil
+            secondaryActionTitle: nil
         )
     }
 
@@ -3468,8 +3446,7 @@ final class AppStore: ObservableObject {
             state: isValidated ? .pass : .pending,
             primaryActionTitle: primaryTitle,
             primaryTask: primaryTask,
-            secondaryActionTitle: selectedRole == .target ? localization.text(.setupActionReadStatus) : nil,
-            secondaryAction: nil
+            secondaryActionTitle: selectedRole == .target ? localization.text(.setupActionReadStatus) : nil
         )
     }
 

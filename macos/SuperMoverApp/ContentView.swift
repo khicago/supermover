@@ -486,7 +486,6 @@ struct ContentView: View {
           ) {
             setupGuideStepHeader(guide.steps[0])
             profilePicker
-            setupConfigSelectionActions
           }
 
           ScreenCard(
@@ -617,23 +616,11 @@ struct ContentView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  private var setupConfigSelectionActions: some View {
-    WorkbenchWrappingRow(spacing: 12, rowSpacing: 12) {
-      if store.selectedRole == .source && (profileSelectionState == .none || profileSelectionState == .missingFile) {
-        ActionButton(appChromeLocalization.text(.setupActionUseRecommendedConfig), systemImage: "sparkles") {
-          store.useRecommendedProfileDestination()
-        }
-      }
-      ActionButton(appChromeLocalization.text(.setupActionOpenExistingConfig), systemImage: "folder") {
-        store.browseProfile()
-      }
-    }
-  }
-
   @ViewBuilder
   private func setupConfigCreationAction(for step: SetupGuide.Step) -> some View {
     if step.primaryTask == .profileInit, let title = step.primaryActionTitle {
-      PrimaryActionButton(title, systemImage: "doc.badge.plus") {
+      let canCreate = sourceRootReadiness == "readable" && targetRootReadiness == "writable"
+      PrimaryActionButton(title, systemImage: "doc.badge.plus", isEnabled: canCreate) {
         if store.selectedRole == .source && (profileSelectionState == .none || profileSelectionState == .missingFile) {
           store.useRecommendedProfileDestination()
         }
@@ -2779,16 +2766,28 @@ struct ContentView: View {
   private var profilePicker: some View {
     let displayContext = store.localizedProfileSelectionContext(using: appChromeLocalization)
     return VStack(alignment: .leading, spacing: 10) {
-      Text(appChromeLocalization.text(.setupConfigCardTitle))
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(SMColor.secondaryText)
-      VStack(alignment: .leading, spacing: 6) {
-        Text(appChromeLocalization.text(.setupConfigSelectedFileTitle))
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(SMColor.secondaryText)
-        WorkbenchResponsiveBar(alignment: .top, spacing: 12, compactSpacing: 12) {
+      WorkbenchResponsiveBar(alignment: .top, spacing: 12, compactSpacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
+          Image(systemName: profileSelectionIcon)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(profileSelectionTint)
+            .frame(width: 34, height: 34)
+            .background(profileSelectionTint.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
           VStack(alignment: .leading, spacing: 6) {
-            StatusBadge(item: profileSelectionContext.pathState.localizedBadge(using: appChromeLocalization), prominence: .plain, compact: true)
+            HStack(spacing: 8) {
+              Text(appChromeLocalization.text(.setupConfigSelectedFileTitle))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(SMColor.secondaryText)
+              if profileSelectionState != .none {
+                StatusBadge(
+                  item: profileSelectionContext.pathState.localizedBadge(using: appChromeLocalization),
+                  prominence: .plain,
+                  compact: true
+                )
+              }
+            }
             Text(displayContext.title)
               .font(.system(size: 13, weight: .semibold))
               .foregroundStyle(hasSelectedProfilePath ? SMColor.primaryText : SMColor.secondaryText)
@@ -2809,24 +2808,21 @@ struct ContentView: View {
                 .truncationMode(.middle)
             }
           }
-        } trailing: {
-          HStack(spacing: 8) {
-            CompactActionButton(appChromeLocalization.text(.setupActionOpenExistingConfig), systemImage: "folder") {
-              store.browseProfile()
-            }
-            if hasSelectedProfilePath {
-              CompactActionButton(appChromeLocalization.text(.setupActionClearConfig), systemImage: "xmark") {
-                store.profilePath = ""
-              }
-            }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      } trailing: {
+        if hasSelectedProfilePath {
+          CompactActionButton(appChromeLocalization.text(.setupActionClearConfig), systemImage: "xmark") {
+            store.profilePath = ""
           }
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SMColor.input)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(SMColor.hairline))
       }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(SMColor.input)
+      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(SMColor.hairline))
+
       VStack(alignment: .leading, spacing: 8) {
         Button {
           withAnimation(.easeInOut(duration: 0.18)) {
@@ -2852,8 +2848,47 @@ struct ContentView: View {
     }
   }
 
+  private var profileSelectionIcon: String {
+    switch profileSelectionState {
+    case .existingFile:
+      return "checkmark.seal.fill"
+    case .newDestination:
+      return "sparkles"
+    case .missingFile:
+      return "exclamationmark.triangle.fill"
+    case .directory:
+      return "folder.fill.badge.questionmark"
+    case .none:
+      return "sparkles"
+    }
+  }
+
+  private var profileSelectionTint: Color {
+    switch profileSelectionState {
+    case .existingFile:
+      return SMColor.green
+    case .newDestination:
+      return SMColor.cyan
+    case .missingFile, .directory:
+      return SMColor.amber
+    case .none:
+      return SMColor.blue
+    }
+  }
+
   private var profileAdvancedFields: some View {
     VStack(alignment: .leading, spacing: 14) {
+      WorkbenchWrappingRow(spacing: 10, rowSpacing: 10) {
+        CompactActionButton(appChromeLocalization.text(.setupActionOpenExistingConfig), systemImage: "folder") {
+          store.browseProfile()
+        }
+        if store.selectedRole == .source {
+          CompactActionButton(appChromeLocalization.text(.setupActionChooseCustomConfigLocation), systemImage: "folder.badge.plus") {
+            store.chooseProfileDestination()
+          }
+        }
+      }
+
       if let profileID = profileSelectionContext.evidenceID {
         VStack(alignment: .leading, spacing: 6) {
           Text("Evidence Config ID")
@@ -2880,14 +2915,6 @@ struct ContentView: View {
           .background(SMColor.input)
           .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
           .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(SMColor.hairline))
-      }
-
-      if store.selectedRole == .source {
-        WorkbenchWrappingRow(spacing: 10, rowSpacing: 10) {
-          CompactActionButton(appChromeLocalization.text(.setupActionChooseCustomConfigLocation), systemImage: "folder.badge.plus") {
-            store.chooseProfileDestination()
-          }
-        }
       }
 
       if profileSelectionContext.showsSourceIdentityFields {
@@ -3347,13 +3374,16 @@ struct ContentView: View {
     browseTitle: String,
     browse: @escaping () -> Void
   ) -> some View {
-    VStack(alignment: .leading, spacing: 8) {
+    let hasPath = !text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    return VStack(alignment: .leading, spacing: 8) {
       HStack {
         Text(label)
           .font(.system(size: 12, weight: .semibold))
           .foregroundStyle(SMColor.secondaryText)
         Spacer()
-        EvidenceChip(label: "access", value: localizedDirectoryReadiness(readiness), tint: tint(for: readiness))
+        if hasPath {
+          EvidenceChip(label: "access", value: localizedDirectoryReadiness(readiness), tint: tint(for: readiness))
+        }
       }
       HStack(spacing: 10) {
         TextField(placeholder, text: text)

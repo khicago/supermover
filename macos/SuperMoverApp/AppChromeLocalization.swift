@@ -55,7 +55,6 @@ struct AppChromeLocalization {
         case setupTargetRootPlaceholder = "setup.targetRoot.placeholder"
         case setupObserverRootInputsNotice = "setup.observer.rootInputs.notice"
         case setupActionOpenExistingConfig = "setup.action.openExistingConfig"
-        case setupActionUseRecommendedConfig = "setup.action.useRecommendedConfig"
         case setupActionCreateRecommendedConfig = "setup.action.createRecommendedConfig"
         case setupActionChooseCustomConfigLocation = "setup.action.chooseCustomConfigLocation"
         case setupActionClearConfig = "setup.action.clearConfig"
@@ -309,35 +308,33 @@ struct AppChromeLocalization {
         case .setupRoleFieldTitle:
             return "Role"
         case .setupConfigCardTitle:
-            return "Migration Config"
+            return "Migration Setup"
         case .setupConfigCardSubtitle:
-            return "Select or create the JSON file used by the CLI as --profile. It stores roots, pairing receipts, network pins, and evidence links."
+            return "SuperMover saves this setup in a recommended config file. Existing or custom files are advanced options."
         case .setupConfigSelectedFileTitle:
-            return "Selected Config File"
+            return "Current Setup"
         case .setupRootInputsCardTitle:
-            return "Root Inputs"
+            return "Choose Folders"
         case .setupRootInputsCardSubtitle:
-            return "These fields are inputs for creating or explicitly updating a config; existing config reads still come from the selected file."
+            return "Pick what to copy and where it should land."
         case .setupChecksCardTitle:
             return "Config Checks"
         case .setupChecksCardSubtitle:
             return "Validate the selected config before moving to Connect or Move."
         case .setupSourceRootFieldTitle:
-            return "Source Root"
+            return "Folder to Move"
         case .setupSourceRootPlaceholder:
-            return "Readable source directory"
+            return "Choose the folder on this Mac"
         case .setupTargetRootFieldTitle:
-            return "Target Root"
+            return "Destination Folder"
         case .setupTargetRootPlaceholder:
-            return "Writable target directory"
+            return "Choose where files should land"
         case .setupObserverRootInputsNotice:
             return "Observer mode reads existing config and target evidence. Folder authoring is disabled for this role."
         case .setupActionOpenExistingConfig:
             return "Open Existing Config"
-        case .setupActionUseRecommendedConfig:
-            return "Use Recommended Config"
         case .setupActionCreateRecommendedConfig:
-            return "Create Recommended Config"
+            return "Create Migration Setup"
         case .setupActionChooseCustomConfigLocation:
             return "Choose Custom Location"
         case .setupActionClearConfig:
@@ -349,9 +346,9 @@ struct AppChromeLocalization {
         case .setupActionChooseFolder:
             return "Choose Folder"
         case .setupActionBrowseSourceRoot:
-            return "Browse Source Root"
+            return "Choose Folder"
         case .setupActionBrowseTargetRoot:
-            return "Browse Target Root"
+            return "Choose Folder"
         case .setupActionLintExistingConfig:
             return "Lint Existing Config"
         case .setupActionLintConfig:
@@ -359,25 +356,25 @@ struct AppChromeLocalization {
         case .setupActionReadStatus:
             return "Read Status"
         case .setupProfileAdvancedTitle:
-            return "Advanced"
+            return "Advanced Options"
         case .setupProfileRawPathLabel:
             return "File location"
         case .setupProfileRawPathEmpty:
             return "No file location selected"
         case .setupProfileNoConfigTitle:
-            return "No migration config selected"
+            return "Recommended setup"
         case .setupProfileNoConfigDetailSource:
-            return "Open an existing migration config file or choose where to create one."
+            return "No file picking needed. Choose folders, then create the setup."
         case .setupProfileNoConfigDetailExistingOnly:
             return "Open an existing migration config file to load roots, pairing, network pins, and evidence links."
         case .setupProfileRecommendedSourceConfigTitle:
-            return "Recommended source migration config"
+            return "Recommended setup ready"
         case .setupProfileRecommendedConfigReadyMetadata:
             return "Recommended location selected."
         case .setupProfileNewSourceConfigTitle:
-            return "New source migration config"
+            return "Custom setup location"
         case .setupProfileNewSourceConfigDetail:
-            return "Choose source and target roots, then create it."
+            return "Choose folders, then create the setup."
         case .setupProfileNewConfigReadyMetadata:
             return "Ready to create through the selected file."
         case .setupProfileSelectedConfigFileTitle:
@@ -399,7 +396,7 @@ struct AppChromeLocalization {
         case .setupChecklistDetail:
             return "These checks only cover config-file and path preparation. Live transfer state, evidence health, and supervised process status belong in Control Room and Evidence."
         case .setupGuideSubtitle:
-            return "Pick the role, choose the migration config file, then validate the folders that the CLI will use."
+            return "Pick a role, choose folders, then create or validate the setup."
         case .setupGuideSourceTitle:
             return "Prepare this Source"
         case .setupGuideTargetTitle:
@@ -409,7 +406,7 @@ struct AppChromeLocalization {
         case .setupConfigStepTitle:
             return "Migration config file"
         case .setupConfigDetailNoneSource:
-            return "Use an existing migration config or choose where this Source should create one."
+            return "Choose folders, then create the recommended setup. Existing and custom config files live in Advanced."
         case .setupConfigDetailNoneExistingOnly:
             return "Open an existing migration config file before reading evidence or running role tasks."
         case .setupConfigDetailExistingFile:
@@ -419,21 +416,21 @@ struct AppChromeLocalization {
         case .setupConfigDetailNewDestinationExistingOnly:
             return "Targets and observers need an existing migration config file."
         case .setupConfigDetailMissingFileSource:
-            return "Selected config file is missing. Create the recommended config instead, or open an existing file."
+            return "Selected config file is missing. Create the recommended setup instead, or open an existing file from Advanced."
         case .setupConfigDetailMissingFile:
             return "Selected config file is missing. Open an existing migration config file."
         case .setupConfigDetailDirectory:
             return "A folder is selected. Choose a .json migration config file."
         case .setupFoldersTitleSource:
-            return "Source and target root inputs"
+            return "Choose folders"
         case .setupFoldersTitleTarget:
-            return "Target root input"
+            return "Destination folder"
         case .setupFoldersTitleObserver:
             return "Evidence target"
         case .setupFoldersDetailSource:
-            return "Use these folders when creating a new config or explicitly updating the selected config. Lint and Status read the selected config file."
+            return "Choose the folder to move and the destination folder. Lint and Status read the saved setup."
         case .setupFoldersDetailTarget:
-            return "Use this folder only when explicitly updating the selected config target. Lint and Status read the selected config file."
+            return "Use this folder only when explicitly updating the selected setup target. Lint and Status read the saved setup."
         case .setupFoldersDetailObserver:
             return "Observer mode reads existing target evidence; it does not author source or target folders."
         case .setupValidationTitle:

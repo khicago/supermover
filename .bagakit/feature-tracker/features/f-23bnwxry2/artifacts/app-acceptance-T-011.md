@@ -901,19 +901,25 @@ Still not complete:
       Gatekeeper, Local Network/firewall prompt evidence, or real two-Mac
       installed-app acceptance evidence.
 - Prepare profile creation UX follow-up:
-  - Source-side basic setup now defaults to the recommended
-    `~/.supermover/profile-local.json` migration config destination. The
-    primary setup action can select that recommended path before running
-    `profile init`, while `Use Recommended Config` can preselect it without
-    launching the CLI.
-  - Manual profile destination selection remains available only under the
-    Advanced disclosure as `Choose Custom Location`; the ordinary config card
-    no longer asks operators to choose where a new config file should live.
+  - Source-side basic setup now presents a single recommended setup summary
+    instead of asking operators to choose or create a config file location.
+    When the user creates the setup, the app selects the recommended
+    `~/.supermover/profile-local.json` path before running `profile init`.
+  - Existing profile selection, manual profile destination selection, raw file
+    paths, and profile identity fields remain available only under Advanced
+    options. The ordinary config card no longer shows competing file-picking
+    buttons.
+  - Empty source/target directory fields no longer show orange access badges;
+    readiness appears only after a user enters or chooses a path. The primary
+    create action is disabled until the source directory is readable and the
+    target directory is writable.
   - Green evidence:
-    `swift test --package-path macos --filter 'AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testLocalizedProfileSelectionDisplayDoesNotChangeRawConfigValues|AppStoreTests/testRecommendedProfileDestinationSelectsSuperMoverProfileWithoutAutoLaunching|AppStoreTests/testApplyProfileDestinationSelectionDoesNotAutoLaunchProfileCreation|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
-    - 6 tests, 0 failures.
+    `swift test --package-path macos --filter 'AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testSetupGuideShowsExistingTargetConfigWithoutCreationCTA|AppStoreTests/testLocalizedSetupGuideShowsTargetValidationActions|AppStoreTests/testLocalizedProfileSelectionDisplayDoesNotChangeRawConfigValues|AppStoreTests/testSetupGuideClarifiesExistingConfigRootInputsAreNotLoadedRoots|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
+    - 8 tests, 0 failures.
+    `swift build --package-path macos --product SuperMoverApp`
+    - passed.
     Python resource-key audit: English and Simplified Chinese
-    `Localizable.strings` both have 141 keys, no duplicates, and no missing
+    `Localizable.strings` both have 140 keys, no duplicates, and no missing
     counterpart keys.
   - Boundary:
     This is basic Prepare UX simplification only. It keeps profile files as the

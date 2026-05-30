@@ -38,8 +38,8 @@ final class UIPreferencesTests: XCTestCase {
 
         XCTAssertEqual(english.text(.setupHeaderTitle), "Prepare")
         XCTAssertEqual(simplifiedChinese.text(.setupHeaderTitle), "准备")
-        XCTAssertEqual(english.text(.setupConfigCardTitle), "Migration Config")
-        XCTAssertEqual(simplifiedChinese.text(.setupConfigCardTitle), "迁移配置")
+        XCTAssertEqual(english.text(.setupConfigCardTitle), "Migration Setup")
+        XCTAssertEqual(simplifiedChinese.text(.setupConfigCardTitle), "迁移设置")
         XCTAssertEqual(english.text(.workbenchRoleSourceTitle), "Source")
         XCTAssertEqual(simplifiedChinese.text(.workbenchRoleSourceTitle), "源端")
         XCTAssertEqual(
@@ -52,12 +52,12 @@ final class UIPreferencesTests: XCTestCase {
         )
         XCTAssertEqual(english.text(.setupActionOpenExistingConfig), "Open Existing Config")
         XCTAssertEqual(simplifiedChinese.text(.setupActionOpenExistingConfig), "打开现有配置")
-        XCTAssertEqual(english.text(.setupActionCreateRecommendedConfig), "Create Recommended Config")
-        XCTAssertEqual(simplifiedChinese.text(.setupActionCreateRecommendedConfig), "创建推荐配置")
+        XCTAssertEqual(english.text(.setupActionCreateRecommendedConfig), "Create Migration Setup")
+        XCTAssertEqual(simplifiedChinese.text(.setupActionCreateRecommendedConfig), "创建迁移设置")
         XCTAssertEqual(english.text(.setupActionChooseCustomConfigLocation), "Choose Custom Location")
         XCTAssertEqual(simplifiedChinese.text(.setupActionChooseCustomConfigLocation), "选择自定义位置")
-        XCTAssertEqual(english.text(.setupProfileAdvancedTitle), "Advanced")
-        XCTAssertEqual(simplifiedChinese.text(.setupProfileAdvancedTitle), "高级")
+        XCTAssertEqual(english.text(.setupProfileAdvancedTitle), "Advanced Options")
+        XCTAssertEqual(simplifiedChinese.text(.setupProfileAdvancedTitle), "高级选项")
     }
 
     func testVisibleWorkbenchRoleChromeDoesNotReadRawRoleTitles() throws {
