@@ -1793,6 +1793,24 @@
     two-Mac installed-app transfer success, pairing trust completion, Local
     Network/firewall prompt evidence, Developer ID notarization/staple, or
     final T-011 release closure.
+- Step: T-011 app layout stability follow-up.
+  - Outcome: Connect, Move, and Verify/Repair owner-page toolbars now live in
+    the main workbench chrome outside the page body scroll view, while each
+    selected detail surface remains scrollable below that fixed context. Sidebar
+    navigation now scrolls independently, and the workstation footer uses a
+    vertical fit fallback so constrained window heights keep core navigation and
+    status visible before showing secondary safety details.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'WorkbenchNavigationTests|WorkbenchChromeTests|AppStoreTests'`
+      (136 tests, 0 failures)
+  - Detail:
+    Additional evidence is recorded in
+    `artifacts/app-layout-stability-T-011.md`.
+  - Boundary:
+    This is app-shell layout stability only. It does not claim real two-Mac
+    installed-app transfer success, Local Network/firewall prompt evidence,
+    Developer ID notarization/staple/Gatekeeper proof, or final T-011 release
+    closure.
 
 ## Residual Risks
 

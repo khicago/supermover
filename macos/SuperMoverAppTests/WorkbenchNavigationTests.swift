@@ -46,6 +46,27 @@ final class WorkbenchNavigationTests: XCTestCase {
         XCTAssertEqual(AppSection.taskDispatch.title, "Task Dispatch")
     }
 
+    func testOwnerSectionsDeclareFixedModeStripPolicy() {
+        let sectionsWithOwnerModes: [AppSection] = [
+            .devices,
+            .pairing,
+            .transfer,
+            .sync,
+            .verification,
+            .driftReview,
+        ]
+        let sectionsWithoutOwnerModes: [AppSection] = [
+            .controlRoom,
+            .setup,
+            .evidence,
+            .taskDispatch,
+            .settings,
+        ]
+
+        XCTAssertTrue(sectionsWithOwnerModes.allSatisfy(\.showsFixedOwnerModeStrip))
+        XCTAssertTrue(sectionsWithoutOwnerModes.allSatisfy { !$0.showsFixedOwnerModeStrip })
+    }
+
     func testSidebarNavigationLocalizedLabelsDoNotChangeNavigationIdentity() {
         let simplifiedChinese = AppChromeLocalization(language: .simplifiedChinese)
 

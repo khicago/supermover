@@ -156,6 +156,15 @@ enum AppSection: String, CaseIterable, Identifiable, Equatable {
     }
   }
 
+  var showsFixedOwnerModeStrip: Bool {
+    switch self {
+    case .devices, .pairing, .transfer, .sync, .verification, .driftReview:
+      return true
+    case .setup, .controlRoom, .evidence, .taskDispatch, .settings:
+      return false
+    }
+  }
+
   static let homeSection: AppSection = .controlRoom
 
   static let sidebarGroups: [SidebarNavigationGroup] = [

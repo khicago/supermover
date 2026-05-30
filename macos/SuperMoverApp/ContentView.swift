@@ -126,14 +126,14 @@ struct ContentView: View {
     VStack(alignment: .leading, spacing: 20) {
       sidebarHeader
 
-      sidebarNavigation
-        .padding(.horizontal, 20)
+      ScrollView {
+        sidebarNavigation
+          .padding(.horizontal, 20)
+          .padding(.vertical, 2)
+      }
+      .scrollIndicators(.hidden)
 
-      Spacer()
-
-      sidebarStatusStrip
-        .padding(.horizontal, 20)
-      safetyPostureStrip
+      sidebarFooter
         .padding(.horizontal, 20)
         .padding(.bottom, 24)
     }
@@ -292,17 +292,64 @@ struct ContentView: View {
     .panelSurface(.statusStrip, padding: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
   }
 
-  private var mainContent: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: selectedSection == .controlRoom ? 18 : 16) {
-        sectionContent
+  private var sidebarFooter: some View {
+    ViewThatFits(in: .vertical) {
+      VStack(alignment: .leading, spacing: 14) {
+        sidebarStatusStrip
+        safetyPostureStrip
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, WorkbenchLayoutMetrics.mainContentHorizontalPadding)
-      .padding(.vertical, WorkbenchLayoutMetrics.mainContentVerticalPadding)
+
+      sidebarStatusStrip
     }
-    .coordinateSpace(name: WorkbenchLayoutMetrics.mainContentScrollSpace)
+  }
+
+  private var mainContent: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if hasFixedOwnerModeStrip {
+        fixedOwnerModeStrip
+          .padding(.horizontal, WorkbenchLayoutMetrics.mainContentHorizontalPadding)
+          .padding(.top, WorkbenchLayoutMetrics.mainContentVerticalPadding)
+          .padding(.bottom, WorkbenchLayoutMetrics.fixedOwnerModeStripBottomPadding)
+          .background(SMColor.appBackground)
+          .zIndex(2)
+      }
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: selectedSection == .controlRoom ? 18 : 16) {
+          sectionContent
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, WorkbenchLayoutMetrics.mainContentHorizontalPadding)
+        .padding(.top, scrollContentTopPadding)
+        .padding(.bottom, WorkbenchLayoutMetrics.mainContentVerticalPadding)
+      }
+      .coordinateSpace(name: WorkbenchLayoutMetrics.mainContentScrollSpace)
+    }
     .background(SMColor.appBackground)
+  }
+
+  private var hasFixedOwnerModeStrip: Bool {
+    selectedSection.showsFixedOwnerModeStrip
+  }
+
+  private var scrollContentTopPadding: CGFloat {
+    hasFixedOwnerModeStrip
+      ? WorkbenchLayoutMetrics.fixedOwnerModeStripBodyGap
+      : WorkbenchLayoutMetrics.mainContentVerticalPadding
+  }
+
+  @ViewBuilder
+  private var fixedOwnerModeStrip: some View {
+    switch selectedSection {
+    case .devices, .pairing:
+      connectModeStrip
+    case .transfer, .sync:
+      moveModeStrip
+    case .verification, .driftReview:
+      verifyRepairModeStrip
+    case .controlRoom, .setup, .evidence, .taskDispatch, .settings:
+      EmptyView()
+    }
   }
 
   private var connectModeStrip: some View {
@@ -400,40 +447,31 @@ struct ContentView: View {
 
   @ViewBuilder
   private var connectView: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      connectModeStrip
-      switch selectedConnectSurface {
-      case .deviceState:
-        devicesView
-      case .pairing:
-        pairingView
-      }
+    switch selectedConnectSurface {
+    case .deviceState:
+      devicesView
+    case .pairing:
+      pairingView
     }
   }
 
   @ViewBuilder
   private var moveView: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      moveModeStrip
-      switch selectedMoveSurface {
-      case .transfer:
-        transferView
-      case .sync:
-        syncView
-      }
+    switch selectedMoveSurface {
+    case .transfer:
+      transferView
+    case .sync:
+      syncView
     }
   }
 
   @ViewBuilder
   private var verifyRepairView: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      verifyRepairModeStrip
-      switch selectedVerifyRepairSurface {
-      case .verification:
-        verificationView
-      case .driftReview:
-        driftReviewView
-      }
+    switch selectedVerifyRepairSurface {
+    case .verification:
+      verificationView
+    case .driftReview:
+      driftReviewView
     }
   }
 

@@ -88,6 +88,15 @@ final class WorkbenchChromeTests: XCTestCase {
         XCTAssertEqual(WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: .nan), 0)
     }
 
+    func testFixedOwnerModeStripLeavesDedicatedBodyGap() {
+        XCTAssertGreaterThan(WorkbenchLayoutMetrics.fixedOwnerModeStripBottomPadding, 0)
+        XCTAssertGreaterThan(WorkbenchLayoutMetrics.fixedOwnerModeStripBodyGap, 0)
+        XCTAssertLessThan(
+            WorkbenchLayoutMetrics.fixedOwnerModeStripBodyGap,
+            WorkbenchLayoutMetrics.mainContentVerticalPadding
+        )
+    }
+
     func testWrappedRowMetricsSplitOverflowingItemsIntoMultipleRows() {
         XCTAssertEqual(
             WorkbenchLayoutMetrics.wrappedRowMetrics(

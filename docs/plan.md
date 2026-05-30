@@ -121,7 +121,10 @@ Current feature dependency shape:
   create/update actions, and lint/status checks, plus local UI-only Display
   Preferences for app appearance and interface-language selection. Bounded
   app-owned chrome now localizes sidebar, Settings/Display Preferences, and
-  Prepare/setup role guidance through packaged SwiftPM resources, while task
+  Prepare/setup role guidance through packaged SwiftPM resources. Connect,
+  Move, and Verify/Repair owner-page toolbars are fixed outside page-body
+  scrolling, with sidebar navigation scrolling independently under constrained
+  window heights, while task
   titles, command previews, profile/config, CLI arguments, evidence/proof
   values, artifact fields, and CLI output stay raw and audit-stable. The app
   also has native discovery/pairing command orchestration, selected wired

@@ -71,6 +71,8 @@ enum WorkbenchLayoutMetrics {
   static let sidebarDividerWidth: CGFloat = 1
   static let mainContentHorizontalPadding: CGFloat = 30
   static let mainContentVerticalPadding: CGFloat = 26
+  static let fixedOwnerModeStripBottomPadding: CGFloat = 12
+  static let fixedOwnerModeStripBodyGap: CGFloat = 10
   static let mainContentScrollSpace = "workbench.mainContentScroll"
   static let detailPageMinimumPrimaryWidth: CGFloat = 620
   static let detailPageSpacing: CGFloat = 18
