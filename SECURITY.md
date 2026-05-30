@@ -8,7 +8,11 @@ unauthenticated network services.
 ## Supported Versions
 
 Security fixes target the `main` branch until the first tagged release. The
-project currently requires Go 1.25 as declared in `go.mod`.
+project currently requires the Go version declared in `go.mod`.
+
+No official binary release is supported yet. Local unsigned, ad-hoc signed,
+dirty, or unstapled macOS app bundles are review evidence, not supported
+distribution artifacts.
 
 ## Reporting A Vulnerability
 
@@ -33,7 +37,8 @@ Please include:
 - Existing target files are not overwritten unless content already matches.
 - Source-side deletions are recorded as soft-delete evidence. Physical prune is
   wired only through reviewed `prune --apply --approval <id>` over existing
-  durable approval artifacts; approval-authoring UX remains planned.
+  durable approval artifacts. Approval authoring is explicit and durable through
+  `prune approve`; approval inventory and supersede are review surfaces.
 - Network receiver packages are protocol foundations. Safe exposure is the
   profile-backed pinned mTLS `serve` path, not unauthenticated public handlers.
 

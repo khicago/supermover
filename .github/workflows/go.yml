@@ -59,3 +59,32 @@ jobs:
         run: |
           go run ./cmd/supermover help
           go run ./cmd/supermover version
+
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Swift tests
+        run: swift test --package-path macos
+
+      - name: Script syntax
+        run: |
+          sh -n macos/script/build-app.sh
+          sh -n macos/script/audit-app.sh
+          sh -n macos/script/notarize-app.sh
+          sh -n macos/script/acceptance-loopback.sh
+          sh -n macos/script/acceptance-two-machine.sh
+
+      - name: Build local app bundle
+        run: macos/script/build-app.sh
+
+      - name: Bundled CLI smoke
+        run: macos/dist/SuperMover.app/Contents/Resources/bin/supermover version

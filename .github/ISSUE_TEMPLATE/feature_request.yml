@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a new capability or workflow.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operator problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the smallest useful behavior.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      multiple: true
+      options:
+        - CLI
+        - macOS app
+        - profile schema
+        - control-plane artifacts
+        - release/packaging
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety and audit boundary
+      description: What must not happen silently? What evidence should be durable?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

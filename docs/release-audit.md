@@ -16,6 +16,14 @@ truth belongs here.
 The current product checkpoint is broader than the original local push slice
 and still narrower than the full v1 request.
 
+There is no official tagged binary release yet. The repository now has the
+open-source hygiene surfaces expected before a public release claim: README
+status, changelog, support policy, security policy, contribution guide, code of
+conduct, issue and pull request templates, release checklist, release-note
+configuration, dependency update configuration, and CI coverage for Go plus the
+macOS app build substrate. These files are release-readiness infrastructure,
+not a release by themselves.
+
 ### Implemented
 
 Implemented now:
@@ -131,6 +139,18 @@ go run ./cmd/supermover recover --help
 go run ./cmd/supermover prune --help
 go run ./cmd/supermover dashboard --help
 ```
+
+For macOS app or release-package changes, also preserve evidence from:
+
+```bash
+swift test --package-path macos
+macos/script/build-app.sh
+macos/script/audit-app.sh macos/dist/SuperMover.app
+```
+
+The app audit must be distribution-ready before it can support a public app
+release claim. Unsigned, ad-hoc signed, dirty, or unstapled output is useful
+review evidence only.
 
 ### Local Smoke
 

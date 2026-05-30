@@ -1,9 +1,78 @@
 # Supermover
 
+[![Go](https://github.com/khicago/supermover/actions/workflows/go.yml/badge.svg)](https://github.com/khicago/supermover/actions/workflows/go.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange.svg)](#current-status)
+
 Supermover is a Go CLI for one-way, auditable file migration from a source
-machine to a trusted target. The long-term direction includes LAN-assisted
-transfer and ongoing sync, but the current product is narrower on purpose:
-profile-driven, target-auditable, and conservative about mutation.
+machine to a trusted target. It is profile-driven, conservative about target
+mutation, and built around durable evidence under the target `.supermover`
+control plane.
+
+## Current Status
+
+Supermover is **pre-release**.
+
+- There is no official tagged binary release yet.
+- The CLI is the authoritative execution surface today.
+- The native macOS app is a CLI-backed operator workbench that can be built
+  locally, but current local app bundles are not public release artifacts.
+- Do not treat unsigned, ad-hoc signed, dirty, or unstapled app bundles as
+  install-ready distribution builds.
+- Real two-machine app-first acceptance, Developer ID signing, notarization,
+  stapling, and Gatekeeper-ready release evidence remain planned.
+
+Use Supermover from source if you are comfortable with explicit profiles,
+operator review, and the documented safety boundaries. Wait for a tagged
+release if you need a packaged end-user installer.
+
+## Install
+
+### From Source
+
+```bash
+git clone https://github.com/khicago/supermover.git
+cd supermover
+go run ./cmd/supermover version
+go run ./cmd/supermover help
+```
+
+The module currently follows the Go version declared in `go.mod`.
+
+### Local macOS App Build
+
+```bash
+macos/script/build-app.sh
+open macos/dist/SuperMover.app
+```
+
+This creates a local packaged app with a bundled CLI and provenance manifest.
+Unless you also pass the release audit, Developer ID signing, notarization,
+stapling, and two-machine acceptance gates, this app is local review evidence
+only. It is not an official download release.
+
+## Quick Start: Local Auditable Migration
+
+Use an empty trusted target directory for the first run:
+
+```bash
+go run ./cmd/supermover profile init \
+  --profile ./supermover.profile.json \
+  --source ./example-source \
+  --target ./example-empty-target
+
+go run ./cmd/supermover profile lint --profile ./supermover.profile.json
+go run ./cmd/supermover push --profile ./supermover.profile.json --dry-run
+go run ./cmd/supermover push --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover verify --profile ./supermover.profile.json --session session-001
+go run ./cmd/supermover status --profile ./supermover.profile.json
+```
+
+Review the target `.supermover` artifacts after each meaningful run. Command
+stdout is useful for triage, but the durable audit trail lives under the target
+control plane.
+
+## Capability Snapshot
 
 The shortest honest summary is this: Supermover already has a usable local
 migration path, bounded low-information LAN browsing, a bounded profile-backed
@@ -511,6 +580,14 @@ Still planned:
 
 ## Operator Docs
 
+- [Changelog](CHANGELOG.md): pre-release change log and release-history home
+- [Support](SUPPORT.md): how to ask for help without leaking private data
+- [Security policy](SECURITY.md): supported versions, vulnerability reporting,
+  and current security boundaries
+- [Contributing guide](CONTRIBUTING.md): validation, PR expectations, and
+  safety-first change discipline
+- [Release checklist](docs/release-checklist.md): gates before any official
+  tagged release or downloadable app claim
 - [User migration guide](docs/user-migration-guide.md): current local push
   workflow, audit artifacts, and post-run checks
 - [Operations runbook](docs/runbook.md): repeatable dry-run, publish, review,

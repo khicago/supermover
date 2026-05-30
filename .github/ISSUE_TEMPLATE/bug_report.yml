@@ -1,0 +1,76 @@
+name: Bug report
+description: Report a reproducible Supermover defect.
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, private keys, full personal paths, or unredacted device identifiers.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: Minimal commands or app steps that reproduce the issue.
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      multiple: true
+      options:
+        - CLI local push
+        - CLI network push
+        - sync
+        - prune
+        - drift/reconcile
+        - daemon foreground lifecycle
+        - macOS app
+        - packaging/release
+        - docs
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Output of `supermover version`, commit hash, or local build provenance.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Relevant redacted command output, exit code, and `.supermover` artifact status.
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety checks
+      options:
+        - label: I redacted secrets, private keys, personal paths, and private device identifiers.
+          required: true
+        - label: This is not a public security vulnerability report.
+          required: true
