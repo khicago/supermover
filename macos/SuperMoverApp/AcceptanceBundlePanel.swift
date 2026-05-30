@@ -18,15 +18,16 @@ struct AcceptanceBundlePanel: View {
     let recordTargetImport: () -> Void
     let recordEvaluation: () -> Void
     let recordPackagingEvidence: () -> Void
+    var localization: AppChromeLocalization = AppChromeLocalization(language: .english)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Acceptance Bundle")
+                    Text(localization.text("Acceptance Bundle"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(SMColor.secondaryText)
-                    Text("Read a same-machine or two-machine installed-app evidence bundle. This is a read-only surface for packaged acceptance artifacts, not a runtime override.")
+                    Text(localization.text("Read a same-machine or two-machine installed-app evidence bundle. This is a read-only surface for packaged acceptance artifacts, not a runtime override."))
                         .font(.system(size: 12))
                         .foregroundStyle(SMColor.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -37,7 +38,7 @@ struct AcceptanceBundlePanel: View {
                         requireOperatorEvidence: requireOperatorEvidence.wrappedValue
                     )
                     EvidenceChip(
-                        label: "status",
+                        label: localization.text("status"),
                         value: panelSummary.bundle.value,
                         tint: metricTint(panelSummary.bundle.tone)
                     )
@@ -58,7 +59,7 @@ struct AcceptanceBundlePanel: View {
                 artifactAuthoring
                 loadedArtifacts(snapshot)
             } else {
-                Text("No acceptance bundle loaded. Choose a bundle directory that contains durable `meta.json` and phase artifacts.")
+                Text(localization.text("No acceptance bundle loaded. Choose a bundle directory that contains durable `meta.json` and phase artifacts."))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -88,15 +89,15 @@ struct AcceptanceBundlePanel: View {
     }
 
     private var bundlePathField: some View {
-        acceptancePathField(text: .constant(bundlePath), placeholder: "Path to acceptance bundle directory")
+        acceptancePathField(text: .constant(bundlePath), placeholder: localization.text("Path to acceptance bundle directory"))
     }
 
     @ViewBuilder
     private var bundlePathButtons: some View {
-        CompactActionButton("Browse acceptance bundle", systemImage: "folder") {
+        CompactActionButton(localization.text("Browse acceptance bundle"), systemImage: "folder") {
             browseBundle()
         }
-        CompactActionButton("Refresh acceptance bundle", systemImage: "arrow.clockwise") {
+        CompactActionButton(localization.text("Refresh acceptance bundle"), systemImage: "arrow.clockwise") {
             refreshBundle()
         }
     }
@@ -114,7 +115,7 @@ struct AcceptanceBundlePanel: View {
     private func workflow(_ snapshot: AcceptanceBundleLoadedSnapshot) -> some View {
         let summary = snapshot.workflowSummary(requireOperatorEvidence: requireOperatorEvidence.wrappedValue)
         VStack(alignment: .leading, spacing: 10) {
-            Text("Workflow")
+            Text(localization.text("Workflow"))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(SMColor.secondaryText)
             if summary.nextActions.isEmpty {
@@ -231,7 +232,7 @@ struct AcceptanceBundlePanel: View {
     private func loadedArtifacts(_ snapshot: AcceptanceBundleLoadedSnapshot) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if !snapshot.targetServePhaseArtifacts.isEmpty {
-                Text("Serve Phases")
+                Text(localization.text("Serve Phases"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
                 ForEach(snapshot.targetServePhaseArtifacts) { phase in
@@ -253,7 +254,7 @@ struct AcceptanceBundlePanel: View {
                 }
             }
             if !snapshot.issues.isEmpty {
-                Text("Artifact Issues")
+                Text(localization.text("Artifact Issues"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
                 ForEach(snapshot.issues) { issue in
@@ -264,7 +265,7 @@ struct AcceptanceBundlePanel: View {
                 requireOperatorEvidence: requireOperatorEvidence.wrappedValue
             )
             if !manualEvidenceGate.missingEvidence.isEmpty {
-                Text("Missing Manual Evidence")
+                Text(localization.text("Missing Manual Evidence"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
                 ForEach(manualEvidenceGate.missingEvidence, id: \.self) { key in
@@ -272,7 +273,7 @@ struct AcceptanceBundlePanel: View {
                 }
             }
             if !snapshot.bundleHandoffs.isEmpty {
-                Text("Bundle Handoffs")
+                Text(localization.text("Bundle Handoffs"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
                 ForEach(Array(snapshot.bundleHandoffs.enumerated()), id: \.offset) { _, handoff in
@@ -289,7 +290,7 @@ struct AcceptanceBundlePanel: View {
                 }
             }
             if let sourceNotarizationArtifact = snapshot.sourceNotarizationArtifact {
-                Text("Source Notarization")
+                Text(localization.text("Source Notarization"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
                 evidenceLine("status", sourceNotarizationArtifact.status)
@@ -304,7 +305,7 @@ struct AcceptanceBundlePanel: View {
                 }
             }
             if let targetNotarizationArtifact = snapshot.targetNotarizationArtifact {
-                Text("Target Notarization")
+                Text(localization.text("Target Notarization"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
                 evidenceLine("status", targetNotarizationArtifact.status)
@@ -323,37 +324,37 @@ struct AcceptanceBundlePanel: View {
 
     private var artifactAuthoring: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Write Current Artifacts")
+            Text(localization.text("Write Current Artifacts"))
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(SMColor.secondaryText)
 
             HStack(spacing: 12) {
                 if role == .source {
-                    ActionButton("Write Packaging", systemImage: "shippingbox") {
+                    ActionButton(localization.text("Write Packaging"), systemImage: "shippingbox") {
                         recordPackagingEvidence()
                     }
-                    ActionButton("Write Browse", systemImage: "dot.radiowaves.left.and.right") {
+                    ActionButton(localization.text("Write Browse"), systemImage: "dot.radiowaves.left.and.right") {
                         recordBrowse()
                     }
-                    ActionButton("Write Pair", systemImage: "link.badge.plus") {
+                    ActionButton(localization.text("Write Pair"), systemImage: "link.badge.plus") {
                         recordSourcePair()
                     }
-                    ActionButton("Write Transfer", systemImage: "square.and.arrow.up") {
+                    ActionButton(localization.text("Write Transfer"), systemImage: "square.and.arrow.up") {
                         recordSourceTransfer()
                     }
                 }
                 if role == .target {
-                    ActionButton("Write Packaging", systemImage: "shippingbox") {
+                    ActionButton(localization.text("Write Packaging"), systemImage: "shippingbox") {
                         recordPackagingEvidence()
                     }
-                    ActionButton("Write Advertise", systemImage: "antenna.radiowaves.left.and.right") {
+                    ActionButton(localization.text("Write Advertise"), systemImage: "antenna.radiowaves.left.and.right") {
                         recordAdvertise()
                     }
-                    ActionButton("Write Import", systemImage: "square.and.arrow.down") {
+                    ActionButton(localization.text("Write Import"), systemImage: "square.and.arrow.down") {
                         recordTargetImport()
                     }
                     HStack(spacing: 8) {
-                        TextField("phase", text: servePhase)
+                        TextField(localization.text("phase"), text: servePhase)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12, design: .monospaced))
                             .frame(width: 52)
@@ -362,7 +363,7 @@ struct AcceptanceBundlePanel: View {
                             .background(SMColor.card)
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(SMColor.hairline))
-                        ActionButton("Write Serve", systemImage: "play.rectangle") {
+                        ActionButton(localization.text("Write Serve"), systemImage: "play.rectangle") {
                             recordServePhase()
                         }
                     }
@@ -370,25 +371,25 @@ struct AcceptanceBundlePanel: View {
                 if role != .source {
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle(isOn: requireOperatorEvidence) {
-                            Text("Require operator evidence")
+                            Text(localization.text("Require operator evidence"))
                                 .font(.system(size: 12))
                                 .foregroundStyle(SMColor.primaryText)
                         }
                         .toggleStyle(.checkbox)
                         .disabled(requireOperatorEvidenceLocked)
                         if requireOperatorEvidenceLocked {
-                            Text("Two-machine installed-app bundles always evaluate in the stricter operator-evidence lane.")
+                            Text(localization.text("Two-machine installed-app bundles always evaluate in the stricter operator-evidence lane."))
                                 .font(.system(size: 12))
                                 .foregroundStyle(SMColor.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        ActionButton("Write Evaluation", systemImage: "checkmark.seal") {
+                        ActionButton(localization.text("Write Evaluation"), systemImage: "checkmark.seal") {
                             recordEvaluation()
                         }
                     }
                 }
             }
-            Text("These buttons write durable phase artifacts into the selected acceptance bundle from the current app snapshots. They do not replace running the underlying command or make the bundle green by themselves.")
+            Text(localization.text("These buttons write durable phase artifacts into the selected acceptance bundle from the current app snapshots. They do not replace running the underlying command or make the bundle green by themselves."))
                 .font(.system(size: 12))
                 .foregroundStyle(SMColor.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)

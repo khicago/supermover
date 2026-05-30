@@ -67,6 +67,31 @@ final class WorkbenchNavigationTests: XCTestCase {
         XCTAssertTrue(sectionsWithoutOwnerModes.allSatisfy { !$0.showsFixedOwnerModeStrip })
     }
 
+    func testOwnerModeStripUsesSingleSharedImplementation() throws {
+        let source = try contentViewSource()
+
+        XCTAssertFalse(source.contains("connectModeStrip"))
+        XCTAssertFalse(source.contains("moveModeStrip"))
+        XCTAssertFalse(source.contains("verifyRepairModeStrip"))
+        XCTAssertTrue(source.contains("private func ownerModeStrip<ID: Hashable>"))
+        XCTAssertEqual(source.components(separatedBy: "private func ownerModeStrip<ID: Hashable>").count - 1, 1)
+    }
+
+    func testEvidencePageUsesSidebarIdentityAsPageTitle() throws {
+        let repoRoot = AcceptanceScriptHarness.repoRootURL()
+        let evidenceViewURL = repoRoot
+            .appendingPathComponent("macos")
+            .appendingPathComponent("SuperMoverApp")
+            .appendingPathComponent("EvidenceSectionView.swift")
+        let source = try String(contentsOf: evidenceViewURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("AppSection.evidence.localizedTitle(using: localization)"))
+        XCTAssertFalse(
+            source.contains("title: \"Evidence\""),
+            "Evidence page title should share the sidebar identity instead of introducing a parallel page name."
+        )
+    }
+
     func testSidebarNavigationLocalizedLabelsDoNotChangeNavigationIdentity() {
         let simplifiedChinese = AppChromeLocalization(language: .simplifiedChinese)
 
@@ -111,5 +136,14 @@ final class WorkbenchNavigationTests: XCTestCase {
                 .flatMap { SuperMoverTaskKind.tasks(in: $0) }
         )
         XCTAssertEqual(groupedTasks, Set(SuperMoverTaskKind.allCases))
+    }
+
+    private func contentViewSource() throws -> String {
+        let repoRoot = AcceptanceScriptHarness.repoRootURL()
+        let contentViewURL = repoRoot
+            .appendingPathComponent("macos")
+            .appendingPathComponent("SuperMoverApp")
+            .appendingPathComponent("ContentView.swift")
+        return try String(contentsOf: contentViewURL, encoding: .utf8)
     }
 }

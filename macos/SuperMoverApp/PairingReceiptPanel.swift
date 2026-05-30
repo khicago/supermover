@@ -6,14 +6,15 @@ struct PairingReceiptPanel: View {
     let runTask: (SuperMoverTaskKind) -> Void
     let chooseExportTarget: () -> Void
     let browseImportReceipt: () -> Void
+    var localization: AppChromeLocalization = AppChromeLocalization(language: .english)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Pairing Receipt")
+                Text(localization.text("Pairing Receipt"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
-                Text("Source pairing can export a durable receipt for transfer. Target pairing import writes that receipt into target `.supermover/pairings` plus target config pins.")
+                Text(localization.text("Source pairing can export a durable receipt for transfer. Target pairing import writes that receipt into target `.supermover/pairings` plus target config pins."))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -21,31 +22,31 @@ struct PairingReceiptPanel: View {
 
             if role == .source {
                 HStack(spacing: 10) {
-                    pairingPathField("Receipt Export", text: $draft.exportTarget, placeholder: "Optional file path or directory for exported receipt")
-                    CompactActionButton("Choose receipt export path", systemImage: "folder.badge.plus") {
+                    pairingPathField(localization.text("Receipt Export"), text: $draft.exportTarget, placeholder: localization.text("Optional file path or directory for exported receipt"))
+                    CompactActionButton(localization.text("Choose receipt export path"), systemImage: "folder.badge.plus") {
                         chooseExportTarget()
                     }
                 }
                 HStack(spacing: 12) {
-                    PrimaryActionButton("Pair and Export", systemImage: "square.and.arrow.up") {
+                    PrimaryActionButton(localization.text("Pair and Export"), systemImage: "square.and.arrow.up") {
                         runTask(.pair)
                     }
-                    ActionButton("Read Status", systemImage: "waveform.path.ecg") {
+                    ActionButton(localization.text("Read Status"), systemImage: "waveform.path.ecg") {
                         runTask(.status)
                     }
                 }
             } else if role == .target {
                 HStack(spacing: 10) {
-                    pairingPathField("Receipt File", text: $draft.importReceiptFile, placeholder: "Exported pairing receipt JSON from source")
-                    CompactActionButton("Browse pairing receipt", systemImage: "folder") {
+                    pairingPathField(localization.text("Receipt File"), text: $draft.importReceiptFile, placeholder: localization.text("Exported pairing receipt JSON from source"))
+                    CompactActionButton(localization.text("Browse pairing receipt"), systemImage: "folder") {
                         browseImportReceipt()
                     }
                 }
                 HStack(spacing: 12) {
-                    PrimaryActionButton("Import Pairing Receipt", systemImage: "square.and.arrow.down") {
+                    PrimaryActionButton(localization.text("Import Pairing Receipt"), systemImage: "square.and.arrow.down") {
                         runTask(.profileAdoptPairing)
                     }
-                    ActionButton("Read Status", systemImage: "waveform.path.ecg") {
+                    ActionButton(localization.text("Read Status"), systemImage: "waveform.path.ecg") {
                         runTask(.status)
                     }
                 }

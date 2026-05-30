@@ -50,6 +50,14 @@ enum AppSection: String, CaseIterable, Identifiable, Equatable {
     localization.text(localizationKey)
   }
 
+  func localizedHeading(using localization: AppChromeLocalization) -> String {
+    localization.text(heading)
+  }
+
+  func localizedSubtitle(using localization: AppChromeLocalization) -> String {
+    localization.text(subtitle)
+  }
+
   var heading: String {
     switch self {
     case .setup: return "Prepare"
@@ -245,6 +253,10 @@ enum SectionAvailability: Equatable {
     }
   }
 
+  func localizedLabel(using localization: AppChromeLocalization) -> String {
+    localization.text(label)
+  }
+
   var detail: String {
     switch self {
     case .available:
@@ -252,6 +264,10 @@ enum SectionAvailability: Equatable {
     case let .planned(detail), let .readOnly(detail), let .roleGated(detail):
       return detail
     }
+  }
+
+  func localizedDetail(using localization: AppChromeLocalization) -> String {
+    localization.text(detail)
   }
 
   var tint: Color {
@@ -304,7 +320,7 @@ struct SidebarRow: View {
             .frame(width: 20, height: 20)
             .background(isSelected ? Color.clear : availability.tint.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .help("\(availability.label): \(availability.detail)")
+            .help("\(availability.localizedLabel(using: localization)): \(availability.localizedDetail(using: localization))")
         }
       }
       .foregroundStyle(isSelected ? SMColor.primaryText : SMColor.secondaryText)
@@ -314,6 +330,6 @@ struct SidebarRow: View {
       .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
     .buttonStyle(.plain)
-    .help(section.subtitle)
+    .help(section.localizedSubtitle(using: localization))
   }
 }

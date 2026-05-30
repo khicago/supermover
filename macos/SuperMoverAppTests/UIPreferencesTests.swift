@@ -72,6 +72,34 @@ final class UIPreferencesTests: XCTestCase {
         XCTAssertEqual(simplifiedChinese.text(.setupProfileAdvancedTitle), "高级选项")
     }
 
+    func testCoreWorkbenchPageChromeRawKeysHaveSimplifiedChineseTranslations() {
+        let simplifiedChinese = AppChromeLocalization(language: .simplifiedChinese)
+
+        XCTAssertEqual(simplifiedChinese.text("Device State"), "设备状态")
+        XCTAssertEqual(simplifiedChinese.text("Trust Ceremony"), "信任确认")
+        XCTAssertEqual(simplifiedChinese.text("Transfer Route"), "迁移路径")
+        XCTAssertEqual(simplifiedChinese.text("Evidence Supporting Surfaces"), "证据辅助面板")
+        XCTAssertEqual(simplifiedChinese.text("Install Readiness"), "安装就绪")
+        XCTAssertEqual(simplifiedChinese.text("Open Task Dispatch"), "打开任务调度")
+        XCTAssertEqual(simplifiedChinese.text("Safety Gates"), "安全门禁")
+        XCTAssertEqual(simplifiedChinese.text("Migration Config Network"), "迁移配置网络")
+        XCTAssertEqual(simplifiedChinese.text("Acceptance Bundle"), "验收证据包")
+        XCTAssertEqual(simplifiedChinese.text("Artifact Catalog"), "工件目录")
+        XCTAssertEqual(simplifiedChinese.text("CLI Preview"), "CLI 预览")
+    }
+
+    func testTaskDispatchDisplayModelUsesLocalization() {
+        let simplifiedChinese = AppChromeLocalization(language: .simplifiedChinese)
+
+        XCTAssertEqual(SuperMoverTaskCategory.profile.localizedTitle(using: simplifiedChinese), "配置")
+        XCTAssertEqual(SuperMoverTaskKind.profileInit.localizedDisplayTitle(using: simplifiedChinese), "创建配置文件")
+        XCTAssertEqual(SuperMoverTaskKind.lintProfile.localizedDisplayTitle(using: simplifiedChinese), "检查配置")
+        XCTAssertEqual(
+            SuperMoverTaskKind.profileInit.localizedSummary(using: simplifiedChinese),
+            "在这台 Mac 的源端目录可读取后，通过 CLI 创建源端迁移配置文件。"
+        )
+    }
+
     func testVisibleWorkbenchRoleChromeDoesNotReadRawRoleTitles() throws {
         let repoRoot = AcceptanceScriptHarness.repoRootURL()
         let contentViewURL = repoRoot
@@ -94,6 +122,62 @@ final class UIPreferencesTests: XCTestCase {
         )
         XCTAssertTrue(source.contains("store.selectedRole.localizedTitle(using: appChromeLocalization)"))
         XCTAssertTrue(source.contains("appChromeLocalization.text(.sidebarRoleLabel)"))
+    }
+
+    func testAuxiliaryWorkbenchPanelsUseInjectedLocalization() throws {
+        let repoRoot = AcceptanceScriptHarness.repoRootURL()
+        let appRoot = repoRoot
+            .appendingPathComponent("macos")
+            .appendingPathComponent("SuperMoverApp")
+        let panelFiles = [
+            "ProfileNetworkPanel.swift",
+            "PairingReceiptPanel.swift",
+            "AcceptanceBundlePanel.swift",
+            "AcceptanceOperatorEvidencePanel.swift",
+        ]
+        let forbiddenChromePatterns = [
+            "Text(\"",
+            "TextField(\"",
+            "Toggle(\"",
+            "Picker(\"",
+            "ActionButton(\"",
+            "PrimaryActionButton(\"",
+            "CompactActionButton(\"",
+        ]
+
+        for fileName in panelFiles {
+            let source = try String(
+                contentsOf: appRoot.appendingPathComponent(fileName),
+                encoding: .utf8
+            )
+
+            XCTAssertTrue(
+                source.contains("var localization: AppChromeLocalization"),
+                "\(fileName) should receive shared app chrome localization."
+            )
+            XCTAssertTrue(
+                source.contains("localization.text("),
+                "\(fileName) should translate visible chrome through AppChromeLocalization."
+            )
+            for pattern in forbiddenChromePatterns {
+                XCTAssertFalse(
+                    source.contains(pattern),
+                    "\(fileName) should not hard-code visible SwiftUI chrome with \(pattern)."
+                )
+            }
+        }
+
+        let contentView = try String(
+            contentsOf: appRoot.appendingPathComponent("ContentView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(contentView.contains("localization: appChromeLocalization"))
+
+        let evidenceView = try String(
+            contentsOf: appRoot.appendingPathComponent("EvidenceSectionView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(evidenceView.contains("localization: localization"))
     }
 
     func testAppChromeLocalizationSystemLanguageUsesPreferredSupportedLocalization() {

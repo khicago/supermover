@@ -158,6 +158,10 @@ struct AppChromeLocalization {
         text(rawKey: key.rawValue, englishFallback: englishFallback(for: key))
     }
 
+    func text(_ englishFallback: String) -> String {
+        text(rawKey: englishFallback, englishFallback: englishFallback)
+    }
+
     func text(rawKey key: String, englishFallback: String) -> String {
         for languageCode in resolvedLanguageCodes() {
             if let localized = localizedString(forKey: key, languageCode: languageCode) {

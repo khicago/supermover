@@ -115,6 +115,10 @@ enum SuperMoverTaskCategory: String, CaseIterable, Identifiable {
             return rawValue
         }
     }
+
+    func localizedTitle(using localization: AppChromeLocalization) -> String {
+        localization.text(title)
+    }
 }
 
 enum SuperMoverTaskKind: String, CaseIterable, Identifiable {
@@ -213,6 +217,18 @@ enum SuperMoverTaskKind: String, CaseIterable, Identifiable {
 
     var category: String {
         taskCategory.title
+    }
+
+    func localizedDisplayTitle(using localization: AppChromeLocalization) -> String {
+        localization.text(displayTitle)
+    }
+
+    func localizedCategory(using localization: AppChromeLocalization) -> String {
+        taskCategory.localizedTitle(using: localization)
+    }
+
+    func localizedSummary(using localization: AppChromeLocalization) -> String {
+        localization.text(summary)
     }
 
     static func tasks(in category: SuperMoverTaskCategory) -> [SuperMoverTaskKind] {
@@ -1026,6 +1042,18 @@ enum SupervisedProcessSlot: String, CaseIterable, Identifiable {
         case .targetDashboard:
             return "Stop Target Dashboard"
         }
+    }
+
+    func localizedTitle(using localization: AppChromeLocalization) -> String {
+        localization.text(title)
+    }
+
+    func localizedSummary(using localization: AppChromeLocalization) -> String {
+        localization.text(summary)
+    }
+
+    func localizedStopLabel(using localization: AppChromeLocalization) -> String {
+        localization.text(stopLabel)
     }
 
     var isLongRunning: Bool {

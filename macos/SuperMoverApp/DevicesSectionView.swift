@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DevicesSectionView: View {
   let model: DevicesSectionModel
+  var localization: AppChromeLocalization = AppChromeLocalization(language: .english)
   let onRefresh: () -> Void
   let onMoreActions: (() -> Void)?
   let onSelectFilter: (DevicesFilter.ID) -> Void
@@ -32,7 +33,7 @@ struct DevicesSectionView: View {
   private var headerAccessory: some View {
     VStack(alignment: .trailing, spacing: 10) {
         HStack(spacing: 10) {
-          ActionButton("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
+          ActionButton(localization.text("Refresh"), systemImage: "arrow.clockwise", action: onRefresh)
 
           if let onMoreActions {
             IconActionButton(systemImage: "ellipsis", action: onMoreActions)
@@ -102,7 +103,7 @@ struct DevicesSectionView: View {
   private var deviceGrid: some View {
     LazyVGrid(columns: [GridItem(.adaptive(minimum: 220, maximum: 270), spacing: 14)], spacing: 14) {
       ForEach(model.devices) { device in
-        DeviceCardView(model: device) {
+        DeviceCardView(model: device, localization: localization) {
           onSelectDevice(device.id)
         }
       }
@@ -320,6 +321,7 @@ private struct FilterChip: View {
 
 private struct DeviceCardView: View {
   let model: DeviceCardModel
+  let localization: AppChromeLocalization
   let action: () -> Void
 
   var body: some View {
@@ -406,7 +408,7 @@ private struct DeviceCardView: View {
       }
 
       VStack(alignment: .leading, spacing: 3) {
-        Text("Last seen")
+        Text(localization.text("Last seen"))
           .font(.system(size: 11, weight: .medium))
           .foregroundStyle(SMColor.secondaryText)
         Text(model.lastSeen)

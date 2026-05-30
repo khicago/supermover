@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PairingSectionView: View {
   let model: PairingSectionModel
+  let localization: AppChromeLocalization
   var onRegenerateCode: (() -> Void)?
   var onCancel: () -> Void
   var onBack: () -> Void
@@ -9,12 +10,14 @@ struct PairingSectionView: View {
 
   init(
     model: PairingSectionModel,
+    localization: AppChromeLocalization = AppChromeLocalization(language: .english),
     onRegenerateCode: (() -> Void)? = nil,
     onCancel: @escaping () -> Void = {},
     onBack: @escaping () -> Void = {},
     onContinue: @escaping () -> Void = {}
   ) {
     self.model = model
+    self.localization = localization
     self.onRegenerateCode = onRegenerateCode
     self.onCancel = onCancel
     self.onBack = onBack
@@ -92,10 +95,10 @@ struct PairingSectionView: View {
   }
 
   private var endpointsPanel: some View {
-    WorkbenchPanel(title: "Trust Ceremony", subtitle: model.summaryLine) {
+    WorkbenchPanel(title: localization.text("Trust Ceremony"), subtitle: model.summaryLine) {
       VStack(alignment: .leading, spacing: 18) {
         HStack(alignment: .top, spacing: 22) {
-          endpointCard(model.source, roleLabel: "Source")
+          endpointCard(model.source, roleLabel: localization.text("Source"))
 
           VStack(spacing: 12) {
             Spacer(minLength: 18)
@@ -120,7 +123,7 @@ struct PairingSectionView: View {
               .padding(.horizontal, -18)
           }
 
-          endpointCard(model.target, roleLabel: "Target")
+          endpointCard(model.target, roleLabel: localization.text("Target"))
         }
 
         Divider()
@@ -149,7 +152,7 @@ struct PairingSectionView: View {
   }
 
   private var transportSummaryColumn: some View {
-    summaryColumn(title: "Transport") {
+    summaryColumn(title: localization.text("Transport")) {
       VStack(alignment: .leading, spacing: 8) {
         EvidenceChip(label: "path", value: model.transport.title, tint: model.transport.state.color)
         if let note = model.transport.note {
@@ -160,7 +163,7 @@ struct PairingSectionView: View {
   }
 
   private var trustSummaryColumn: some View {
-    summaryColumn(title: "Security") {
+    summaryColumn(title: localization.text("Security")) {
       VStack(alignment: .leading, spacing: 10) {
         ForEach(model.trustHighlights) { item in
           trustHighlightRow(item)
@@ -170,7 +173,7 @@ struct PairingSectionView: View {
   }
 
   private var expirySummaryColumn: some View {
-    summaryColumn(title: "Pairing Expires") {
+    summaryColumn(title: localization.text("Pairing Expires")) {
       VStack(alignment: .leading, spacing: 8) {
         Label(model.expiry.label, systemImage: "clock")
           .font(.system(size: 13, weight: .semibold))
@@ -213,7 +216,7 @@ struct PairingSectionView: View {
   }
 
   private var checklistPanel: some View {
-    WorkbenchPanel(title: "Trust Checklist", subtitle: "Explicit checks keep discovery separate from trust.") {
+    WorkbenchPanel(title: localization.text("Trust Checklist"), subtitle: localization.text("Explicit checks keep discovery separate from trust.")) {
       VStack(spacing: 0) {
         ForEach(Array(model.checklist.enumerated()), id: \.element.id) { index, item in
           checklistRow(item, index: index + 1)
@@ -260,7 +263,7 @@ struct PairingSectionView: View {
   }
 
   private var codePanel: some View {
-    WorkbenchPanel(title: "Pairing Pin", subtitle: model.code.caption) {
+    WorkbenchPanel(title: localization.text("Pairing Pin"), subtitle: model.code.caption) {
       VStack(alignment: .leading, spacing: 12) {
         HStack(spacing: 12) {
           Text(model.code.value)
@@ -273,7 +276,7 @@ struct PairingSectionView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
           if let onRegenerateCode {
-            ActionButton("Regenerate", systemImage: "arrow.clockwise") {
+            ActionButton(localization.text("Regenerate"), systemImage: "arrow.clockwise") {
               onRegenerateCode()
             }
           }
@@ -310,7 +313,7 @@ struct PairingSectionView: View {
         }
 
         VStack(alignment: .leading, spacing: 10) {
-          Text("Status")
+          Text(localization.text("Status"))
             .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(SMColor.secondaryText)
 

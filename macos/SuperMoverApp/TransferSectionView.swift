@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TransferSectionView: View {
   let model: TransferSectionModel
+  let localization: AppChromeLocalization
   let primaryControl: TransferSectionControl?
   let secondaryControl: TransferSectionControl?
   let supportingModel: TransferSupportingModel?
@@ -12,6 +13,7 @@ struct TransferSectionView: View {
 
   init(
     model: TransferSectionModel,
+    localization: AppChromeLocalization = AppChromeLocalization(language: .english),
     primaryControl: TransferSectionControl? = nil,
     secondaryControl: TransferSectionControl? = nil,
     supportingModel: TransferSupportingModel? = nil,
@@ -21,6 +23,7 @@ struct TransferSectionView: View {
     onInspectorAction: (() -> Void)? = nil
   ) {
     self.model = model
+    self.localization = localization
     self.primaryControl = primaryControl
     self.secondaryControl = secondaryControl
     self.supportingModel = supportingModel
@@ -107,10 +110,10 @@ struct TransferSectionView: View {
   }
 
   private var routePanel: some View {
-    WorkbenchPanel(title: "Transfer Route", subtitle: model.route.summaryLine) {
+    WorkbenchPanel(title: localization.text("Transfer Route"), subtitle: model.route.summaryLine) {
       VStack(alignment: .leading, spacing: 18) {
         HStack(alignment: .center, spacing: 18) {
-          endpointCard(model.route.source, roleLabel: "Source")
+          endpointCard(model.route.source, roleLabel: localization.text("Source"))
 
           VStack(spacing: 10) {
             Text(model.overview.progressLabel)
@@ -139,7 +142,7 @@ struct TransferSectionView: View {
           }
           .frame(maxWidth: .infinity)
 
-          endpointCard(model.route.target, roleLabel: "Target")
+          endpointCard(model.route.target, roleLabel: localization.text("Target"))
         }
 
         Divider()
@@ -205,7 +208,7 @@ struct TransferSectionView: View {
   }
 
   private var activityPanel: some View {
-    WorkbenchPanel(title: "Current Activity", subtitle: model.activity.subtitle) {
+    WorkbenchPanel(title: localization.text("Current Activity"), subtitle: model.activity.subtitle) {
       HStack(alignment: .top, spacing: 16) {
         currentFileColumn
 
@@ -219,7 +222,7 @@ struct TransferSectionView: View {
 
   private var currentFileColumn: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Current file")
+      Text(localization.text("Current file"))
         .font(.system(size: 12, weight: .semibold))
         .foregroundStyle(SMColor.primaryText)
 
@@ -236,8 +239,8 @@ struct TransferSectionView: View {
         .frame(height: 6)
 
       HStack(spacing: 18) {
-        activityMeta(label: "Started", value: model.activity.currentFile.startedAt)
-        activityMeta(label: "Receipt", value: model.activity.currentFile.receiptID)
+        activityMeta(label: localization.text("Started"), value: model.activity.currentFile.startedAt)
+        activityMeta(label: localization.text("Receipt"), value: model.activity.currentFile.receiptID)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -359,7 +362,7 @@ struct TransferSectionView: View {
   }
 
   private var logPanel: some View {
-    WorkbenchPanel(title: "Live Log", subtitle: model.log.subtitle) {
+    WorkbenchPanel(title: localization.text("Live Log"), subtitle: model.log.subtitle) {
       VStack(alignment: .leading, spacing: 12) {
         VStack(alignment: .leading, spacing: 6) {
           ForEach(model.log.entries) { entry in
@@ -395,10 +398,10 @@ struct TransferSectionView: View {
   private var supportingSectionPanel: some View {
     if let supportingModel {
       ScreenCard(
-        title: "Transfer Supporting Surfaces",
-        subtitle: "Advanced task wiring and network/profile inputs that are not yet folded into the primary transfer desk."
+        title: localization.text("Transfer Supporting Surfaces"),
+        subtitle: localization.text("Advanced task wiring and network/profile inputs that are not yet folded into the primary transfer desk.")
       ) {
-        TransferSupportingSurfaces(model: supportingModel)
+        TransferSupportingSurfaces(model: supportingModel, localization: localization)
       }
     }
   }
@@ -406,13 +409,13 @@ struct TransferSectionView: View {
   private var footerActions: some View {
     HStack(spacing: 10) {
       if let onOpenTerminal {
-        ActionButton("Open in Terminal", systemImage: "terminal", action: onOpenTerminal)
+        ActionButton(localization.text("Open in Terminal"), systemImage: "terminal", action: onOpenTerminal)
       }
 
       Spacer(minLength: 12)
 
       if let onOpenEvidence {
-        PrimaryActionButton("Review Evidence", systemImage: "doc.text.magnifyingglass", action: onOpenEvidence)
+        PrimaryActionButton(localization.text("Review Evidence"), systemImage: "doc.text.magnifyingglass", action: onOpenEvidence)
       }
     }
   }
@@ -453,6 +456,7 @@ struct TransferSupportingNotice {
 
 private struct TransferSupportingSurfaces: View {
   let model: TransferSupportingModel
+  let localization: AppChromeLocalization
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
@@ -479,14 +483,14 @@ private struct TransferSupportingSurfaces: View {
       if let sessionID = model.sessionID, let listenAddress = model.listenAddress {
         HStack(spacing: 14) {
           WorkbenchFormField(
-            label: "Session ID",
+            label: localization.text("Session ID"),
             text: sessionID,
-            placeholder: "Required for publish / network push"
+            placeholder: localization.text("Required for publish / network push")
           )
           WorkbenchFormField(
-            label: "Listen Address",
+            label: localization.text("Listen Address"),
             text: listenAddress,
-            placeholder: "Serve / dashboard / daemon bind address"
+            placeholder: localization.text("Serve / dashboard / daemon bind address")
           )
         }
       }

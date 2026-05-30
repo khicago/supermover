@@ -11,6 +11,7 @@ struct AcceptanceOperatorEvidencePanel: View {
     let clearArtifact: () -> Void
     let recordEvidence: () -> Void
     let refreshBundle: () -> Void
+    var localization: AppChromeLocalization = AppChromeLocalization(language: .english)
 
     private var currentRecord: AcceptanceBundleSnapshot.OperatorEvidence? {
         snapshot?.operatorEvidence[draft.kind.rawValue]
@@ -27,10 +28,10 @@ struct AcceptanceOperatorEvidencePanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Manual Evidence")
+                    Text(localization.text("Manual Evidence"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(SMColor.secondaryText)
-                    Text("Record real-device prompt and code-confirmation evidence into the same acceptance bundle contract used by the two-machine harness. This writes durable `meta.json` operator records under the bundle lock; it does not mark the run complete by itself.")
+                    Text(localization.text("Record real-device prompt and code-confirmation evidence into the same acceptance bundle contract used by the two-machine harness. This writes durable `meta.json` operator records under the bundle lock; it does not mark the run complete by itself."))
                         .font(.system(size: 12))
                         .foregroundStyle(SMColor.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -41,7 +42,7 @@ struct AcceptanceOperatorEvidencePanel: View {
                         requireOperatorEvidence: requireOperatorEvidence
                     )
                     EvidenceChip(
-                        label: "manual gate",
+                        label: localization.text("manual gate"),
                         value: manualEvidenceGate.chipValue,
                         tint: manualEvidenceGate.isRequired ? SMColor.amber : SMColor.blue
                     )
@@ -51,10 +52,10 @@ struct AcceptanceOperatorEvidencePanel: View {
             kindStatusFields
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Detail")
+                Text(localization.text("Detail"))
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(SMColor.secondaryText)
-                TextField("One durable sentence about what the operator observed", text: $draft.detail)
+                TextField(localization.text("One durable sentence about what the operator observed"), text: $draft.detail)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13, design: .monospaced))
                     .padding(10)
@@ -67,38 +68,38 @@ struct AcceptanceOperatorEvidencePanel: View {
 
             if let currentRecord {
                 VStack(alignment: .leading, spacing: 6) {
-                    acceptanceOperatorLine("current", "\(currentRecord.status) · \(currentRecord.detail)")
+                    acceptanceOperatorLine(localization.text("current"), "\(currentRecord.status) · \(currentRecord.detail)")
                     if let artifact = currentRecord.artifact, !artifact.isEmpty {
-                        acceptanceOperatorLine("artifact", artifact)
+                        acceptanceOperatorLine(localization.text("artifact"), artifact)
                     }
                     if let currentRecordGateStatus {
                         acceptanceOperatorLine(
-                            currentRecordGateStatus.label,
+                            currentRecordGateStatus.localizedLabel(using: localization),
                             currentRecordGateStatus.message
                         )
                     }
                 }
             } else {
-                Text(draft.kind.guidance)
+                Text(localization.text(draft.kind.guidance))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if requireOperatorEvidenceLocked {
-                Text("Two-machine installed-app bundles always require pass Local Network, firewall, and pairing-confirmation evidence before final evaluate.")
+                Text(localization.text("Two-machine installed-app bundles always require pass Local Network, firewall, and pairing-confirmation evidence before final evaluate."))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if role == .observer {
-                Text("Observer role can inspect acceptance bundles but cannot author manual evidence.")
+                Text(localization.text("Observer role can inspect acceptance bundles but cannot author manual evidence."))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.amber)
                     .fixedSize(horizontal: false, vertical: true)
             } else if bundlePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text("Load or select an acceptance bundle directory before recording manual evidence.")
+                Text(localization.text("Load or select an acceptance bundle directory before recording manual evidence."))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -106,11 +107,11 @@ struct AcceptanceOperatorEvidencePanel: View {
 
             HStack(spacing: 12) {
                 if role != .observer {
-                    PrimaryActionButton("Record Manual Evidence", systemImage: "checkmark.shield") {
+                    PrimaryActionButton(localization.text("Record Manual Evidence"), systemImage: "checkmark.shield") {
                         recordEvidence()
                     }
                 }
-                ActionButton("Refresh Bundle", systemImage: "arrow.clockwise") {
+                ActionButton(localization.text("Refresh Bundle"), systemImage: "arrow.clockwise") {
                     refreshBundle()
                 }
             }
@@ -137,12 +138,12 @@ struct AcceptanceOperatorEvidencePanel: View {
 
     private var evidenceKindField: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Evidence Kind")
+            Text(localization.text("Evidence Kind"))
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(SMColor.secondaryText)
-            Picker("Evidence Kind", selection: $draft.kind) {
+            Picker(localization.text("Evidence Kind"), selection: $draft.kind) {
                 ForEach(AcceptanceOperatorEvidenceKind.allCases) { kind in
-                    Text(kind.title).tag(kind)
+                    Text(localization.text(kind.title)).tag(kind)
                 }
             }
             .pickerStyle(.menu)
@@ -152,12 +153,12 @@ struct AcceptanceOperatorEvidencePanel: View {
 
     private var evidenceStatusField: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Status")
+            Text(localization.text("Status"))
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(SMColor.secondaryText)
-            Picker("Status", selection: $draft.status) {
+            Picker(localization.text("Status"), selection: $draft.status) {
                 ForEach(AcceptanceOperatorEvidenceStatus.allCases) { status in
-                    Text(status.title).tag(status)
+                    Text(localization.text(status.title)).tag(status)
                 }
             }
             .pickerStyle(.segmented)
@@ -184,17 +185,17 @@ struct AcceptanceOperatorEvidencePanel: View {
     private var artifactPathField: some View {
         acceptanceOperatorField(
             text: $draft.artifactPath,
-            placeholder: "Optional screenshot or log artifact path"
+            placeholder: localization.text("Optional screenshot or log artifact path")
         )
     }
 
     @ViewBuilder
     private var artifactButtons: some View {
-        CompactActionButton("Browse operator artifact", systemImage: "folder") {
+        CompactActionButton(localization.text("Browse operator artifact"), systemImage: "folder") {
             chooseArtifact()
         }
         if !draft.trimmedArtifactPath.isEmpty {
-            CompactActionButton("Clear operator artifact", systemImage: "xmark") {
+            CompactActionButton(localization.text("Clear operator artifact"), systemImage: "xmark") {
                 clearArtifact()
             }
         }
@@ -202,16 +203,16 @@ struct AcceptanceOperatorEvidencePanel: View {
 }
 
 private extension AcceptanceManualEvidenceRecordGateStatus {
-    var label: String {
+    func localizedLabel(using localization: AppChromeLocalization) -> String {
         switch state {
         case .missing:
-            return "strict gate"
+            return localization.text("strict gate")
         case .valid:
-            return "gate valid"
+            return localization.text("gate valid")
         case .invalid:
-            return "gate invalid"
+            return localization.text("gate invalid")
         case .optional:
-            return "gate note"
+            return localization.text("gate note")
         }
     }
 }

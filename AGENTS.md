@@ -139,6 +139,38 @@ Before claiming the issue is fixed or contained:
    is not understood or reproduced, say so explicitly and do not call the issue
    fixed.
 
+## Shared UI, DRY, And Localization Discipline
+
+Mac app pages must share the smallest correct chrome owner. Page headers,
+fixed owner-mode strips, workbench toolbar patterns, navigation labels, and
+common action copy belong in shared components or shared model helpers. Do not
+clone sibling page chrome and then patch one copy. If a page intentionally
+breaks the shared pattern, document the exception in code or the tracker with
+the product reason.
+
+Each app page must have an explicit page contract before UI changes drift:
+
+- **Owner**: which sidebar owner owns the workflow surface.
+- **Mode**: whether this is a canonical owner page, an owner sub-mode, an
+  aggregate/home page, evidence review, or system settings.
+- **Mutation boundary**: which role can mutate state from this page.
+- **Evidence boundary**: which values are user-facing chrome versus raw
+  evidence, CLI output, JSON fields, protocol tokens, profile paths, or audit
+  artifacts.
+
+User-visible app chrome must flow through `AppChromeLocalization` or SwiftUI
+localized resources. Raw evidence, CLI arguments/output, JSON/protocol field
+names, file paths, profile identifiers, receipt IDs, and operator-entered text
+must stay unlocalized unless a product decision explicitly says otherwise.
+When adding or changing visible page copy, update both localized resources and
+tests that pin the shared rule. Resource fallback is acceptable for resilience;
+it is not a substitute for adding the intended translation.
+
+DRY is a product-quality rule in this repo, not a style preference. If a defect
+appears on one page, inspect analogous pages and shared components before
+editing. Prefer moving the rule to a common helper over applying parallel
+patches to each surface.
+
 ## Validation
 
 Use targeted tests during development. Before claiming a non-trivial change is

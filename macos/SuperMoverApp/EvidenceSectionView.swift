@@ -12,6 +12,7 @@ struct EvidenceViewState {
 
 struct EvidenceSectionView: View {
   let model: EvidenceSectionModel
+  var localization: AppChromeLocalization = AppChromeLocalization(language: .english)
   let actions: EvidenceSectionActions
 
   var body: some View {
@@ -25,7 +26,11 @@ struct EvidenceSectionView: View {
           contentBody
         },
         aside: {
-          EvidenceSafetyPostureCard(posture: posture, action: actions.openSafetyPosture)
+          EvidenceSafetyPostureCard(
+            posture: posture,
+            localization: localization,
+            action: actions.openSafetyPosture
+          )
         }
       )
     } else {
@@ -45,12 +50,12 @@ struct EvidenceSectionView: View {
 
       if let supportingContent = model.supportingContent {
         ScreenCard(
-          title: "Evidence Supporting Surfaces",
-          subtitle: "Acceptance, raw vault, and advanced review panels that still sit outside the primary evidence desk."
+          title: localization.text("Evidence Supporting Surfaces"),
+          subtitle: localization.text("Acceptance, raw vault, and advanced review panels that still sit outside the primary evidence desk.")
         ) {
           VStack(alignment: .leading, spacing: 16) {
             if actions.hasSupportingToolbar {
-              EvidenceSupportingToolbar(actions: actions)
+              EvidenceSupportingToolbar(localization: localization, actions: actions)
             }
             supportingContent
           }
@@ -61,8 +66,12 @@ struct EvidenceSectionView: View {
 
   private var primaryDesk: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EvidenceToolbar(model: model, actions: actions)
-      EvidenceArtifactTable(model: model, selectRecord: actions.selectRecord)
+      EvidenceToolbar(model: model, localization: localization, actions: actions)
+      EvidenceArtifactTable(
+        model: model,
+        localization: localization,
+        selectRecord: actions.selectRecord
+      )
       EvidenceTableFooter(
         selectionSummary: model.selectionSummary,
         pagination: model.pagination,
@@ -71,16 +80,16 @@ struct EvidenceSectionView: View {
       )
 
       if let detail = model.selectedDetail {
-        EvidenceInspector(detail: detail, actions: actions)
+        EvidenceInspector(detail: detail, localization: localization, actions: actions)
       } else {
-        EvidenceEmptyInspector()
+        EvidenceEmptyInspector(localization: localization)
       }
     }
   }
 }
 
 struct EvidenceSectionModel {
-  var title: String = "Evidence"
+  var title: String = "Evidence Vault"
   var subtitle: String = "Browse immutable, evidence-backed records for this migration."
   var updatedAt: String
   var stageFilter: EvidenceFilterState
@@ -258,6 +267,7 @@ enum EvidenceSemanticState: String, Hashable {
 
 private struct EvidenceToolbar: View {
   let model: EvidenceSectionModel
+  let localization: AppChromeLocalization
   let actions: EvidenceSectionActions
 
   var body: some View {
@@ -303,21 +313,21 @@ private struct EvidenceToolbar: View {
   private var filterControls: some View {
     if model.stageFilter.options.count > 1 {
       EvidenceFilterPicker(
-        title: "Stage",
+        title: localization.text("Stage"),
         state: model.stageFilter,
         selection: actions.selectStage
       )
     }
     if model.typeFilter.options.count > 1 {
       EvidenceFilterPicker(
-        title: "Type",
+        title: localization.text("Type"),
         state: model.typeFilter,
         selection: actions.selectType
       )
     }
     if model.statusFilter.options.count > 1 {
       EvidenceFilterPicker(
-        title: "Status",
+        title: localization.text("Status"),
         state: model.statusFilter,
         selection: actions.selectStatus
       )
@@ -332,20 +342,20 @@ private struct EvidenceToolbar: View {
 
   @ViewBuilder
   private var toolbarMeta: some View {
-    Text("Last updated: \(model.updatedAt)")
+    Text("\(localization.text("Last updated")): \(model.updatedAt)")
       .font(.system(size: 12))
       .foregroundStyle(SMColor.secondaryText)
       .lineLimit(1)
 
     if let exportList = actions.exportList {
-      ActionButton("Export…", systemImage: "square.and.arrow.up", action: exportList)
+      ActionButton(localization.text("Export…"), systemImage: "square.and.arrow.up", action: exportList)
     }
   }
 
   private var searchField: some View {
     WorkbenchSearchField(
       text: model.searchQuery,
-      placeholder: "Search evidence…",
+      placeholder: localization.text("Search evidence…"),
       onChange: actions.updateSearch
     )
     .frame(minWidth: 260, maxWidth: 390)
@@ -353,27 +363,28 @@ private struct EvidenceToolbar: View {
 }
 
 private struct EvidenceSupportingToolbar: View {
+  let localization: AppChromeLocalization
   let actions: EvidenceSectionActions
 
   var body: some View {
     FlowLayout(horizontalSpacing: 12, verticalSpacing: 12) {
       if let runStatus = actions.runStatus {
-        ActionButton("Status", systemImage: "waveform.path.ecg", action: runStatus)
+        ActionButton(localization.text("Status"), systemImage: "waveform.path.ecg", action: runStatus)
       }
       if let runReport = actions.runReport {
-        ActionButton("Report", systemImage: "doc.text", action: runReport)
+        ActionButton(localization.text("Report"), systemImage: "doc.text", action: runReport)
       }
       if let runHealth = actions.runHealth {
-        ActionButton("Health", systemImage: "cross.case", action: runHealth)
+        ActionButton(localization.text("Health"), systemImage: "cross.case", action: runHealth)
       }
       if let runVerify = actions.runVerify {
-        ActionButton("Verify", systemImage: "checkmark.seal", action: runVerify)
+        ActionButton(localization.text("Verify"), systemImage: "checkmark.seal", action: runVerify)
       }
       if let refreshArtifacts = actions.refreshArtifacts {
-        ActionButton("Artifacts", systemImage: "archivebox", action: refreshArtifacts)
+        ActionButton(localization.text("Artifacts"), systemImage: "archivebox", action: refreshArtifacts)
       }
       if let runDaemonLogs = actions.runDaemonLogs {
-        ActionButton("Daemon Logs", systemImage: "list.bullet.rectangle", action: runDaemonLogs)
+        ActionButton(localization.text("Daemon Logs"), systemImage: "list.bullet.rectangle", action: runDaemonLogs)
       }
     }
   }
@@ -407,19 +418,22 @@ private struct EvidenceFilterPicker: View {
 
 private struct EvidenceArtifactTable: View {
   let model: EvidenceSectionModel
+  let localization: AppChromeLocalization
   let selectRecord: (String) -> Void
 
-  private let columns: [EvidenceColumn] = [
-    EvidenceColumn(title: "ID", width: 154, alignment: .leading),
-    EvidenceColumn(title: "Type", width: 118, alignment: .leading),
-    EvidenceColumn(title: "Stage", width: 82, alignment: .leading),
-    EvidenceColumn(title: "Source", width: 180, alignment: .leading),
-    EvidenceColumn(title: "Target", width: 180, alignment: .leading),
-    EvidenceColumn(title: "Created", width: 178, alignment: .leading),
-    EvidenceColumn(title: "Status", width: 106, alignment: .leading),
-    EvidenceColumn(title: "Signature", width: 96, alignment: .leading),
-    EvidenceColumn(title: "Size", width: 66, alignment: .trailing)
-  ]
+  private var columns: [EvidenceColumn] {
+    [
+      EvidenceColumn(title: localization.text("ID"), width: 154, alignment: .leading),
+      EvidenceColumn(title: localization.text("Type"), width: 118, alignment: .leading),
+      EvidenceColumn(title: localization.text("Stage"), width: 82, alignment: .leading),
+      EvidenceColumn(title: localization.text("Source"), width: 180, alignment: .leading),
+      EvidenceColumn(title: localization.text("Target"), width: 180, alignment: .leading),
+      EvidenceColumn(title: localization.text("Created"), width: 178, alignment: .leading),
+      EvidenceColumn(title: localization.text("Status"), width: 106, alignment: .leading),
+      EvidenceColumn(title: localization.text("Signature"), width: 96, alignment: .leading),
+      EvidenceColumn(title: localization.text("Size"), width: 66, alignment: .trailing)
+    ]
+  }
 
   private var tableWidth: CGFloat {
     columns.reduce(CGFloat(28)) { partial, column in
@@ -568,6 +582,7 @@ private struct EvidenceTableFooter: View {
 
 private struct EvidenceInspector: View {
   let detail: EvidenceRecordDetail
+  let localization: AppChromeLocalization
   let actions: EvidenceSectionActions
 
   var body: some View {
@@ -579,31 +594,32 @@ private struct EvidenceInspector: View {
 
   private var wideLayout: some View {
     HStack(alignment: .top, spacing: 16) {
-      EvidenceDetailOverview(detail: detail, actions: actions)
+      EvidenceDetailOverview(detail: detail, localization: localization, actions: actions)
         .frame(minWidth: 290, idealWidth: 318, maxWidth: 330)
 
       VStack(spacing: 16) {
-        EvidenceMetricCard(title: "Summary", metrics: detail.summaryMetrics)
+        EvidenceMetricCard(title: localization.text("Summary"), metrics: detail.summaryMetrics)
         if !detail.timeline.isEmpty {
-          EvidenceTimelineCard(entries: detail.timeline)
+          EvidenceTimelineCard(entries: detail.timeline, localization: localization)
         } else {
-          EvidenceNotesCard(notes: detail.notes)
+          EvidenceNotesCard(notes: detail.notes, localization: localization)
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
 
       VStack(spacing: 16) {
         EvidenceFactsCard(
-          title: "Digital Signature",
+          title: localization.text("Digital Signature"),
           badge: detail.signatureBadge,
           facts: detail.signatureDetails
         )
         EvidenceVerificationCard(
           checks: detail.verificationChecks,
+          localization: localization,
           viewRawJSON: actions.viewSelectedJSON
         )
         if !detail.timeline.isEmpty {
-          EvidenceNotesCard(notes: detail.notes)
+          EvidenceNotesCard(notes: detail.notes, localization: localization)
         }
       }
       .frame(minWidth: 310, idealWidth: 330, maxWidth: 360, alignment: .leading)
@@ -612,32 +628,34 @@ private struct EvidenceInspector: View {
 
   private var compactLayout: some View {
     VStack(alignment: .leading, spacing: 16) {
-      EvidenceDetailOverview(detail: detail, actions: actions)
+      EvidenceDetailOverview(detail: detail, localization: localization, actions: actions)
 
-      EvidenceMetricCard(title: "Summary", metrics: detail.summaryMetrics)
+      EvidenceMetricCard(title: localization.text("Summary"), metrics: detail.summaryMetrics)
 
       EvidenceFactsCard(
-        title: "Digital Signature",
+        title: localization.text("Digital Signature"),
         badge: detail.signatureBadge,
         facts: detail.signatureDetails
       )
 
       EvidenceVerificationCard(
         checks: detail.verificationChecks,
+        localization: localization,
         viewRawJSON: actions.viewSelectedJSON
       )
 
       if !detail.timeline.isEmpty {
-        EvidenceTimelineCard(entries: detail.timeline)
+        EvidenceTimelineCard(entries: detail.timeline, localization: localization)
       }
 
-      EvidenceNotesCard(notes: detail.notes)
+      EvidenceNotesCard(notes: detail.notes, localization: localization)
     }
   }
 }
 
 private struct EvidenceDetailOverview: View {
   let detail: EvidenceRecordDetail
+  let localization: AppChromeLocalization
   let actions: EvidenceSectionActions
 
   var body: some View {
@@ -671,7 +689,7 @@ private struct EvidenceDetailOverview: View {
 
       if !detail.tags.isEmpty {
         VStack(alignment: .leading, spacing: 8) {
-          Text("Tags")
+          Text(localization.text("Tags"))
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(SMColor.secondaryText)
           FlexibleTagRow(tags: detail.tags)
@@ -736,11 +754,12 @@ private struct EvidenceFactsCard: View {
 
 private struct EvidenceVerificationCard: View {
   let checks: [EvidenceVerificationCheck]
+  let localization: AppChromeLocalization
   let viewRawJSON: (() -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("Verification")
+      Text(localization.text("Verification"))
         .font(.system(size: 14, weight: .semibold))
         .foregroundStyle(SMColor.primaryText)
 
@@ -764,7 +783,7 @@ private struct EvidenceVerificationCard: View {
       }
 
       if let viewRawJSON {
-        ActionButton("View raw JSON", systemImage: "curlybraces", action: viewRawJSON)
+        ActionButton(localization.text("View raw JSON"), systemImage: "curlybraces", action: viewRawJSON)
       }
     }
     .panelSurface(.panel)
@@ -773,10 +792,11 @@ private struct EvidenceVerificationCard: View {
 
 private struct EvidenceTimelineCard: View {
   let entries: [EvidenceTimelineEntry]
+  let localization: AppChromeLocalization
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Timeline")
+      Text(localization.text("Timeline"))
         .font(.system(size: 14, weight: .semibold))
         .foregroundStyle(SMColor.primaryText)
 
@@ -822,14 +842,15 @@ private struct EvidenceTimelineCard: View {
 
 private struct EvidenceNotesCard: View {
   let notes: String
+  let localization: AppChromeLocalization
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("Notes")
+      Text(localization.text("Notes"))
         .font(.system(size: 14, weight: .semibold))
         .foregroundStyle(SMColor.primaryText)
 
-      Text(notes.isEmpty ? "No operator notes recorded." : notes)
+      Text(notes.isEmpty ? localization.text("No operator notes recorded.") : notes)
         .font(.system(size: 12))
         .foregroundStyle(notes.isEmpty ? SMColor.secondaryText : SMColor.primaryText)
         .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
@@ -841,11 +862,12 @@ private struct EvidenceNotesCard: View {
 
 private struct EvidenceSafetyPostureCard: View {
   let posture: EvidenceSafetyPosture
+  let localization: AppChromeLocalization
   let action: (() -> Void)?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("Safety Posture")
+      Text(localization.text("Safety Posture"))
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(SMColor.secondaryText)
         .textCase(.uppercase)
@@ -887,12 +909,14 @@ private struct EvidenceSafetyPostureCard: View {
 }
 
 private struct EvidenceEmptyInspector: View {
+  let localization: AppChromeLocalization
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Select an evidence record")
+      Text(localization.text("Select an evidence record"))
         .font(.system(size: 14, weight: .semibold))
         .foregroundStyle(SMColor.primaryText)
-      Text("The inspector shows signed metadata, integrity checks, and operator actions for the current selection.")
+      Text(localization.text("The inspector shows signed metadata, integrity checks, and operator actions for the current selection."))
         .font(.system(size: 12))
         .foregroundStyle(SMColor.secondaryText)
         .fixedSize(horizontal: false, vertical: true)
@@ -1051,11 +1075,13 @@ private struct EvidenceColumn: Identifiable {
 
 struct EvidenceScreen: View {
   @EnvironmentObject private var store: AppStore
+  let localization: AppChromeLocalization
   @State private var viewState = EvidenceViewState()
 
   var body: some View {
     EvidenceSectionView(
       model: evidenceSectionModel,
+      localization: localization,
       actions: evidenceSectionActions
     )
   }
@@ -1064,44 +1090,44 @@ struct EvidenceScreen: View {
     let records = evidenceSectionRecords
     let selectionSummary: String
     if records.isEmpty {
-      selectionSummary = "No records loaded"
+      selectionSummary = localization.text("No records loaded")
     } else if let selected = records.first(where: \.isSelected) {
-      selectionSummary = "\(selected.id) selected · \(records.count) total"
+      selectionSummary = "\(selected.id) \(localization.text("selected")) · \(records.count) \(localization.text("total"))"
     } else {
-      selectionSummary = "\(records.count) record(s)"
+      selectionSummary = "\(records.count) \(localization.text("record(s)"))"
     }
     return EvidenceSectionModel(
-      title: "Evidence",
-      subtitle: "Browse immutable, evidence-backed records for this migration.",
+      title: AppSection.evidence.localizedTitle(using: localization),
+      subtitle: localization.text("Browse immutable, evidence-backed records for this migration."),
       updatedAt: evidenceUpdatedAtLabel,
       stageFilter: .init(
         selectedID: viewState.selectedStageFilterID,
-        options: [.init(id: "all", title: "All Stages")]
+        options: [.init(id: "all", title: localization.text("All Stages"))]
       ),
       typeFilter: .init(
         selectedID: viewState.selectedTypeFilterID,
-        options: [.init(id: "all", title: "All Types")]
+        options: [.init(id: "all", title: localization.text("All Types"))]
       ),
       statusFilter: .init(
         selectedID: viewState.selectedStatusFilterID,
-        options: [.init(id: "all", title: "All Statuses")]
+        options: [.init(id: "all", title: localization.text("All Statuses"))]
       ),
       searchQuery: viewState.searchQuery,
       records: records,
       selectionSummary: selectionSummary,
       pagination: .init(pageLabel: "1", canGoBackward: false, canGoForward: false),
       safetyPosture: EvidenceSafetyPosture(
-        title: aggregateEvidenceGateState.title.capitalized,
+        title: localization.text(aggregateEvidenceGateState.title.capitalized),
         state: evidenceSemanticState(for: aggregateEvidenceGateState),
         summary: hasLoadedEvidence
-          ? "Loaded evidence surfaces are available for this context."
-          : "Read status, report, health, or verify to populate evidence-backed review surfaces.",
+          ? localization.text("Loaded evidence surfaces are available for this context.")
+          : localization.text("Read status, report, health, or verify to populate evidence-backed review surfaces."),
         details: [
-          "Aggregate evidence gate: \(aggregateEvidenceGateState.title)",
-          "Warnings: \(warningMetricValue)",
-          "Artifact problems: \(artifactProblemMetricValue)",
+          "\(localization.text("Aggregate evidence gate")): \(aggregateEvidenceGateState.title)",
+          "\(localization.text("Warnings")): \(warningMetricValue)",
+          "\(localization.text("Artifact problems")): \(artifactProblemMetricValue)",
         ],
-        actionTitle: "Review next actions"
+        actionTitle: localization.text("Review next actions")
       ),
       selectedDetail: evidenceSelectedDetail,
       supportingContent: AnyView(
@@ -1126,7 +1152,8 @@ struct EvidenceScreen: View {
             recordSourceTransfer: store.recordAcceptanceSourceTransferArtifact,
             recordTargetImport: store.recordAcceptanceTargetImportArtifact,
             recordEvaluation: store.recordAcceptanceEvaluationArtifact,
-            recordPackagingEvidence: store.recordAcceptancePackagingEvidence
+            recordPackagingEvidence: store.recordAcceptancePackagingEvidence,
+            localization: localization
           )
           AcceptanceOperatorEvidencePanel(
             draft: $store.acceptanceOperatorEvidence,
@@ -1138,7 +1165,8 @@ struct EvidenceScreen: View {
             chooseArtifact: store.browseAcceptanceOperatorArtifact,
             clearArtifact: store.clearAcceptanceOperatorArtifact,
             recordEvidence: store.recordAcceptanceOperatorEvidence,
-            refreshBundle: store.refreshAcceptanceBundle
+            refreshBundle: store.refreshAcceptanceBundle,
+            localization: localization
           )
           alignmentScopePanel
           evidenceSnapshot
@@ -1209,7 +1237,7 @@ struct EvidenceScreen: View {
         id: recordID,
         type: envelope.artifactKind.title,
         stage: "Envelope",
-        source: store.selectedRole.title,
+        source: store.selectedRole.localizedTitle(using: localization),
         target: envelope.task.rawValue,
         created: dateTimeString(envelope.loadedAt),
         status: EvidenceBadge(
@@ -1351,9 +1379,9 @@ struct EvidenceScreen: View {
   @ViewBuilder
   private var artifactReaderProblems: some View {
     VStack(alignment: .leading, spacing: 8) {
-      evidenceSectionLabel("Artifact Reader Problems")
+      evidenceSectionLabel(localization.text("Artifact Reader Problems"))
       if store.artifactReadProblems.isEmpty {
-        Text("No app-side artifact decode problems in the current setup context.")
+        Text(localization.text("No app-side artifact decode problems in the current setup context."))
           .font(.system(size: 12))
           .foregroundStyle(SMColor.secondaryText)
       } else {
@@ -1396,9 +1424,9 @@ struct EvidenceScreen: View {
   @ViewBuilder
   private var appEventLog: some View {
     VStack(alignment: .leading, spacing: 8) {
-      evidenceSectionLabel("Structured App Events")
+      evidenceSectionLabel(localization.text("Structured App Events"))
       if store.appEvents.isEmpty {
-        Text("No structured app events yet.")
+        Text(localization.text("No structured app events yet."))
           .font(.system(size: 12))
           .foregroundStyle(SMColor.secondaryText)
       } else {
@@ -1426,7 +1454,7 @@ struct EvidenceScreen: View {
   @ViewBuilder
   private var evidenceSnapshot: some View {
     VStack(alignment: .leading, spacing: 10) {
-      evidenceSectionLabel("Evidence Cards")
+      evidenceSectionLabel(localization.text("Evidence Cards"))
       LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 12)], spacing: 12) {
         ForEach(evidenceCards) { card in
           evidenceCardView(card)
@@ -1451,7 +1479,7 @@ struct EvidenceScreen: View {
   private var alignmentScopePanel: some View {
     let availability = currentSourceAvailability
     VStack(alignment: .leading, spacing: 10) {
-      evidenceSectionLabel("Alignment Scope")
+      evidenceSectionLabel(localization.text("Alignment Scope"))
       LazyVGrid(columns: [GridItem(.adaptive(minimum: 260), spacing: 12)], spacing: 12) {
         evidenceMetricTile("comparison", value: "target vs manifest", tint: SMColor.blue)
         evidenceMetricTile(
@@ -1561,25 +1589,25 @@ struct EvidenceScreen: View {
   private var evidenceArtifactCatalogPanel: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
-        evidenceSectionLabel("Artifact Catalog")
+        evidenceSectionLabel(localization.text("Artifact Catalog"))
         Spacer()
-        ActionButton("Refresh", systemImage: "arrow.clockwise") {
+        ActionButton(localization.text("Refresh"), systemImage: "arrow.clockwise") {
           store.refreshEvidenceArtifactCatalog()
         }
       }
       Text(
-        "Manual read of the selected Target Root field, not a config-derived target proof. Symlinks, malformed JSON, and unknown `.supermover` control artifacts stay visible as review evidence."
+        localization.text("Manual read of the selected Target Root field, not a config-derived target proof. Symlinks, malformed JSON, and unknown `.supermover` control artifacts stay visible as review evidence.")
       )
       .font(.caption)
       .foregroundStyle(SMColor.secondaryText)
       HStack(spacing: 10) {
         WorkbenchSearchField(
           text: viewState.searchQuery,
-          placeholder: "Search path, id, family, preview, or problem text",
+          placeholder: localization.text("Search path, id, family, preview, or problem text"),
           onChange: { viewState.searchQuery = $0 }
         )
-        Picker("Family", selection: $viewState.artifactFamilyFilterID) {
-          Text("All families").tag("all")
+        Picker(localization.text("Family"), selection: $viewState.artifactFamilyFilterID) {
+          Text(localization.text("All families")).tag("all")
           ForEach(evidenceArtifactFamilyOptions) { family in
             Text(family.title).tag(family.rawValue)
           }
@@ -1610,7 +1638,7 @@ struct EvidenceScreen: View {
         }
         let artifacts = filteredEvidenceArtifacts
         if artifacts.isEmpty {
-          Text("No artifacts match the current filter.")
+          Text(localization.text("No artifacts match the current filter."))
             .font(.caption)
             .foregroundStyle(SMColor.secondaryText)
         } else {
@@ -1619,14 +1647,14 @@ struct EvidenceScreen: View {
           }
           if artifacts.count > 12 {
             Text(
-              "\(artifacts.count - 12) more artifacts match. Narrow the query or family filter to inspect them."
+              "\(artifacts.count - 12) \(localization.text("more artifacts match. Narrow the query or family filter to inspect them."))"
             )
             .font(.caption2)
             .foregroundStyle(SMColor.secondaryText)
           }
         }
       } else {
-        Text("Artifact catalog not loaded. Select a target root, then click Artifacts or Refresh.")
+        Text(localization.text("Artifact catalog not loaded. Select a target root, then click Artifacts or Refresh."))
           .font(.caption)
           .foregroundStyle(SMColor.secondaryText)
       }
@@ -1654,7 +1682,7 @@ struct EvidenceScreen: View {
 
   private func artifactCatalogProblemList(_ problems: [EvidenceArtifactCatalogProblem]) -> some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text("Catalog Problems")
+      Text(localization.text("Catalog Problems"))
         .font(.caption.weight(.semibold))
         .foregroundStyle(SMColor.primaryText)
       ForEach(problems.prefix(5)) { problem in
@@ -1740,7 +1768,7 @@ struct EvidenceScreen: View {
   @ViewBuilder
   private var rawEvidenceSurfaces: some View {
     VStack(alignment: .leading, spacing: 10) {
-      evidenceSectionLabel("Raw JSON Envelopes")
+      evidenceSectionLabel(localization.text("Raw JSON Envelopes"))
       if rawEvidenceEnvelopes.isEmpty {
         Text(
           "No structured command stdout has been retained yet. Run a JSON-backed task to populate raw evidence."
@@ -1819,7 +1847,7 @@ struct EvidenceScreen: View {
   @ViewBuilder
   private var nextActionPreviewPanel: some View {
     VStack(alignment: .leading, spacing: 10) {
-      evidenceSectionLabel("Evidence-Bound Next Actions")
+      evidenceSectionLabel(localization.text("Evidence-Bound Next Actions"))
       Text(
         "The vault can run only review-metadata commands whose IDs resolve from loaded evidence. Target-content mutation, transfer, pairing, publish, prune apply, and reconcile apply remain excluded here."
       )
@@ -1884,11 +1912,11 @@ struct EvidenceScreen: View {
         .fixedSize(horizontal: false, vertical: true)
       if let task = executableTask(for: action.kind) {
         if action.allowsExecution, store.selectedRole.allows(task: task) {
-          PrimaryActionButton("Run Review Metadata", systemImage: "play.fill") {
+          PrimaryActionButton(localization.text("Run Review Metadata"), systemImage: "play.fill") {
             store.runEvidenceReviewMetadataAction(action, task: task)
           }
         } else if action.allowsExecution {
-          Text("\(store.selectedRole.title) role cannot run this metadata action.")
+          Text("\(store.selectedRole.localizedTitle(using: localization)) \(localization.text("role cannot run")) \(localization.text("this metadata action")).")
             .font(.caption2)
             .foregroundStyle(SMColor.secondaryText)
         }
@@ -2491,6 +2519,7 @@ private struct EvidenceRawPreview {
 }
 
 #Preview {
+  let previewLocalization = AppChromeLocalization(language: .english)
   EvidenceSectionView(
     model: EvidenceSectionModel(
       updatedAt: "2 min ago",
@@ -2653,7 +2682,7 @@ private struct EvidenceRawPreview {
                   EvidenceDetailFact(id: "receipt", label: "Linked receipt", value: "EV-2025-05-29-0007")
                 ]
               )
-              ActionButton("Open warning summary", systemImage: "doc.badge.exclamationmark") {}
+              ActionButton(previewLocalization.text("Open warning summary"), systemImage: "doc.badge.exclamationmark") {}
             }
           }
 
@@ -2670,12 +2699,13 @@ private struct EvidenceRawPreview {
                   EvidenceDetailFact(id: "handoff", label: "Handoff notes", value: "No unresolved blockers")
                 ]
               )
-              ActionButton("Open runbook", systemImage: "list.bullet.clipboard") {}
+              ActionButton(previewLocalization.text("Open runbook"), systemImage: "list.bullet.clipboard") {}
             }
           }
         }
       )
     ),
+    localization: previewLocalization,
     actions: EvidenceSectionActions()
   )
   .padding()

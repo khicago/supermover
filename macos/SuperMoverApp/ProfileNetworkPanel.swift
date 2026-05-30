@@ -6,45 +6,46 @@ struct ProfileNetworkPanel: View {
     let networkStatus: String
     let networkTint: Color
     let runTask: (SuperMoverTaskKind) -> Void
+    var localization: AppChromeLocalization = AppChromeLocalization(language: .english)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Migration Config Network")
+                    Text(localization.text("Migration Config Network"))
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(SMColor.secondaryText)
-                    Text("Receiver address and local TLS identity stay in the migration config file. This app writes reviewed SSOT material through `profile set-network`, not transient overrides.")
+                    Text(localization.text("Receiver address and local TLS identity stay in the migration config file. This app writes reviewed SSOT material through `profile set-network`, not transient overrides."))
                         .font(.system(size: 12))
                         .foregroundStyle(SMColor.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                EvidenceChip(label: "status", value: networkStatus, tint: networkTint)
+                EvidenceChip(label: localization.text("status"), value: networkStatus, tint: networkTint)
             }
 
             HStack(spacing: 14) {
-                profileField("Receiver URL", text: $draft.receiverURL, placeholder: "https://127.0.0.1:9443")
-                profileField("TLS Certificate", text: $draft.tlsCertificatePath, placeholder: "/absolute/path/device.crt")
-                profileField("TLS Private Key", text: $draft.tlsPrivateKeyPath, placeholder: "/absolute/path/device.key")
+                profileField(localization.text("Receiver URL"), text: $draft.receiverURL, placeholder: "https://127.0.0.1:9443")
+                profileField(localization.text("TLS Certificate"), text: $draft.tlsCertificatePath, placeholder: localization.text("Path to device certificate"))
+                profileField(localization.text("TLS Private Key"), text: $draft.tlsPrivateKeyPath, placeholder: localization.text("Path to device private key"))
             }
 
             HStack(spacing: 18) {
-                Toggle("Clear Receiver URL", isOn: $draft.clearReceiverURL)
+                Toggle(localization.text("Clear Receiver URL"), isOn: $draft.clearReceiverURL)
                     .toggleStyle(.checkbox)
-                Toggle("Clear TLS Identity", isOn: $draft.clearTLSIdentity)
+                Toggle(localization.text("Clear TLS Identity"), isOn: $draft.clearTLSIdentity)
                     .toggleStyle(.checkbox)
             }
             .font(.system(size: 12))
             .foregroundStyle(SMColor.secondaryText)
 
             if draft.hasPartialTLSIdentity {
-                Text("TLS certificate and private key paths are atomic. Provide both together or clear the stored TLS identity.")
+                Text(localization.text("TLS certificate and private key paths are atomic. Provide both together or clear the stored TLS identity."))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.amber)
                     .fixedSize(horizontal: false, vertical: true)
             } else if !draft.hasRequestedChange {
-                Text("Leave fields empty to keep current migration config network material unchanged.")
+                Text(localization.text("Leave fields empty to keep current migration config network material unchanged."))
                     .font(.system(size: 12))
                     .foregroundStyle(SMColor.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -52,14 +53,14 @@ struct ProfileNetworkPanel: View {
 
             HStack(spacing: 12) {
                 if role != .observer {
-                    ActionButton("Update Config Network", systemImage: "network") {
+                    ActionButton(localization.text("Update Config Network"), systemImage: "network") {
                         runTask(.profileSetNetwork)
                     }
                 }
-                ActionButton("Lint Config", systemImage: "checklist") {
+                ActionButton(localization.text("Lint Config"), systemImage: "checklist") {
                     runTask(.lintProfile)
                 }
-                ActionButton("Read Status", systemImage: "waveform.path.ecg") {
+                ActionButton(localization.text("Read Status"), systemImage: "waveform.path.ecg") {
                     runTask(.status)
                 }
             }

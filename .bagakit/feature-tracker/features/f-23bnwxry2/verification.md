@@ -1841,6 +1841,38 @@
     two-Mac installed-app transfer success, Local Network/firewall prompt
     evidence, signed/notarized distribution readiness, Merkle/current-source
     proof, or final T-011 release closure.
+- Step: T-011 app chrome, DRY, and localization closeout.
+  - Outcome: shared page chrome and owner-mode policy now have explicit
+    repository rules; owner-mode strips use a single implementation; sidebar,
+    page headings, task display strings, major page sections, action labels,
+    auxiliary panels, and empty states route through `AppChromeLocalization`
+    or localized section helpers.
+  - Outcome: `ProfileNetworkPanel`, `PairingReceiptPanel`,
+    `AcceptanceBundlePanel`, and `AcceptanceOperatorEvidencePanel` now receive
+    injected localization instead of hard-coding visible English chrome. Raw
+    evidence, CLI output, paths, JSON/protocol fields, profile IDs, receipt IDs,
+    and operator-entered text intentionally remain literal.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'UIPreferencesTests|WorkbenchNavigationTests|WorkbenchChromeTests'`
+      (31 tests, 0 failures)
+    - `swift build --package-path macos --product SuperMoverApp`: pass.
+    - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`
+      (pass)
+    - Missing `AppChromeLocalization.text("...")` key scan: pass.
+    - Duplicate localized resource key scans for English and Simplified
+      Chinese: pass.
+    - `bash "$BAGAKIT_FEATURE_TRACKER_SKILL_DIR/scripts/feature-tracker.sh" validate-tracker --root .`
+      (pass)
+    - `git diff --check`: pass.
+  - Detail:
+    Additional closeout notes are recorded in
+    `artifacts/app-chrome-i18n-dry-T-011.md`.
+  - Boundary:
+    This closes the shared chrome/i18n/DRY class of defects. It does not claim
+    translated raw audit evidence, full visual QA across every window size,
+    real two-Mac installed-app transfer success, Local Network/firewall prompt
+    evidence, signed/notarized distribution readiness, Merkle/current-source
+    proof, or final T-011 release closure.
 
 ## Residual Risks
 
