@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -827,21 +828,21 @@ func TestStatusTextEscapesNetworkTransferValues(t *testing.T) {
 		t.Fatalf("push exit = %d, stderr = %q, want 0", got, stderr.String())
 	}
 	writeNetworkTransferForCLI(t, target, control.NetworkTransfer{
-		Version:         control.CurrentVersion,
-		SessionID:       "session-network",
-		ProfileID:       "profile-local",
-		TargetID:        "local:profile-local",
-		SourceDeviceID:  "sha256:abcdef0123456789",
-		TargetDeviceID:  "sha256:0123456789abcdef",
-		ProtocolVersion: "supermover/1",
+		Version:           control.CurrentVersion,
+		SessionID:         "session-network",
+		ProfileID:         "profile-local",
+		TargetID:          "local:profile-local",
+		SourceDeviceID:    "sha256:abcdef0123456789",
+		TargetDeviceID:    "sha256:0123456789abcdef",
+		ProtocolVersion:   "supermover/1",
 		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
-		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
-		Status:          control.NetworkTransferFailed,
-		Stage:           "transport",
-		StartedAt:       "2026-05-16T00:00:00Z",
-		UpdatedAt:       "2026-05-16T00:00:01Z",
-		ErrorCode:       "bad\ncode",
-		Error:           "failure\nwith=field",
+		PrivacyPolicy:     transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
+		Status:            control.NetworkTransferFailed,
+		Stage:             "transport",
+		StartedAt:         "2026-05-16T00:00:00Z",
+		UpdatedAt:         "2026-05-16T00:00:01Z",
+		ErrorCode:         "bad\ncode",
+		Error:             "failure\nwith=field",
 		Attempts: []control.NetworkTransferAttempt{{
 			AttemptID: "attempt-1",
 			StartedAt: "2026-05-16T00:00:00Z",
@@ -1160,10 +1161,9 @@ func TestServeStartsPairingOnlyServerAndCancelsCleanly(t *testing.T) {
 		t.Fatalf("GET /v1/pairing without code error = %v, want nil", err)
 	}
 	body = readHTTPBody(t, resp)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET /v1/pairing without code status = %d body = %q, want 403", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("GET /v1/pairing without code status = %d body = %q, want 409", resp.StatusCode, body)
 	}
-	assertServeLowInfo(t, body, p, source, target)
 	reqPairing, err := http.NewRequest(http.MethodGet, "http://"+address+"/v1/pairing", nil)
 	if err != nil {
 		t.Fatalf("NewRequest(/v1/pairing) error = %v, want nil", err)
@@ -1174,11 +1174,56 @@ func TestServeStartsPairingOnlyServerAndCancelsCleanly(t *testing.T) {
 		t.Fatalf("GET /v1/pairing with code error = %v, want nil", err)
 	}
 	body = readHTTPBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /v1/pairing with code status = %d body = %q, want 200", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("GET /v1/pairing with code status = %d body = %q, want 409", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, `"trusted":false`) {
-		t.Fatalf("GET /v1/pairing with code body = %q, want trusted=false", body)
+	if !strings.Contains(body, "approval required") {
+		t.Fatalf("GET /v1/pairing with code body = %q, want approval required", body)
+	}
+	requestBody := `{"source_profile_id":"profile-local","source_profile_name":"Source profile","source_device_id":"sha256:abcdef0123456789"}`
+	reqCreate, err := http.NewRequest(http.MethodPost, "http://"+address+"/v1/pairing/requests", strings.NewReader(requestBody))
+	if err != nil {
+		t.Fatalf("NewRequest(/v1/pairing/requests) error = %v, want nil", err)
+	}
+	reqCreate.Header.Set("Content-Type", "application/json")
+	reqCreate.Header.Set(pairing.VerificationCodeHeader, info.VerificationCode)
+	resp, err = client.Do(reqCreate)
+	if err != nil {
+		t.Fatalf("POST /v1/pairing/requests error = %v, want nil", err)
+	}
+	body = readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /v1/pairing/requests status = %d body = %q, want 202", resp.StatusCode, body)
+	}
+	var requestResponse pairserve.PairingRequestResponse
+	if err := json.Unmarshal([]byte(body), &requestResponse); err != nil {
+		t.Fatalf("json.Unmarshal(pairing request) error = %v body = %q", err, body)
+	}
+	if requestResponse.Request.Status != "pending" || requestResponse.Bootstrap != nil {
+		t.Fatalf("pairing request response = %+v, want pending without bootstrap", requestResponse)
+	}
+	if err := approvePairingRequest(info, requestResponse.Request.ID); err != nil {
+		t.Fatalf("approve pairing request error = %v, want nil", err)
+	}
+	reqStatus, err := http.NewRequest(http.MethodGet, "http://"+address+"/v1/pairing/requests/"+url.PathEscape(requestResponse.Request.ID), nil)
+	if err != nil {
+		t.Fatalf("NewRequest(/v1/pairing/requests/{id}) error = %v, want nil", err)
+	}
+	reqStatus.Header.Set(pairing.VerificationCodeHeader, info.VerificationCode)
+	resp, err = client.Do(reqStatus)
+	if err != nil {
+		t.Fatalf("GET /v1/pairing/requests/{id} error = %v, want nil", err)
+	}
+	body = readHTTPBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/pairing/requests/{id} status = %d body = %q, want 200", resp.StatusCode, body)
+	}
+	var approvedResponse pairserve.PairingRequestResponse
+	if err := json.Unmarshal([]byte(body), &approvedResponse); err != nil {
+		t.Fatalf("json.Unmarshal(pairing approval) error = %v body = %q", err, body)
+	}
+	if approvedResponse.Request.Status != "approved" || approvedResponse.Bootstrap == nil {
+		t.Fatalf("pairing approval response = %+v, want approved with bootstrap", approvedResponse)
 	}
 	req, err := http.NewRequest(http.MethodPost, "http://"+address+"/v1/sessions", strings.NewReader("{}"))
 	if err != nil {
@@ -8629,21 +8674,21 @@ func TestHealthTextShowsNetworkTransferEvidence(t *testing.T) {
 	mustMkdir(t, target)
 	writeDefaultProfile(t, profilePath, source, target)
 	writeNetworkTransferForCLI(t, target, control.NetworkTransfer{
-		Version:         control.CurrentVersion,
-		SessionID:       "session-network",
-		ProfileID:       "profile-local",
-		TargetID:        "local:profile-local",
-		SourceDeviceID:  "sha256:abcdef0123456789",
-		TargetDeviceID:  "sha256:0123456789abcdef",
-		ProtocolVersion: "supermover/1",
+		Version:           control.CurrentVersion,
+		SessionID:         "session-network",
+		ProfileID:         "profile-local",
+		TargetID:          "local:profile-local",
+		SourceDeviceID:    "sha256:abcdef0123456789",
+		TargetDeviceID:    "sha256:0123456789abcdef",
+		ProtocolVersion:   "supermover/1",
 		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
-		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
-		Status:          control.NetworkTransferAuthRefused,
-		Stage:           "begin",
-		StartedAt:       "2026-05-16T00:00:00Z",
-		UpdatedAt:       "2026-05-16T00:00:01Z",
-		ErrorCode:       "auth_refused",
-		Error:           "receiver refused paired identity",
+		PrivacyPolicy:     transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
+		Status:            control.NetworkTransferAuthRefused,
+		Stage:             "begin",
+		StartedAt:         "2026-05-16T00:00:00Z",
+		UpdatedAt:         "2026-05-16T00:00:01Z",
+		ErrorCode:         "auth_refused",
+		Error:             "receiver refused paired identity",
 		Attempts: []control.NetworkTransferAttempt{{
 			AttemptID: "attempt-1",
 			StartedAt: "2026-05-16T00:00:00Z",
@@ -8828,15 +8873,15 @@ func TestReportShowsNetworkTransferPrivacyOverhead(t *testing.T) {
 	writeDefaultProfile(t, profilePath, source, target)
 	p := mustReadProfile(t, profilePath)
 	transfer := control.NetworkTransfer{
-		Version:         control.CurrentVersion,
-		SessionID:       "session-network",
-		ProfileID:       p.ProfileID,
-		TargetID:        p.Target.TargetID,
-		SourceDeviceID:  "sha256:abcdef0123456789",
-		TargetDeviceID:  "sha256:0123456789abcdef",
-		ProtocolVersion: "supermover/1",
+		Version:           control.CurrentVersion,
+		SessionID:         "session-network",
+		ProfileID:         p.ProfileID,
+		TargetID:          p.Target.TargetID,
+		SourceDeviceID:    "sha256:abcdef0123456789",
+		TargetDeviceID:    "sha256:0123456789abcdef",
+		ProtocolVersion:   "supermover/1",
 		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
-		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
+		PrivacyPolicy:     transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
 		PrivacyOverhead: &control.NetworkTransferPrivacyOverhead{
 			FramePlainBytes:      512,
 			FrameWireBytes:       640,
@@ -8918,15 +8963,15 @@ func TestReportJSONShowsNetworkTransferJitterOverhead(t *testing.T) {
 	writeDefaultProfile(t, profilePath, source, target)
 	p := mustReadProfile(t, profilePath)
 	transfer := control.NetworkTransfer{
-		Version:         control.CurrentVersion,
-		SessionID:       "session-network-json",
-		ProfileID:       p.ProfileID,
-		TargetID:        p.Target.TargetID,
-		SourceDeviceID:  "sha256:abcdef0123456789",
-		TargetDeviceID:  "sha256:0123456789abcdef",
-		ProtocolVersion: "supermover/1",
+		Version:           control.CurrentVersion,
+		SessionID:         "session-network-json",
+		ProfileID:         p.ProfileID,
+		TargetID:          p.Target.TargetID,
+		SourceDeviceID:    "sha256:abcdef0123456789",
+		TargetDeviceID:    "sha256:0123456789abcdef",
+		ProtocolVersion:   "supermover/1",
 		EncryptedTransfer: control.NetworkTransferEncryptedTLS13MTLS,
-		PrivacyPolicy:   transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
+		PrivacyPolicy:     transport.DefaultPrivacyPolicy(transport.PrivacyLevel2),
 		PrivacyOverhead: &control.NetworkTransferPrivacyOverhead{
 			JitteredRequests:     4,
 			JitterDelayMillis:    320,
@@ -9688,6 +9733,65 @@ func waitServePairingReady(t *testing.T, ready <-chan pairserve.ReadyInfo, stder
 	return pairserve.ReadyInfo{}
 }
 
+func pairingServeRunnerWithAutoApprove(t *testing.T, ctx context.Context, now time.Time, ready chan<- pairserve.ReadyInfo) Runner {
+	t.Helper()
+	var mu sync.Mutex
+	var info pairserve.ReadyInfo
+	hasInfo := false
+	return Runner{
+		Context: ctx,
+		Now:     now,
+		ServePairingReady: func(update pairserve.ReadyInfo) {
+			mu.Lock()
+			info = update
+			hasInfo = true
+			mu.Unlock()
+			if ready != nil {
+				ready <- update
+			}
+		},
+		ServePairingRequestChanged: func(request pairserve.PairingRequestSnapshot) {
+			if request.Status != "pending" {
+				return
+			}
+			mu.Lock()
+			current := info
+			ok := hasInfo
+			mu.Unlock()
+			if !ok {
+				t.Errorf("pairing request %q arrived before ready info", request.ID)
+				return
+			}
+			if err := approvePairingRequest(current, request.ID); err != nil {
+				t.Errorf("approve pairing request %q error = %v, want nil", request.ID, err)
+			}
+		},
+	}
+}
+
+func approvePairingRequest(info pairserve.ReadyInfo, requestID string) error {
+	endpoint := "http://" + info.Address + "/v1/pairing/requests/" + url.PathEscape(requestID) + "/approve"
+	req, err := http.NewRequest(http.MethodPost, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set(pairserve.OperatorTokenHeader, info.OperatorToken)
+	client := http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d body=%q", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 func waitDaemonReadyState(t *testing.T, ready <-chan agentdaemon.State, stdout fmt.Stringer, stderr fmt.Stringer) agentdaemon.State {
 	t.Helper()
 	select {
@@ -9881,14 +9985,58 @@ func waitServeReceiverReady(t *testing.T, ready <-chan receiverserve.ReadyInfo, 
 
 func httptestPairingServer(t *testing.T, bootstrap pairing.Bootstrap) string {
 	t.Helper()
+	var mu sync.Mutex
+	var snapshot pairserve.PairingRequestSnapshot
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/v1/pairing" {
-			http.NotFound(w, r)
+		if r.Header.Get(pairing.VerificationCodeHeader) != "123456" {
+			http.Error(w, "pairing verification failed", http.StatusForbidden)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(bootstrap); err != nil {
-			t.Fatalf("Encode(bootstrap) error = %v, want nil", err)
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/pairing/requests":
+			var input pairserve.PairingRequestCreate
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPairingBootstrapBytes)).Decode(&input); err != nil {
+				http.Error(w, "invalid pairing request", http.StatusBadRequest)
+				return
+			}
+			now := time.Now().UTC()
+			mu.Lock()
+			snapshot = pairserve.PairingRequestSnapshot{
+				ProtocolVersion:   protocol.Version,
+				ID:                "pair-test-request",
+				Status:            "pending",
+				SourceProfileID:   input.SourceProfileID,
+				SourceProfileName: input.SourceProfileName,
+				SourceDeviceID:    input.SourceDeviceID,
+				RequestedAt:       now.Format(time.RFC3339Nano),
+				ExpiresAt:         now.Add(time.Minute).Format(time.RFC3339Nano),
+			}
+			response := pairserve.PairingRequestResponse{ProtocolVersion: protocol.Version, Request: snapshot}
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusAccepted)
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				t.Fatalf("Encode(pairing request) error = %v, want nil", err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/pairing/requests/pair-test-request":
+			mu.Lock()
+			if snapshot.ID == "" {
+				mu.Unlock()
+				http.NotFound(w, r)
+				return
+			}
+			approved := snapshot
+			approved.Status = "approved"
+			approved.DecidedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			response := pairserve.PairingRequestResponse{ProtocolVersion: protocol.Version, Request: approved, Bootstrap: &bootstrap}
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewEncoder(w).Encode(response); err != nil {
+				t.Fatalf("Encode(pairing approval) error = %v, want nil", err)
+			}
+		default:
+			http.NotFound(w, r)
+			return
 		}
 	}))
 	t.Cleanup(server.Close)

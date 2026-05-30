@@ -41,13 +41,7 @@ func TestPairWritesReceiptAndUpdatesProfilePins(t *testing.T) {
 	defer cancelServe()
 	ready := make(chan pairserve.ReadyInfo, 1)
 	done := make(chan int, 1)
-	serverRunner := Runner{
-		Context: serveCtx,
-		Now:     now,
-		ServePairingReady: func(info pairserve.ReadyInfo) {
-			ready <- info
-		},
-	}
+	serverRunner := pairingServeRunnerWithAutoApprove(t, serveCtx, now, ready)
 	var serveStdout bytes.Buffer
 	var serveStderr bytes.Buffer
 	go func() {
@@ -147,13 +141,7 @@ func TestPairExportsReceiptWhenRequested(t *testing.T) {
 	ready := make(chan pairserve.ReadyInfo, 1)
 	done := make(chan int, 1)
 	go func() {
-		done <- Runner{
-			Context: serveCtx,
-			Now:     now,
-			ServePairingReady: func(info pairserve.ReadyInfo) {
-				ready <- info
-			},
-		}.Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &bytes.Buffer{}, &bytes.Buffer{})
+		done <- pairingServeRunnerWithAutoApprove(t, serveCtx, now, ready).Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &bytes.Buffer{}, &bytes.Buffer{})
 	}()
 	info := waitServePairingReady(t, ready, nil)
 	var stdout bytes.Buffer
@@ -220,12 +208,7 @@ func TestPairRejectsBootstrapWithoutTransportIdentityBindingWithoutMutatingProfi
 	var serveStdout bytes.Buffer
 	var serveStderr bytes.Buffer
 	go func() {
-		done <- Runner{
-			Context: serveCtx,
-			ServePairingReady: func(info pairserve.ReadyInfo) {
-				ready <- info
-			},
-		}.Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
+		done <- pairingServeRunnerWithAutoApprove(t, serveCtx, time.Time{}, ready).Run([]string{"serve", "--profile", targetProfilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
 	}()
 	info := waitServePairingReady(t, ready, &serveStderr)
 	var pairStdout bytes.Buffer
@@ -264,7 +247,12 @@ func TestPairRejectsWrongVerificationCodeWithoutMutatingProfile(t *testing.T) {
 	profilePath := filepath.Join(dir, "source.profile.json")
 	mustMkdir(t, source)
 	mustMkdir(t, target)
-	writeDefaultProfile(t, profilePath, source, target)
+	sourceCert := newCLITestCertificate(t, "pair-source", cliTLSNow().Add(-time.Hour), cliTLSNow().Add(time.Hour))
+	p := profile.NewDefault("profile-local", "Local profile", source, target)
+	p.Network = networkConfigForCLI(t, sourceCert, reserveTCPAddress(t))
+	if err := profile.WriteFile(profilePath, p); err != nil {
+		t.Fatalf("profile.WriteFile(%q) error = %v, want nil", profilePath, err)
+	}
 	serveCtx, cancelServe := context.WithCancel(context.Background())
 	defer cancelServe()
 	ready := make(chan pairserve.ReadyInfo, 1)
@@ -272,12 +260,7 @@ func TestPairRejectsWrongVerificationCodeWithoutMutatingProfile(t *testing.T) {
 	var serveStdout bytes.Buffer
 	var serveStderr bytes.Buffer
 	go func() {
-		done <- Runner{
-			Context: serveCtx,
-			ServePairingReady: func(info pairserve.ReadyInfo) {
-				ready <- info
-			},
-		}.Run([]string{"serve", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
+		done <- pairingServeRunnerWithAutoApprove(t, serveCtx, time.Time{}, ready).Run([]string{"serve", "--profile", profilePath, "--listen", "127.0.0.1:0"}, &serveStdout, &serveStderr)
 	}()
 	info := waitServePairingReady(t, ready, &serveStderr)
 	var pairStdout bytes.Buffer

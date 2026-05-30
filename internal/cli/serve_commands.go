@@ -22,15 +22,17 @@ import (
 )
 
 type serveReadyEvidence struct {
-	Address          string `json:"address"`
-	VerificationCode string `json:"verification_code,omitempty"`
-	Mode             string `json:"mode"`
-	ReceiverAddress  string `json:"receiver_address,omitempty"`
-	ReceiverRoutes   bool   `json:"receiver_routes,omitempty"`
-	PushNetwork      bool   `json:"push_network,omitempty"`
-	Trusted          bool   `json:"trusted"`
-	Transfer         bool   `json:"transfer"`
-	ExpiresAt        string `json:"expires_at,omitempty"`
+	Address          string                            `json:"address"`
+	VerificationCode string                            `json:"verification_code,omitempty"`
+	OperatorToken    string                            `json:"operator_token,omitempty"`
+	Mode             string                            `json:"mode"`
+	ReceiverAddress  string                            `json:"receiver_address,omitempty"`
+	ReceiverRoutes   bool                              `json:"receiver_routes,omitempty"`
+	PushNetwork      bool                              `json:"push_network,omitempty"`
+	Trusted          bool                              `json:"trusted"`
+	Transfer         bool                              `json:"transfer"`
+	ExpiresAt        string                            `json:"expires_at,omitempty"`
+	PairingRequest   *pairserve.PairingRequestSnapshot `json:"pairing_request,omitempty"`
 }
 
 type serveReadyState struct {
@@ -257,6 +259,7 @@ func (s *serveReadyState) recordPairing(update serveReadyEvidence) {
 	defer s.mu.Unlock()
 	s.evidence.Address = update.Address
 	s.evidence.VerificationCode = update.VerificationCode
+	s.evidence.OperatorToken = update.OperatorToken
 	s.evidence.Mode = update.Mode
 	s.evidence.ExpiresAt = update.ExpiresAt
 	if !s.evidence.ReceiverRoutes {
@@ -264,6 +267,16 @@ func (s *serveReadyState) recordPairing(update serveReadyEvidence) {
 		s.evidence.Transfer = false
 	}
 	s.hasPairing = true
+	s.writeLocked()
+}
+
+func (s *serveReadyState) recordPairingRequest(update pairserve.PairingRequestSnapshot) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evidence.PairingRequest = &update
 	s.writeLocked()
 }
 
@@ -319,6 +332,7 @@ func (r Runner) newPairingServe(p profile.Profile, listen string, stderr io.Writ
 				readyState.recordPairing(serveReadyEvidence{
 					Address:          info.Address,
 					VerificationCode: info.VerificationCode,
+					OperatorToken:    info.OperatorToken,
 					Mode:             mode,
 					Trusted:          false,
 					Transfer:         false,
@@ -330,6 +344,17 @@ func (r Runner) newPairingServe(p profile.Profile, listen string, stderr io.Writ
 			}
 			if r.ServeReady != nil {
 				r.ServeReady(info.Address)
+			}
+		},
+		RequestChanged: func(request pairserve.PairingRequestSnapshot) {
+			outputMu.Lock()
+			fmt.Fprintf(stderr, "serve: pairing request id=%s status=%s trusted=false transfer=false\n", request.ID, request.Status)
+			outputMu.Unlock()
+			if readyState != nil {
+				readyState.recordPairingRequest(request)
+			}
+			if r.ServePairingRequestChanged != nil {
+				r.ServePairingRequestChanged(request)
 			}
 		},
 	})

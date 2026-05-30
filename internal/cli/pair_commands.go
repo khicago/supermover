@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/pairing"
+	"github.com/khicago/supermover/internal/pairserve"
 	"github.com/khicago/supermover/internal/pathguard"
 	"github.com/khicago/supermover/internal/profile"
 	"github.com/khicago/supermover/internal/transport"
@@ -83,15 +85,35 @@ func (r Runner) runPair(args []string, stdout io.Writer, stderr io.Writer) int {
 	defer cancel()
 	alreadyPaired := profileHasPairingPins(p)
 	expectedTargetDeviceID := ""
+	var existingPairing pairing.TrustState
 	if alreadyPaired {
-		existingPairing, err := pairing.ValidateSourceProfileTrust(p)
+		existingPairing, err = pairing.ValidateSourceProfileTrust(p)
 		if err != nil {
 			fmt.Fprintf(stderr, "pair: existing paired profile is invalid: %v\n", err)
 			return 2
 		}
 		expectedTargetDeviceID = existingPairing.TargetDeviceID
 	}
-	bootstrap, err := fetchPairingBootstrap(ctx, *target, *verificationCode)
+	now := r.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	sourceDeviceID, err := pairing.SourceTransportDeviceID(p, now)
+	if err != nil {
+		if !alreadyPaired {
+			fmt.Fprintf(stderr, "pair: %v\n", err)
+			return 2
+		}
+		sourceDeviceID = strings.TrimSpace(existingPairing.Receipt.SourceDeviceID)
+		if sourceDeviceID == "" {
+			sourceDeviceID, err = pairing.SourceDeviceID(p)
+			if err != nil {
+				fmt.Fprintf(stderr, "pair: %v\n", err)
+				return 2
+			}
+		}
+	}
+	request, err := createPairingRequest(ctx, *target, *verificationCode, p, sourceDeviceID)
 	if err != nil {
 		if errors.Is(err, pairing.ErrVerificationCode) {
 			fmt.Fprintf(stderr, "pair: %v\n", err)
@@ -100,9 +122,14 @@ func (r Runner) runPair(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pair: %v\n", err)
 		return 1
 	}
-	now := r.Now
-	if now.IsZero() {
-		now = time.Now().UTC()
+	bootstrap, err := waitPairingApproval(ctx, *target, *verificationCode, request.ID)
+	if err != nil {
+		if errors.Is(err, pairing.ErrVerificationCode) {
+			fmt.Fprintf(stderr, "pair: %v\n", err)
+			return 2
+		}
+		fmt.Fprintf(stderr, "pair: %v\n", err)
+		return 1
 	}
 	if err := pairing.ValidateBootstrap(bootstrap, expectedTargetDeviceID, *verificationCode, now); err != nil {
 		if errors.Is(err, pairing.ErrVerificationCode) || errors.Is(err, pairing.ErrInvalidBootstrap) {
@@ -114,15 +141,6 @@ func (r Runner) runPair(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if !bootstrap.TransportIdentityBound {
 		fmt.Fprintf(stderr, "pair: %v\n", fmt.Errorf("%w: target transport identity is not bound to authenticated transport certificate", pairing.ErrInvalidBootstrap))
-		return 2
-	}
-	sourceDeviceID, err := pairing.SourceTransportDeviceID(p, now)
-	if err != nil {
-		if alreadyPaired {
-			fmt.Fprintf(stdout, "pair: identity already pinned receipt=%s transfer=false\n", p.Target.PairingReceiptID)
-			return 0
-		}
-		fmt.Fprintf(stderr, "pair: %v\n", err)
 		return 2
 	}
 	if alreadyPaired {
@@ -152,66 +170,167 @@ func (r Runner) runPair(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "pair: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "pair: pinned target identity receipt=%s transfer=false\n", result.Receipt.ID)
+	fmt.Fprintf(stdout, "pair: request approved id=%s pinned target identity receipt=%s transfer=false\n", request.ID, result.Receipt.ID)
 	return 0
 }
 
-func fetchPairingBootstrap(ctx context.Context, target string, verificationCode string) (pairing.Bootstrap, error) {
-	endpoint, err := pairingEndpointURL(target)
+func createPairingRequest(ctx context.Context, target string, verificationCode string, p profile.Profile, sourceDeviceID string) (pairserve.PairingRequestSnapshot, error) {
+	endpoint, err := pairingRequestEndpointURL(target)
+	if err != nil {
+		return pairserve.PairingRequestSnapshot{}, err
+	}
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(pairserve.PairingRequestCreate{
+		SourceProfileID:   p.ProfileID,
+		SourceProfileName: p.Name,
+		SourceDeviceID:    sourceDeviceID,
+	}); err != nil {
+		return pairserve.PairingRequestSnapshot{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
+	if err != nil {
+		return pairserve.PairingRequestSnapshot{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(pairing.VerificationCodeHeader, strings.TrimSpace(verificationCode))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return pairserve.PairingRequestSnapshot{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusForbidden {
+		return pairserve.PairingRequestSnapshot{}, pairing.ErrVerificationCode
+	}
+	if resp.StatusCode != http.StatusAccepted {
+		return pairserve.PairingRequestSnapshot{}, fmt.Errorf("pairing request endpoint returned HTTP %d", resp.StatusCode)
+	}
+	var response pairserve.PairingRequestResponse
+	if err := decodePairingRequestResponse(resp.Body, &response); err != nil {
+		return pairserve.PairingRequestSnapshot{}, err
+	}
+	if response.Request.Status != "pending" || strings.TrimSpace(response.Request.ID) == "" {
+		return pairserve.PairingRequestSnapshot{}, errors.New("pairing request response did not enter pending state")
+	}
+	return response.Request, nil
+}
+
+func waitPairingApproval(ctx context.Context, target string, verificationCode string, requestID string) (pairing.Bootstrap, error) {
+	endpoint, err := pairingRequestStatusEndpointURL(target, requestID)
 	if err != nil {
 		return pairing.Bootstrap{}, err
 	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		bootstrap, status, err := fetchPairingRequestStatus(ctx, endpoint, verificationCode)
+		if err != nil {
+			return pairing.Bootstrap{}, err
+		}
+		switch status {
+		case "approved":
+			if bootstrap == nil {
+				return pairing.Bootstrap{}, errors.New("approved pairing request did not include bootstrap")
+			}
+			return *bootstrap, nil
+		case "pending":
+			select {
+			case <-ctx.Done():
+				return pairing.Bootstrap{}, ctx.Err()
+			case <-ticker.C:
+				continue
+			}
+		case "rejected":
+			return pairing.Bootstrap{}, errors.New("pairing request rejected by target operator")
+		case "expired":
+			return pairing.Bootstrap{}, errors.New("pairing request expired before target approval")
+		default:
+			return pairing.Bootstrap{}, fmt.Errorf("pairing request returned unexpected status %q", status)
+		}
+	}
+}
+
+func fetchPairingRequestStatus(ctx context.Context, endpoint string, verificationCode string) (*pairing.Bootstrap, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return pairing.Bootstrap{}, err
+		return nil, "", err
 	}
 	req.Header.Set(pairing.VerificationCodeHeader, strings.TrimSpace(verificationCode))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return pairing.Bootstrap{}, err
+		return nil, "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusForbidden {
-		return pairing.Bootstrap{}, pairing.ErrVerificationCode
+		return nil, "", pairing.ErrVerificationCode
 	}
 	if resp.StatusCode != http.StatusOK {
-		return pairing.Bootstrap{}, fmt.Errorf("pairing endpoint returned HTTP %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("pairing request status endpoint returned HTTP %d", resp.StatusCode)
 	}
-	var bootstrap pairing.Bootstrap
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxPairingBootstrapBytes))
+	var response pairserve.PairingRequestResponse
+	if err := decodePairingRequestResponse(resp.Body, &response); err != nil {
+		return nil, "", err
+	}
+	return response.Bootstrap, response.Request.Status, nil
+}
+
+func decodePairingRequestResponse(reader io.Reader, response *pairserve.PairingRequestResponse) error {
+	decoder := json.NewDecoder(io.LimitReader(reader, maxPairingBootstrapBytes))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&bootstrap); err != nil {
-		return pairing.Bootstrap{}, err
+	if err := decoder.Decode(response); err != nil {
+		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			err = errors.New("unexpected trailing JSON document")
 		}
-		return pairing.Bootstrap{}, err
+		return err
 	}
-	return bootstrap, nil
+	return nil
 }
 
-func pairingEndpointURL(target string) (string, error) {
+func pairingRequestEndpointURL(target string) (string, error) {
+	base, err := pairingBaseURL(target)
+	if err != nil {
+		return "", err
+	}
+	base.Path = "/v1/pairing/requests"
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String(), nil
+}
+
+func pairingRequestStatusEndpointURL(target string, requestID string) (string, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return "", errors.New("pairing request id is required")
+	}
+	base, err := pairingBaseURL(target)
+	if err != nil {
+		return "", err
+	}
+	base.Path = "/v1/pairing/requests/" + url.PathEscape(requestID)
+	base.RawQuery = ""
+	base.Fragment = ""
+	return base.String(), nil
+}
+
+func pairingBaseURL(target string) (*url.URL, error) {
 	target = strings.TrimSpace(target)
 	if target == "" {
-		return "", errors.New("target is required")
+		return nil, errors.New("target is required")
 	}
 	if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") {
 		parsed, err := url.Parse(target)
 		if err != nil || parsed.Host == "" {
-			return "", fmt.Errorf("invalid target %q", target)
+			return nil, fmt.Errorf("invalid target %q", target)
 		}
-		if parsed.Path == "" || parsed.Path == "/" {
-			parsed.Path = "/v1/pairing"
-		}
-		return parsed.String(), nil
+		return parsed, nil
 	}
 	if _, _, err := net.SplitHostPort(target); err != nil {
-		return "", fmt.Errorf("invalid target address %q", target)
+		return nil, fmt.Errorf("invalid target address %q", target)
 	}
-	return "http://" + target + "/v1/pairing", nil
+	return &url.URL{Scheme: "http", Host: target}, nil
 }
 
 func profileHasPairingPins(p profile.Profile) bool {

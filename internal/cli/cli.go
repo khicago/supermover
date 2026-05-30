@@ -75,14 +75,15 @@ func RunContext(ctx context.Context, args []string, stdout io.Writer, stderr io.
 }
 
 type Runner struct {
-	Now                time.Time
-	SessionID          string
-	Context            context.Context
-	ServeReady         func(address string)
-	ServePairingReady  func(pairserve.ReadyInfo)
-	ServeReceiverReady func(receiverserve.ReadyInfo)
-	DashboardReady     func(operatorui.ReadyInfo)
-	DaemonReady        func(agentdaemon.State)
+	Now                        time.Time
+	SessionID                  string
+	Context                    context.Context
+	ServeReady                 func(address string)
+	ServePairingReady          func(pairserve.ReadyInfo)
+	ServePairingRequestChanged func(pairserve.PairingRequestSnapshot)
+	ServeReceiverReady         func(receiverserve.ReadyInfo)
+	DashboardReady             func(operatorui.ReadyInfo)
+	DaemonReady                func(agentdaemon.State)
 	// DaemonRestartConsumed lets tests synchronize with the narrow foreground restart window.
 	DaemonRestartConsumed func(agentdaemon.State)
 	// DiscoverBrowseReady lets LAN discovery tests send datagrams after the browse socket is bound.
@@ -379,9 +380,9 @@ artifacts.`)
 		transferEntries = entries
 	}
 	opts := networkpush.Options{
-		Profile:   p,
-		SessionID: effectiveSessionID,
-		Now:       r.nowFunc(),
+		Profile:         p,
+		SessionID:       effectiveSessionID,
+		Now:             r.nowFunc(),
 		TransferEntries: transferEntries,
 	}
 	var result networkpush.Result

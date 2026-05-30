@@ -2,6 +2,7 @@ package pairserve
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -158,8 +159,8 @@ func TestHandlerExposesOnlyLowInfoDiscoveryAndPairing(t *testing.T) {
 		t.Fatalf("GET /v1/pairing without code error = %v, want nil", err)
 	}
 	body = readBody(t, resp)
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET /v1/pairing without code status = %d body = %q, want 403", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("GET /v1/pairing without request status = %d body = %q, want 409", resp.StatusCode, body)
 	}
 	assertLowInfoResponse(t, body, p, source, target)
 	if strings.Contains(body, p.Target.DevicePublicKey) {
@@ -176,11 +177,55 @@ func TestHandlerExposesOnlyLowInfoDiscoveryAndPairing(t *testing.T) {
 		t.Fatalf("GET /v1/pairing with code error = %v, want nil", err)
 	}
 	body = readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /v1/pairing with code status = %d body = %q, want 200", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("GET /v1/pairing with code status = %d body = %q, want 409", resp.StatusCode, body)
 	}
-	if !strings.Contains(body, `"trusted":false`) {
-		t.Fatalf("GET /v1/pairing with code body = %q, want trusted=false", body)
+	if strings.Contains(body, server.bootstrap.TargetDeviceID) || strings.Contains(body, server.bootstrap.VerificationHash) {
+		t.Fatalf("GET /v1/pairing with code body = %q, must not expose bootstrap before request approval", body)
+	}
+
+	req, err = http.NewRequest(http.MethodPost, httpServer.URL+"/v1/pairing/requests", strings.NewReader(`{"source_profile_id":"profile-local","source_device_id":"sha256:abcdef0123456789"}`))
+	if err != nil {
+		t.Fatalf("NewRequest(POST /v1/pairing/requests) error = %v, want nil", err)
+	}
+	req.Header.Set(pairing.VerificationCodeHeader, server.pairingCode)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/pairing/requests error = %v, want nil", err)
+	}
+	var requestResponse PairingRequestResponse
+	bodyBytes := readBodyBytes(t, resp)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("POST /v1/pairing/requests status = %d body = %q, want 202", resp.StatusCode, string(bodyBytes))
+	}
+	if err := json.Unmarshal(bodyBytes, &requestResponse); err != nil {
+		t.Fatalf("POST /v1/pairing/requests response decode error = %v body = %q", err, string(bodyBytes))
+	}
+	if requestResponse.Request.Status != "pending" || requestResponse.Bootstrap != nil {
+		t.Fatalf("pairing request response = %+v, want pending without bootstrap", requestResponse)
+	}
+
+	req, err = http.NewRequest(http.MethodPost, httpServer.URL+"/v1/pairing/requests/"+requestResponse.Request.ID+"/approve", nil)
+	if err != nil {
+		t.Fatalf("NewRequest(approve) error = %v, want nil", err)
+	}
+	req.Header.Set(OperatorTokenHeader, server.operatorToken)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST approve pairing request error = %v, want nil", err)
+	}
+	bodyBytes = readBodyBytes(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST approve pairing request status = %d body = %q, want 200", resp.StatusCode, string(bodyBytes))
+	}
+	if err := json.Unmarshal(bodyBytes, &requestResponse); err != nil {
+		t.Fatalf("POST approve pairing request response decode error = %v body = %q", err, string(bodyBytes))
+	}
+	if requestResponse.Request.Status != "approved" || requestResponse.Bootstrap == nil {
+		t.Fatalf("approve response = %+v, want approved with bootstrap", requestResponse)
+	}
+	if requestResponse.Bootstrap.TargetDeviceID != server.bootstrap.TargetDeviceID {
+		t.Fatalf("approved bootstrap target = %q, want %q", requestResponse.Bootstrap.TargetDeviceID, server.bootstrap.TargetDeviceID)
 	}
 	if _, err := os.Lstat(filepath.Join(target, pathguard.ReservedControlDir)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("handler .supermover state error = %v, want not exist", err)
@@ -246,18 +291,18 @@ func TestPairingEndpointRejectsWrongVerificationCode(t *testing.T) {
 	httpServer := httptest.NewServer(server.Handler())
 	defer httpServer.Close()
 
-	req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/v1/pairing", nil)
+	req, err := http.NewRequest(http.MethodPost, httpServer.URL+"/v1/pairing/requests", strings.NewReader(`{"source_profile_id":"profile-local","source_device_id":"sha256:abcdef0123456789"}`))
 	if err != nil {
-		t.Fatalf("NewRequest(/v1/pairing) error = %v, want nil", err)
+		t.Fatalf("NewRequest(/v1/pairing/requests) error = %v, want nil", err)
 	}
 	req.Header.Set(pairing.VerificationCodeHeader, "wrong-token")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("GET /v1/pairing wrong code error = %v, want nil", err)
+		t.Fatalf("POST /v1/pairing/requests wrong code error = %v, want nil", err)
 	}
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("GET /v1/pairing wrong code status = %d body = %q, want 403", resp.StatusCode, body)
+		t.Fatalf("POST /v1/pairing/requests wrong code status = %d body = %q, want 403", resp.StatusCode, body)
 	}
 	if strings.Contains(body, server.bootstrap.TargetDeviceID) || strings.Contains(body, server.bootstrap.VerificationHash) {
 		t.Fatalf("GET /v1/pairing wrong code body = %q, must not expose bootstrap verifier material", body)
@@ -343,12 +388,17 @@ func TestListenAndServeFailsOnOccupiedPort(t *testing.T) {
 
 func readBody(t *testing.T, resp *http.Response) string {
 	t.Helper()
+	return string(readBodyBytes(t, resp))
+}
+
+func readBodyBytes(t *testing.T, resp *http.Response) []byte {
+	t.Helper()
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("ReadAll(response body) error = %v, want nil", err)
 	}
-	return string(body)
+	return body
 }
 
 func assertLowInfoResponse(t *testing.T, body string, p profile.Profile, source string, target string) {
