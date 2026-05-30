@@ -1799,7 +1799,11 @@
     selected detail surface remains scrollable below that fixed context. Sidebar
     navigation now scrolls independently, and the workstation footer uses a
     vertical fit fallback so constrained window heights keep core navigation and
-    status visible before showing secondary safety details.
+    status visible before showing secondary safety details. A follow-up pass
+    inspected the shared page host path for all top-level and merged workbench
+    pages and split the main-content top inset from the bottom inset, so page
+    headers and fixed owner toolbars sit closer to the window top without
+    reducing bottom breathing room.
   - Green evidence:
     - `swift test --package-path macos --filter 'WorkbenchNavigationTests|WorkbenchChromeTests|AppStoreTests'`
       (136 tests, 0 failures)

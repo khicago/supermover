@@ -123,8 +123,8 @@ Current feature dependency shape:
   app-owned chrome now localizes sidebar, Settings/Display Preferences, and
   Prepare/setup role guidance through packaged SwiftPM resources. Connect,
   Move, and Verify/Repair owner-page toolbars are fixed outside page-body
-  scrolling, with sidebar navigation scrolling independently under constrained
-  window heights, while task
+  scrolling, all page hosts share a tighter top inset with sidebar navigation
+  scrolling independently under constrained window heights, while task
   titles, command previews, profile/config, CLI arguments, evidence/proof
   values, artifact fields, and CLI output stay raw and audit-stable. The app
   also has native discovery/pairing command orchestration, selected wired

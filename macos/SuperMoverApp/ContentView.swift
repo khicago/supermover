@@ -308,7 +308,7 @@ struct ContentView: View {
       if hasFixedOwnerModeStrip {
         fixedOwnerModeStrip
           .padding(.horizontal, WorkbenchLayoutMetrics.mainContentHorizontalPadding)
-          .padding(.top, WorkbenchLayoutMetrics.mainContentVerticalPadding)
+          .padding(.top, WorkbenchLayoutMetrics.mainContentTopPadding)
           .padding(.bottom, WorkbenchLayoutMetrics.fixedOwnerModeStripBottomPadding)
           .background(SMColor.appBackground)
           .zIndex(2)
@@ -335,7 +335,7 @@ struct ContentView: View {
   private var scrollContentTopPadding: CGFloat {
     hasFixedOwnerModeStrip
       ? WorkbenchLayoutMetrics.fixedOwnerModeStripBodyGap
-      : WorkbenchLayoutMetrics.mainContentVerticalPadding
+      : WorkbenchLayoutMetrics.mainContentTopPadding
   }
 
   @ViewBuilder

@@ -70,9 +70,10 @@ enum WorkbenchLayoutMetrics {
   static let sidebarWidth: CGFloat = 250
   static let sidebarDividerWidth: CGFloat = 1
   static let mainContentHorizontalPadding: CGFloat = 30
+  static let mainContentTopPadding: CGFloat = 18
   static let mainContentVerticalPadding: CGFloat = 26
   static let fixedOwnerModeStripBottomPadding: CGFloat = 12
-  static let fixedOwnerModeStripBodyGap: CGFloat = 10
+  static let fixedOwnerModeStripBodyGap: CGFloat = 8
   static let mainContentScrollSpace = "workbench.mainContentScroll"
   static let detailPageMinimumPrimaryWidth: CGFloat = 620
   static let detailPageSpacing: CGFloat = 18
@@ -99,7 +100,7 @@ enum WorkbenchLayoutMetrics {
   }
 
   static func detailPageStickyHeaderOffset(for headerMinY: CGFloat) -> CGFloat {
-    let paneTop = mainContentVerticalPadding
+    let paneTop = mainContentTopPadding
     let resolvedHeaderMinY = headerMinY.isFinite ? headerMinY : paneTop
     return max(0, paneTop - resolvedHeaderMinY)
   }
@@ -716,7 +717,7 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
   let asideWidth: CGFloat?
   let asideLeading: Bool
   let spacing: CGFloat
-  @State private var headerMinY: CGFloat = WorkbenchLayoutMetrics.mainContentVerticalPadding
+  @State private var headerMinY: CGFloat = WorkbenchLayoutMetrics.mainContentTopPadding
   @ViewBuilder let headerAccessory: HeaderAccessory
   @ViewBuilder let primary: Primary
   @ViewBuilder let aside: Aside
@@ -756,7 +757,7 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
     .frame(maxWidth: .infinity, alignment: .leading)
     .onPreferenceChange(DetailPageHeaderMinYPreferenceKey.self) { value in
       let resolvedHeaderMinY =
-        value.isFinite ? value : WorkbenchLayoutMetrics.mainContentVerticalPadding
+        value.isFinite ? value : WorkbenchLayoutMetrics.mainContentTopPadding
       MainActor.assumeIsolated {
         if headerMinY != resolvedHeaderMinY {
           headerMinY = resolvedHeaderMinY
@@ -843,7 +844,7 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
 }
 
 private struct DetailPageHeaderMinYPreferenceKey: PreferenceKey {
-  static let defaultValue: CGFloat = WorkbenchLayoutMetrics.mainContentVerticalPadding
+  static let defaultValue: CGFloat = WorkbenchLayoutMetrics.mainContentTopPadding
 
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
     value = nextValue()

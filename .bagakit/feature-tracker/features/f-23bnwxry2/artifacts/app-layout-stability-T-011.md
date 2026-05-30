@@ -16,6 +16,11 @@ vertical scrolling or window resizing.
   safety panel before it pushes navigation or status out of view.
 - Record the fixed-owner-mode policy on `AppSection` rather than embedding that
   decision only inside the view tree.
+- Use one tighter main-content top inset for all page hosts and fixed owner
+  toolbars, while keeping the larger bottom inset for long-page breathing room.
+- Keep the sticky detail header's stop line tied to that same top inset so
+  Prepare, Connect, Move, Verify/Repair, Evidence, Task Dispatch, and Settings
+  do not drift apart.
 
 ## Non-goals
 
@@ -33,3 +38,5 @@ vertical scrolling or window resizing.
   the owner-section policy for fixed mode strips.
 - `WorkbenchChromeTests/testFixedOwnerModeStripLeavesDedicatedBodyGap` pins the
   body gap used when the fixed owner toolbar is present.
+- `WorkbenchChromeTests/testDetailPageStickyHeaderStopsAtPaneTopWithoutOvershoot`
+  pins the sticky header stop line to the shared top inset.

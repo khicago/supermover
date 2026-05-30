@@ -78,7 +78,7 @@ final class WorkbenchChromeTests: XCTestCase {
     }
 
     func testDetailPageStickyHeaderStopsAtPaneTopWithoutOvershoot() {
-        let paneTop = WorkbenchLayoutMetrics.mainContentVerticalPadding
+        let paneTop = WorkbenchLayoutMetrics.mainContentTopPadding
 
         XCTAssertEqual(WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: 40), 0)
         XCTAssertEqual(paneTop + WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: paneTop), paneTop)
@@ -89,6 +89,10 @@ final class WorkbenchChromeTests: XCTestCase {
     }
 
     func testFixedOwnerModeStripLeavesDedicatedBodyGap() {
+        XCTAssertLessThan(
+            WorkbenchLayoutMetrics.mainContentTopPadding,
+            WorkbenchLayoutMetrics.mainContentVerticalPadding
+        )
         XCTAssertGreaterThan(WorkbenchLayoutMetrics.fixedOwnerModeStripBottomPadding, 0)
         XCTAssertGreaterThan(WorkbenchLayoutMetrics.fixedOwnerModeStripBodyGap, 0)
         XCTAssertLessThan(
