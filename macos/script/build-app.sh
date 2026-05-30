@@ -43,21 +43,6 @@ build_icon() {
   iconutil -c icns "$iconset_dir" -o "$ICON_FILE"
 }
 
-require_icon_tooling() {
-  if [ ! -f "$ICON_SOURCE_FILE" ]; then
-    printf 'missing app icon source: %s\n' "$ICON_SOURCE_FILE" >&2
-    exit 5
-  fi
-  if ! command -v sips >/dev/null 2>&1; then
-    printf 'missing required tool for app icon generation: sips\n' >&2
-    exit 5
-  fi
-  if ! command -v iconutil >/dev/null 2>&1; then
-    printf 'missing required tool for app icon generation: iconutil\n' >&2
-    exit 5
-  fi
-}
-
 copy_optional_reference_images() {
   if [ -d "$REFERENCE_IMAGES_DIR" ]; then
     mkdir -p "$RESOURCES_DIR/ReferenceImages"
@@ -65,10 +50,11 @@ copy_optional_reference_images() {
   fi
 }
 
+"$MACOS_DIR/script/bootstrap-build-env.sh" --for-build-app
+
 cd "$MACOS_DIR"
 swift build -c release
 go build -o "$MACOS_DIR/dist/supermover" "$ROOT_DIR/cmd/supermover"
-require_icon_tooling
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_CONTENTS_DIR" "$RESOURCES_DIR" "$BUNDLE_BIN_DIR"

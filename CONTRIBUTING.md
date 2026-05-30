@@ -48,12 +48,16 @@ For macOS app, packaging, or acceptance changes, also run the relevant subset:
 
 ```bash
 swift test --package-path macos
+macos/script/bootstrap-build-env.sh --for-build-app
 macos/script/build-app.sh
 macos/script/audit-app.sh macos/dist/SuperMover.app
 ```
 
 Unsigned, ad-hoc signed, dirty, or unstapled local app audits are useful
 review evidence, but they are not distribution readiness.
+The bootstrap step creates project-local build directories and checks required
+macOS build tools; it does not silently install Go, signing identities, or
+notarization credentials.
 
 ## Change Discipline
 

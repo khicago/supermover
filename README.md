@@ -42,14 +42,21 @@ The module currently follows the Go version declared in `go.mod`.
 ### Local macOS App Build
 
 ```bash
+macos/script/bootstrap-build-env.sh --for-build-app
 macos/script/build-app.sh
 open macos/dist/SuperMover.app
 ```
 
-This creates a local packaged app with a bundled CLI and provenance manifest.
-Unless you also pass the release audit, Developer ID signing, notarization,
-stapling, and two-machine acceptance gates, this app is local review evidence
-only. It is not an official download release.
+`build-app.sh` runs the build-environment bootstrap before compiling. The
+bootstrap creates project-local build output directories and checks macOS build
+tools such as Go, Swift/Xcode Command Line Tools, `sips`, `iconutil`, and
+`codesign`. It does not silently install Go, signing certificates, keychain
+items, or notarization credentials.
+
+The build creates a local packaged app with a bundled CLI and provenance
+manifest. Unless you also pass the release audit, Developer ID signing,
+notarization, stapling, and two-machine acceptance gates, this app is local
+review evidence only. It is not an official download release.
 
 ## Quick Start: Local Auditable Migration
 

@@ -102,6 +102,26 @@ build-and-exec launch path: it builds the CLI to
 `.tmp/macos-app/supermover-dev`, then `exec`s that binary in the same foreground
 process. It does not require `cd` into the repository root before launch.
 
+For packaged app builds, initialize and verify the local build environment
+first:
+
+```bash
+macos/script/bootstrap-build-env.sh --for-build-app
+```
+
+`script/build-app.sh` runs the same bootstrap automatically before compiling.
+The bootstrap creates project-local `macos/.build` and `macos/dist` directories,
+checks that the host is macOS, and verifies Go, Swift/Xcode Command Line Tools,
+Git, `sips`, `iconutil`, `codesign`, and the app icon source. Add
+`--with-audit` to also check audit tooling such as `jq`, `spctl`, and `xcrun`;
+add `--with-notary` to also check notarization helpers such as `ditto` and
+`stapler`.
+
+The bootstrap is intentionally conservative. It does not silently install Go,
+Developer ID certificates, keychain items, or notarization credentials. If
+Xcode Command Line Tools are missing, pass `--install-xcode-tools` to request
+Apple's installer prompt, then rerun the bootstrap after installation finishes.
+
 To build a packaged local app and record packaging evidence:
 
 ```bash
@@ -225,8 +245,11 @@ not a substitute for the separate two-machine acceptance bundle.
   sidebar-plus-detail layout.
 - `script/build-app.sh` builds the release app and CLI bundle. Set
   `SUPERMOVER_CODESIGN_IDENTITY` to a Developer ID identity, or `-` for ad-hoc
-  local signing. When an identity is set, the script signs the nested bundled
-  CLI first and then signs the app bundle without using signing-time `--deep`.
+  local signing. Before compilation, it runs `script/bootstrap-build-env.sh
+  --for-build-app` so clean checkouts get project-local build directories and
+  deterministic build-tool checks. When an identity is set, the script signs the
+  nested bundled CLI first and then signs the app bundle without using
+  signing-time `--deep`.
   `script/notarize-app.sh` then packages the signed app, submits it through
   `xcrun notarytool`, retrieves the notarization log, staples the ticket, and
   reruns `script/audit-app.sh`. It refuses malformed submit output, including

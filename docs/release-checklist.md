@@ -30,6 +30,7 @@ Until every required gate below has passing evidence:
 
 ### macOS App
 
+- `macos/script/bootstrap-build-env.sh --for-build-app --with-audit --with-notary`
 - `swift test --package-path macos`
 - `macos/script/build-app.sh`
 - `macos/script/audit-app.sh macos/dist/SuperMover.app`
