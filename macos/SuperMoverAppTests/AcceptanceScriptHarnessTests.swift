@@ -1,6 +1,24 @@
 import XCTest
 
 final class AcceptanceScriptHarnessTests: XCTestCase {
+    func testBuildAppDefaultsToCleanSwiftReleaseBuildAndKeepsIncrementalExplicit() throws {
+        let repoRoot = AcceptanceScriptHarness.repoRootURL(file: #filePath)
+        let scriptURL = repoRoot.appendingPathComponent("macos/script/build-app.sh")
+        let source = try String(contentsOf: scriptURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains("CLEAN_SWIFT_RELEASE=true"))
+        XCTAssertTrue(source.contains("--incremental"))
+        XCTAssertTrue(source.contains("SUPERMOVER_BUILD_APP_INCREMENTAL"))
+        XCTAssertTrue(source.contains("rm -rf \"$BUILD_DIR\""))
+        XCTAssertTrue(source.contains("go build -trimpath -o"))
+
+        guard let cleanRange = source.range(of: "rm -rf \"$BUILD_DIR\""),
+              let swiftBuildRange = source.range(of: "swift build -c release") else {
+            return XCTFail("build-app.sh must clean Swift release artifacts before swift build")
+        }
+        XCTAssertLessThan(cleanRange.lowerBound, swiftBuildRange.lowerBound)
+    }
+
     func testBuildAppResourceCopyIncludesProcessedLocalizationDirectories() throws {
         let workDir = try AcceptanceScriptHarness.makeDirectory(named: "build-app-resources")
         defer { try? FileManager.default.removeItem(at: workDir) }

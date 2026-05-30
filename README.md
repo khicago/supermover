@@ -53,6 +53,12 @@ tools such as Go, Swift/Xcode Command Line Tools, `sips`, `iconutil`, and
 `codesign`. It does not silently install Go, signing certificates, keychain
 items, or notarization credentials.
 
+The packaged app script performs a clean Swift release build by default so
+stale release artifacts cannot hide command-line build failures. Use
+`macos/script/build-app.sh --incremental` or
+`SUPERMOVER_BUILD_APP_INCREMENTAL=1` only for local UI iteration, not as
+release, review, or acceptance evidence.
+
 The build creates a local packaged app with a bundled CLI and provenance
 manifest. Unless you also pass the release audit, Developer ID signing,
 notarization, stapling, and two-machine acceptance gates, this app is local

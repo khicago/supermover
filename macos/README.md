@@ -117,6 +117,13 @@ Git, `sips`, `iconutil`, `codesign`, and the app icon source. Add
 add `--with-notary` to also check notarization helpers such as `ditto` and
 `stapler`.
 
+`script/build-app.sh` cleans Swift release artifacts before compiling by
+default. This is intentional: the packaged app is release/review evidence, and
+a warm SwiftPM cache can hide source files that fail a fresh command-line
+release build. Use `script/build-app.sh --incremental` or
+`SUPERMOVER_BUILD_APP_INCREMENTAL=1` only for local iteration when you are not
+recording release, review, or acceptance evidence.
+
 The bootstrap is intentionally conservative. It does not silently install Go,
 Developer ID certificates, keychain items, or notarization credentials. If
 Xcode Command Line Tools are missing, pass `--install-xcode-tools` to request

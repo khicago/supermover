@@ -53,6 +53,11 @@ macos/script/build-app.sh
 macos/script/audit-app.sh macos/dist/SuperMover.app
 ```
 
+`macos/script/build-app.sh` defaults to a clean Swift release build. The
+`--incremental` flag and `SUPERMOVER_BUILD_APP_INCREMENTAL=1` are local
+iteration shortcuts only and must not be used as release, review, or acceptance
+evidence.
+
 Unsigned, ad-hoc signed, dirty, or unstapled local app audits are useful
 review evidence, but they are not distribution readiness.
 The bootstrap step creates project-local build directories and checks required

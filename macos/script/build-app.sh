@@ -17,6 +17,23 @@ REFERENCE_IMAGES_DIR="$ASSETS_DIR/ReferenceImages"
 ICON_NAME="SuperMover"
 ICON_FILE="$RESOURCES_DIR/$ICON_NAME.icns"
 CODESIGN_IDENTITY="${SUPERMOVER_CODESIGN_IDENTITY:-}"
+CLEAN_SWIFT_RELEASE=true
+
+usage() {
+  cat <<'EOF'
+Usage: macos/script/build-app.sh [--clean|--incremental]
+
+Build a packaged local SuperMover.app with the bundled CLI and provenance.
+
+Options:
+  --clean        Clean Swift release build artifacts before compiling. Default.
+  --incremental Reuse Swift release artifacts for local iteration only.
+  -h, --help     Show this help.
+
+SUPERMOVER_BUILD_APP_INCREMENTAL=1 is equivalent to --incremental.
+Do not use incremental mode as release or review evidence.
+EOF
+}
 
 json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
@@ -50,11 +67,42 @@ copy_optional_reference_images() {
   fi
 }
 
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --clean)
+      CLEAN_SWIFT_RELEASE=true
+      ;;
+    --incremental)
+      CLEAN_SWIFT_RELEASE=false
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Unknown option: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [ "${SUPERMOVER_BUILD_APP_INCREMENTAL:-}" = "1" ]; then
+  CLEAN_SWIFT_RELEASE=false
+fi
+
 "$MACOS_DIR/script/bootstrap-build-env.sh" --for-build-app
 
 cd "$MACOS_DIR"
+if [ "$CLEAN_SWIFT_RELEASE" = "true" ]; then
+  rm -rf "$BUILD_DIR"
+  printf 'Cleaned Swift release build directory: %s\n' "$BUILD_DIR"
+else
+  printf 'Using incremental Swift release artifacts. Do not use this mode for release evidence.\n'
+fi
 swift build -c release
-go build -o "$MACOS_DIR/dist/supermover" "$ROOT_DIR/cmd/supermover"
+go build -trimpath -o "$MACOS_DIR/dist/supermover" "$ROOT_DIR/cmd/supermover"
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_CONTENTS_DIR" "$RESOURCES_DIR" "$BUNDLE_BIN_DIR"

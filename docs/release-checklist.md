@@ -33,6 +33,9 @@ Until every required gate below has passing evidence:
 - `macos/script/bootstrap-build-env.sh --for-build-app --with-audit --with-notary`
 - `swift test --package-path macos`
 - `macos/script/build-app.sh`
+  - must run in its default clean Swift release mode; do not use
+    `--incremental` or `SUPERMOVER_BUILD_APP_INCREMENTAL=1` for release
+    evidence
 - `macos/script/audit-app.sh macos/dist/SuperMover.app`
 - Developer ID signing evidence when distribution readiness is claimed
 - notarization evidence from `macos/script/notarize-app.sh`
