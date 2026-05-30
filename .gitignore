@@ -2,6 +2,7 @@
 .bagakit
 .agents
 .worktrees
+.DS_Store
 coverage.out
 macos/.build
 macos/DerivedData
