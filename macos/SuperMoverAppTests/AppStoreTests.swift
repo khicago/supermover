@@ -2190,8 +2190,22 @@ final class AppStoreTests: XCTestCase {
             .appendingPathComponent("SuperMoverApp")
             .appendingPathComponent("ContentView.swift")
         let source = try String(contentsOf: contentViewURL, encoding: .utf8)
+        guard let functionStart = source.range(of: "private func taskDispatchInputSummary") else {
+            XCTFail("task dispatch summary helper is missing")
+            return
+        }
+        let functionSource = source[functionStart.lowerBound...]
+        guard let profileInitStart = functionSource.range(of: "case .profileInit:") else {
+            XCTFail("profile init dispatch summary branch is missing")
+            return
+        }
+        let remainingSource = functionSource[profileInitStart.lowerBound...]
+        let profileInitBlockEnd = remainingSource.range(of: "\n    case .profileSetTarget:")?.lowerBound ?? remainingSource.endIndex
+        let profileInitBlock = String(remainingSource[..<profileInitBlockEnd])
 
-        XCTAssertTrue(source.contains("case .profileInit:\n      inputs.append(\"source folder\")"))
+        XCTAssertTrue(profileInitBlock.contains("appChromeLocalization.text(\"source folder\")"))
+        XCTAssertTrue(profileInitBlock.contains("appChromeLocalization.text(\"config identity\")"))
+        XCTAssertFalse(profileInitBlock.localizedCaseInsensitiveContains("target"))
         XCTAssertFalse(
             source.contains("Target Mac destination path"),
             "Profile init dispatch copy should not ask Source to provide a Target-local destination path."

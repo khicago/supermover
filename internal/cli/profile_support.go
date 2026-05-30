@@ -2,13 +2,11 @@ package cli
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/khicago/supermover/internal/control"
 	"github.com/khicago/supermover/internal/pathguard"
@@ -64,20 +62,6 @@ func preflightProfileWrite(path string) error {
 		return closeErr
 	}
 	return os.Remove(name)
-}
-
-func pairingProfileSnapshot(p profile.Profile, receiptID string, capturedAt time.Time) (control.ProfileSnapshot, error) {
-	payload, err := json.Marshal(p)
-	if err != nil {
-		return control.ProfileSnapshot{}, err
-	}
-	return control.ProfileSnapshot{
-		Version:    control.CurrentVersion,
-		ID:         "profile-" + receiptID,
-		ProfileID:  p.ProfileID,
-		CapturedAt: capturedAt.UTC().Format(time.RFC3339Nano),
-		Profile:    payload,
-	}, nil
 }
 
 func targetDirFromProfile(p profile.Profile) (string, error) {
