@@ -117,6 +117,28 @@ Continue using global skills when they apply, especially `go-testing`,
   these sessions as user-owned operational evidence unless the user gives an
   explicit, path-specific deletion instruction in the current conversation.
 
+## Root Cause And Sweep Discipline
+
+When a bug, confusing UX, test failure, inconsistent copy, unsafe state, or
+user-reported defect is found, do not stop at the first visible symptom.
+
+Before claiming the issue is fixed or contained:
+
+1. Identify the root cause and the boundary that allowed it: code path,
+   contract, state model, document wording, test fixture, or validation gap.
+2. Search for sibling instances across analogous roles, pages, commands,
+   scripts, tests, localized resources, docs, and tracker artifacts. Prefer
+   `rg` plus focused code reads over memory.
+3. Fix every in-scope sibling instance in the same intent boundary. If a
+   similar-looking hit is intentionally not fixed, record why it is unrelated,
+   already covered, or deferred.
+4. Add or update evidence that pins the shared rule, not only the reported
+   symptom. For safety-critical flows, this normally means a behavior test.
+5. In the closeout, state the root cause, sweep scope, changed files, no-hit or
+   intentionally-skipped areas, validation, and remaining risk. If root cause
+   is not understood or reproduced, say so explicitly and do not call the issue
+   fixed.
+
 ## Validation
 
 Use targeted tests during development. Before claiming a non-trivial change is

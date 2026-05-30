@@ -1815,6 +1815,32 @@
     installed-app transfer success, Local Network/firewall prompt evidence,
     Developer ID notarization/staple/Gatekeeper proof, or final T-011 release
     closure.
+- Step: T-011 recent issue root-cause sweep.
+  - Outcome: `AGENTS.md` now requires root-cause analysis, sibling-surface
+    search, in-scope fixes, validation evidence, and explicit closeout
+    boundaries whenever a bug, confusing UX, inconsistent copy, unsafe state,
+    or user-reported defect is found.
+  - Outcome: the recent Prepare ownership, raw-looking button chrome, and
+    workbench scroll/top-inset issues were rechecked under that rule. The
+    Source/Target ownership and layout fixes remain aligned with the current
+    code; no additional raw Browse/New button-style leak was found in active
+    file-action surfaces.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'AppStoreTests/test(ProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReady|ProfileInitCommandPreviewUsesSourceOnlyAndIgnoresTargetPathInput|TaskRunGateAllowsProfileInitWithReadableSourceOnly|SetupGuideExplainsEmptySourcePreparationInUserOrder|LocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide)|WorkbenchChromeTests|WorkbenchNavigationTests'`
+      (21 tests, 0 failures)
+    - `go test -count=1 ./internal/profile ./internal/cli -run 'Test(NewDefault|NewSourceOnly|ProfileInit|ProfileSetTarget)'`
+      (pass)
+    - `bash "$BAGAKIT_FEATURE_TRACKER_SKILL_DIR/scripts/feature-tracker.sh" validate-tracker --root .`
+      (pass)
+    - `git diff --check`: pass.
+  - Detail:
+    Additional sweep notes are recorded in
+    `artifacts/recent-issue-root-cause-sweep-T-011.md`.
+  - Boundary:
+    This is a process and current-surface hygiene pass. It does not claim real
+    two-Mac installed-app transfer success, Local Network/firewall prompt
+    evidence, signed/notarized distribution readiness, Merkle/current-source
+    proof, or final T-011 release closure.
 
 ## Residual Risks
 
