@@ -72,9 +72,11 @@ enum WorkbenchLayoutMetrics {
   static let mainContentHorizontalPadding: CGFloat = 30
   static let mainContentTopPadding: CGFloat = 18
   static let mainContentVerticalPadding: CGFloat = 26
-  static let fixedOwnerModeStripBottomPadding: CGFloat = 12
-  static let fixedOwnerModeStripBodyGap: CGFloat = 8
+  static let fixedOwnerModeStripBottomPadding: CGFloat = 8
+  static let fixedOwnerModeStripBodyGap: CGFloat = 6
   static let mainContentScrollSpace = "workbench.mainContentScroll"
+  static let detailPageHeaderCollapseThreshold: CGFloat = 92
+  static let detailPageHeaderExpandThreshold: CGFloat = 132
   static let detailPageMinimumPrimaryWidth: CGFloat = 620
   static let detailPageSpacing: CGFloat = 18
   static let devicesAsideWidth: CGFloat = 300
@@ -97,6 +99,19 @@ enum WorkbenchLayoutMetrics {
         + detailPageSpacing
         + asideWidth
     )
+  }
+
+  static func detailPageHeaderCollapsed(
+    currentlyCollapsed: Bool,
+    markerMinY: CGFloat
+  ) -> Bool {
+    guard markerMinY.isFinite else {
+      return false
+    }
+    if currentlyCollapsed {
+      return markerMinY < detailPageHeaderExpandThreshold
+    }
+    return markerMinY < detailPageHeaderCollapseThreshold
   }
 
   static func wrappedRowMetrics(
@@ -622,11 +637,20 @@ struct WorkbenchPageHeaderStatusItem: View {
   }
 }
 
+enum WorkbenchHeaderBarPresentation {
+  case expanded
+  case compact
+}
+
 struct WorkbenchPageHeader: View {
   let model: WorkbenchPageHeaderModel
+  var presentation: WorkbenchHeaderBarPresentation = .expanded
 
   private var titleSize: CGFloat {
-    model.prominence == .hero ? 28 : 22
+    if presentation == .compact {
+      return 15
+    }
+    return model.prominence == .hero ? 28 : 22
   }
 
   private var subtitleSize: CGFloat {
@@ -638,6 +662,15 @@ struct WorkbenchPageHeader: View {
   }
 
   var body: some View {
+    switch presentation {
+    case .expanded:
+      expandedBody
+    case .compact:
+      compactBody
+    }
+  }
+
+  private var expandedBody: some View {
     VStack(alignment: .leading, spacing: 6) {
       if model.eyebrow != nil || model.badge != nil {
         HStack(alignment: .center, spacing: 10) {
@@ -662,30 +695,72 @@ struct WorkbenchPageHeader: View {
       )
     }
   }
+
+  private var compactBody: some View {
+    HStack(alignment: .center, spacing: 8) {
+      if let eyebrow = model.eyebrow {
+        Text(eyebrow)
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(SMColor.secondaryText)
+          .lineLimit(1)
+      }
+
+      Text(model.title)
+        .font(.system(size: titleSize, weight: .semibold))
+        .foregroundStyle(SMColor.primaryText)
+        .lineLimit(1)
+
+      if let badge = model.badge {
+        WorkbenchPageHeaderBadge(model: badge)
+      }
+    }
+    .help(model.subtitle)
+  }
 }
 
 struct WorkbenchHeaderBar<Leading: View, Accessory: View>: View {
   let accessoryPlacement: VerticalAlignment
+  let presentation: WorkbenchHeaderBarPresentation
   @ViewBuilder let leading: Leading
   @ViewBuilder let accessory: Accessory
 
   init(
     accessoryPlacement: VerticalAlignment = .center,
+    presentation: WorkbenchHeaderBarPresentation = .expanded,
     @ViewBuilder leading: () -> Leading,
     @ViewBuilder accessory: () -> Accessory
   ) {
     self.accessoryPlacement = accessoryPlacement
+    self.presentation = presentation
     self.leading = leading()
     self.accessory = accessory()
   }
 
+  @ViewBuilder
   var body: some View {
-    WorkbenchResponsiveBar(alignment: accessoryPlacement) {
+    switch presentation {
+    case .expanded:
+      content
+        .panelSurface(.toolbarStrip)
+    case .compact:
+      content
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(SMColor.appBackground)
+        .overlay(alignment: .bottom) {
+          Rectangle()
+            .fill(SMColor.hairline)
+            .frame(height: 1)
+        }
+    }
+  }
+
+  private var content: some View {
+    WorkbenchResponsiveBar(alignment: accessoryPlacement, spacing: presentation == .compact ? 10 : 12) {
       leading
     } trailing: {
       accessory
     }
-    .panelSurface(.toolbarStrip)
   }
 }
 
@@ -693,12 +768,14 @@ extension WorkbenchHeaderBar where Leading == WorkbenchPageHeader {
   init(
     pageHeader: WorkbenchPageHeaderModel,
     accessoryPlacement: VerticalAlignment = .center,
+    presentation: WorkbenchHeaderBarPresentation = .expanded,
     @ViewBuilder accessory: () -> Accessory
   ) {
     self.init(
       accessoryPlacement: accessoryPlacement,
+      presentation: presentation,
       leading: {
-        WorkbenchPageHeader(model: pageHeader)
+        WorkbenchPageHeader(model: pageHeader, presentation: presentation)
       },
       accessory: accessory
     )
@@ -706,6 +783,8 @@ extension WorkbenchHeaderBar where Leading == WorkbenchPageHeader {
 }
 
 struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer: View>: View {
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHeaderCollapsed = false
   let header: WorkbenchPageHeaderModel
   let headerAccessoryPlacement: VerticalAlignment
   let asideWidth: CGFloat?
@@ -741,21 +820,37 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
   var body: some View {
     LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
       Section {
+        DetailPageHeaderCollapseProbe()
         bodyContent
           .padding(.top, spacing)
       } header: {
-        headerBar
+        headerBar(isCollapsed: isHeaderCollapsed)
           .background(SMColor.appBackground)
           .zIndex(1)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    .onPreferenceChange(DetailPageHeaderCollapseMarkerPreferenceKey.self) { markerMinY in
+      MainActor.assumeIsolated {
+        let nextValue = WorkbenchLayoutMetrics.detailPageHeaderCollapsed(
+          currentlyCollapsed: isHeaderCollapsed,
+          markerMinY: markerMinY
+        )
+        guard nextValue != isHeaderCollapsed else {
+          return
+        }
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.16)) {
+          isHeaderCollapsed = nextValue
+        }
+      }
+    }
   }
 
-  private var headerBar: some View {
+  private func headerBar(isCollapsed: Bool) -> some View {
     WorkbenchHeaderBar(
       pageHeader: header,
-      accessoryPlacement: headerAccessoryPlacement
+      accessoryPlacement: isCollapsed ? .center : headerAccessoryPlacement,
+      presentation: isCollapsed ? .compact : .expanded
     ) {
       headerAccessory
     }
@@ -813,6 +908,29 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
     } else {
       primary
     }
+  }
+}
+
+private struct DetailPageHeaderCollapseProbe: View {
+  var body: some View {
+    Color.clear
+      .frame(height: 0)
+      .background(
+        GeometryReader { proxy in
+          Color.clear.preference(
+            key: DetailPageHeaderCollapseMarkerPreferenceKey.self,
+            value: proxy.frame(in: .named(WorkbenchLayoutMetrics.mainContentScrollSpace)).minY
+          )
+        }
+      )
+  }
+}
+
+private struct DetailPageHeaderCollapseMarkerPreferenceKey: PreferenceKey {
+  static let defaultValue = CGFloat.greatestFiniteMagnitude
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = nextValue()
   }
 }
 

@@ -73,6 +73,11 @@ Recent issues checked:
   belonged to the scroll view's layout flow. Real scrolling can clip or cull
   that original layout frame, so Prepare and sibling detail pages could still
   lose their title.
+- Follow-up root cause: after switching to native pinned headers, the shared
+  header still had only one visual state. Scrolling pinned the full expanded
+  banner forever instead of collapsing into top chrome. Owner pages also kept a
+  fixed owner title above a child detail page title, creating a two-title stack
+  on Connect, Move, and Verify/Repair.
 - Sweep: checked the shared workbench chrome metrics, fixed owner-mode toolbar
   path, sidebar navigation, `DetailPageHost` sticky-header behavior, and every
   top-level/merged section route. Control Room remains a custom page, but it
@@ -83,6 +88,10 @@ Recent issues checked:
   `DetailPageHost` now uses native pinned section headers, so Prepare, Task
   Dispatch, Settings, and other shared detail hosts keep their page header
   anchored during body scroll.
+- Result: fixed owner-mode strips now render only compact mode controls, and
+  `DetailPageHost` switches from expanded banner to compact integrated header
+  chrome after scroll threshold hysteresis. The Sync page's first card title is
+  also distinct from its page title.
 - Boundary: this is layout-stability evidence only. It does not replace a
   future full visual QA pass across real window sizes.
 - Key refs:
@@ -107,6 +116,11 @@ Recent issues checked:
 - `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
   passed with 31 tests after replacing the old offset shim with a native pinned
   `DetailPageHost` header.
+- `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
+  passed with 33 tests after owner-title deduplication and compact-header
+  guards.
+- `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`
+  passed.
 
 ## Closeout Boundary
 

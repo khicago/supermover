@@ -37,7 +37,7 @@
 "setup.header.subtitle" = "先选择这台 Mac 的角色和迁移配置文件，再运行明确命令。";
 "setup.role.card.title" = "角色";
 "setup.role.card.subtitle" = "先确定这台 Mac 的职责，再选择配置文件和目录证据。";
-"setup.role.field.title" = "角色";
+"setup.role.field.title" = "这台 Mac";
 "setup.config.card.title" = "迁移设置";
 "setup.config.card.subtitle" = "SuperMover 会把设置保存到推荐配置。已有配置和自定义位置放在高级选项里。";
 "setup.config.selectedFile.title" = "当前设置";
@@ -377,6 +377,7 @@
 "Preflight" = "预检";
 "Prune Approvals" = "清理审批";
 "Prune Review" = "清理复核";
+"Queue and foreground loops" = "队列与前台循环";
 "Queue commands are durable evidence operations. Run/discover-run are bounded. Loop/watch/network loop are supervised foreground processes and stop when their process is terminated." = "队列命令是持久证据操作。run/discover-run 是有界运行；loop/watch/network loop 是受管前台进程，进程结束即停止。";
 "Queue evidence, bounded passes, foreground loops, and discovery-gated network runs are CLI-backed surfaces." = "队列证据、有界批次、前台循环和发现门控网络运行都由 CLI 支撑。";
 "Read-only review mode" = "只读复核模式";

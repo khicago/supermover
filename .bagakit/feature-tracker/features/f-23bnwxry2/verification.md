@@ -1895,6 +1895,33 @@
     transfer success, Local Network/firewall prompt evidence,
     signed/notarized distribution readiness, Merkle/current-source proof, or
     final T-011 release closure.
+- Step: T-011 owner-title deduplication and compact pinned-header chrome.
+  - Outcome: Connect, Move, and Verify/Repair owner strips now render compact
+    mode controls only. The active child detail page owns the page title, so
+    those owner pages no longer stack an owner title above a child title.
+  - Outcome: `DetailPageHost` now has expanded and compact presentations. It
+    keeps native pinned section headers, uses a read-only scroll marker with
+    threshold hysteresis only to switch presentation, and never offsets the
+    header to simulate stickiness.
+  - Outcome: Sync's first content card now uses a distinct localized title
+    instead of repeating the page heading, and Prepare's role field label no
+    longer repeats its card title.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
+      (33 tests, 0 failures)
+    - `swift build --package-path macos --product SuperMoverApp`: pass.
+    - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`:
+      pass.
+    - `git diff --check`: pass.
+  - Detail:
+    Updated notes are recorded in
+    `artifacts/app-layout-stability-T-011.md` and
+    `artifacts/recent-issue-root-cause-sweep-T-011.md`.
+  - Boundary:
+    This is macOS app chrome/layout work only. It does not claim real two-Mac
+    installed-app transfer success, Local Network/firewall prompt evidence,
+    signed/notarized distribution readiness, Merkle/current-source proof, or
+    final T-011 release closure.
 
 ## Residual Risks
 

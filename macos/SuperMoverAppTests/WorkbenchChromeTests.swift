@@ -94,12 +94,35 @@ final class WorkbenchChromeTests: XCTestCase {
             hostSource.contains("LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders])")
         )
         XCTAssertTrue(hostSource.contains("Section {"))
-        XCTAssertFalse(hostSource.contains("GeometryReader"))
+        XCTAssertTrue(hostSource.contains("DetailPageHeaderCollapseProbe()"))
+        XCTAssertTrue(hostSource.contains("WorkbenchLayoutMetrics.detailPageHeaderCollapsed"))
         XCTAssertFalse(hostSource.contains("stickyHeaderOffset"))
         XCTAssertFalse(hostSource.contains("headerPositionReader"))
         XCTAssertFalse(hostSource.contains("offset(y:"))
         XCTAssertFalse(source.contains("detailPageStickyHeaderOffset"))
         XCTAssertFalse(source.contains("DetailPageHeaderMinYPreferenceKey"))
+    }
+
+    func testDetailPageHeaderCollapseMetricsUseHysteresis() {
+        XCTAssertLessThan(
+            WorkbenchLayoutMetrics.detailPageHeaderCollapseThreshold,
+            WorkbenchLayoutMetrics.detailPageHeaderExpandThreshold
+        )
+        XCTAssertFalse(
+            WorkbenchLayoutMetrics.detailPageHeaderCollapsed(currentlyCollapsed: false, markerMinY: 140)
+        )
+        XCTAssertTrue(
+            WorkbenchLayoutMetrics.detailPageHeaderCollapsed(currentlyCollapsed: false, markerMinY: 80)
+        )
+        XCTAssertTrue(
+            WorkbenchLayoutMetrics.detailPageHeaderCollapsed(currentlyCollapsed: true, markerMinY: 100)
+        )
+        XCTAssertFalse(
+            WorkbenchLayoutMetrics.detailPageHeaderCollapsed(currentlyCollapsed: true, markerMinY: 140)
+        )
+        XCTAssertFalse(
+            WorkbenchLayoutMetrics.detailPageHeaderCollapsed(currentlyCollapsed: true, markerMinY: .nan)
+        )
     }
 
     func testFixedOwnerModeStripLeavesDedicatedBodyGap() {

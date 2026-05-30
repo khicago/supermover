@@ -37,7 +37,7 @@
 "setup.header.subtitle" = "Prepare this Mac's role and migration config file before running explicit commands.";
 "setup.role.card.title" = "Role";
 "setup.role.card.subtitle" = "Choose what this Mac is doing before selecting config and folder evidence.";
-"setup.role.field.title" = "Role";
+"setup.role.field.title" = "This Mac";
 "setup.config.card.title" = "Migration Setup";
 "setup.config.card.subtitle" = "SuperMover saves this setup in a recommended config file. Existing or custom files are advanced options.";
 "setup.config.selectedFile.title" = "Current Setup";
@@ -377,6 +377,7 @@
 "Preflight" = "Preflight";
 "Prune Approvals" = "Prune Approvals";
 "Prune Review" = "Prune Review";
+"Queue and foreground loops" = "Queue and foreground loops";
 "Queue commands are durable evidence operations. Run/discover-run are bounded. Loop/watch/network loop are supervised foreground processes and stop when their process is terminated." = "Queue commands are durable evidence operations. Run/discover-run are bounded. Loop/watch/network loop are supervised foreground processes and stop when their process is terminated.";
 "Queue evidence, bounded passes, foreground loops, and discovery-gated network runs are CLI-backed surfaces." = "Queue evidence, bounded passes, foreground loops, and discovery-gated network runs are CLI-backed surfaces.";
 "Read-only review mode" = "Read-only review mode";

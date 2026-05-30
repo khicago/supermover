@@ -312,7 +312,7 @@ struct AppChromeLocalization {
         case .setupRoleCardSubtitle:
             return "Choose what this Mac is doing before selecting config and folder evidence."
         case .setupRoleFieldTitle:
-            return "Role"
+            return "This Mac"
         case .setupConfigCardTitle:
             return "Migration Setup"
         case .setupConfigCardSubtitle:

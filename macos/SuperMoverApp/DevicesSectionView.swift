@@ -31,30 +31,27 @@ struct DevicesSectionView: View {
   }
 
   private var headerAccessory: some View {
-    VStack(alignment: .trailing, spacing: 10) {
-        HStack(spacing: 10) {
-          ActionButton(localization.text("Refresh"), systemImage: "arrow.clockwise", action: onRefresh)
+    HStack(alignment: .center, spacing: 10) {
+      Text(model.lastUpdatedLabel)
+        .font(.system(size: 12))
+        .foregroundStyle(SMColor.secondaryText)
+        .lineLimit(1)
 
-          if let onMoreActions {
-            IconActionButton(systemImage: "ellipsis", action: onMoreActions)
-          }
-        }
+      if let status = model.headerStatus {
+        StatusBadge(
+          item: .init(
+            icon: status.systemImage,
+            label: status.label,
+            tint: status.tint
+          ),
+          prominence: .plain
+        )
+      }
 
-      HStack(spacing: 10) {
-        Text(model.lastUpdatedLabel)
-          .font(.system(size: 12))
-          .foregroundStyle(SMColor.secondaryText)
+      ActionButton(localization.text("Refresh"), systemImage: "arrow.clockwise", action: onRefresh)
 
-        if let status = model.headerStatus {
-          StatusBadge(
-            item: .init(
-              icon: status.systemImage,
-              label: status.label,
-              tint: status.tint
-            ),
-            prominence: .plain
-          )
-        }
+      if let onMoreActions {
+        IconActionButton(systemImage: "ellipsis", action: onMoreActions)
       }
     }
   }

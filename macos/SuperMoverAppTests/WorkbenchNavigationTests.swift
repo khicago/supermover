@@ -77,6 +77,22 @@ final class WorkbenchNavigationTests: XCTestCase {
         XCTAssertEqual(source.components(separatedBy: "private func ownerModeStrip<ID: Hashable>").count - 1, 1)
     }
 
+    func testOwnerModeStripDoesNotDuplicateOwnerPageTitles() throws {
+        let source = try contentViewSource()
+        guard
+            let stripStart = source.range(of: "private func ownerModeStrip<ID: Hashable>"),
+            let nextView = source.range(of: "\n  @ViewBuilder\n  private var connectView", range: stripStart.upperBound..<source.endIndex)
+        else {
+            return XCTFail("Expected ownerModeStrip source section")
+        }
+        let stripSource = String(source[stripStart.lowerBound..<nextView.lowerBound])
+
+        XCTAssertFalse(stripSource.contains("PanelHeader("))
+        XCTAssertFalse(stripSource.contains("title:"))
+        XCTAssertFalse(stripSource.contains("subtitle:"))
+        XCTAssertTrue(stripSource.contains("Spacer(minLength: 0)"))
+    }
+
     func testEvidencePageUsesSidebarIdentityAsPageTitle() throws {
         let repoRoot = AcceptanceScriptHarness.repoRootURL()
         let evidenceViewURL = repoRoot

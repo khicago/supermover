@@ -349,8 +349,6 @@ struct ContentView: View {
     switch selectedSection {
     case .devices, .pairing:
       ownerModeStrip(
-        title: AppSection.devices.localizedTitle(using: appChromeLocalization),
-        subtitle: appChromeLocalization.text("Device state, pairing, receiver readiness."),
         options: [
           OwnerModeOption(
             id: ConnectSurface.deviceState,
@@ -367,8 +365,6 @@ struct ContentView: View {
       ) { selectedConnectSurface = $0 }
     case .transfer, .sync:
       ownerModeStrip(
-        title: AppSection.transfer.localizedTitle(using: appChromeLocalization),
-        subtitle: appChromeLocalization.text("Transfer and sync modes."),
         options: [
           OwnerModeOption(
             id: MoveSurface.transfer,
@@ -385,8 +381,6 @@ struct ContentView: View {
       ) { selectedMoveSurface = $0 }
     case .verification, .driftReview:
       ownerModeStrip(
-        title: AppSection.verification.localizedTitle(using: appChromeLocalization),
-        subtitle: appChromeLocalization.text("Verify, drift, reconcile, prune."),
         options: [
           OwnerModeOption(
             id: VerifyRepairSurface.verification,
@@ -407,35 +401,26 @@ struct ContentView: View {
   }
 
   private func ownerModeStrip<ID: Hashable>(
-    title: String,
-    subtitle: String,
     options: [OwnerModeOption<ID>],
     selected: ID,
     select: @escaping (ID) -> Void
   ) -> some View {
-    WorkbenchToolbarStrip {
-      WorkbenchResponsiveBar(alignment: .center, spacing: 12) {
-        PanelHeader(
-          title: title,
-          subtitle: subtitle,
-          titleSize: 17,
-          subtitleSize: 11,
-          spacing: 4
-        )
-      } trailing: {
-        HStack(spacing: 10) {
-          ForEach(options) { option in
-            ownerModeButton(
-              option.title,
-              systemImage: option.systemImage,
-              isSelected: selected == option.id
-            ) {
-              select(option.id)
-            }
+    HStack(spacing: 0) {
+      Spacer(minLength: 0)
+
+      HStack(spacing: 10) {
+        ForEach(options) { option in
+          ownerModeButton(
+            option.title,
+            systemImage: option.systemImage,
+            isSelected: selected == option.id
+          ) {
+            select(option.id)
           }
         }
       }
     }
+    .frame(maxWidth: .infinity, alignment: .trailing)
   }
 
   @ViewBuilder
@@ -1889,7 +1874,7 @@ struct ContentView: View {
       },
       primary: {
         ScreenCard(
-          title: AppSection.sync.localizedHeading(using: appChromeLocalization),
+          title: appChromeLocalization.text("Queue and foreground loops"),
           subtitle:
             appChromeLocalization.text("Queue evidence, bounded passes, foreground loops, and discovery-gated network runs are CLI-backed surfaces.")
         ) {

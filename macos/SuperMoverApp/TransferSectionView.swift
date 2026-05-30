@@ -46,49 +46,43 @@ struct TransferSectionView: View {
   }
 
   private var headerBar: some View {
-    HStack(alignment: .top, spacing: 16) {
+    HStack(alignment: .center, spacing: 10) {
       if let badge = model.headerBadge {
         statusBadge(badge)
       }
 
-      Spacer(minLength: 12)
+      if let updated = model.lastUpdatedLabel {
+        Label(updated, systemImage: "clock")
+          .font(.system(size: 12, weight: .medium))
+          .foregroundStyle(SMColor.secondaryText)
+          .lineLimit(1)
+      }
 
-      VStack(alignment: .trailing, spacing: 10) {
-        HStack(spacing: 10) {
-          if let primaryControl {
-            Button(action: primaryControl.action) {
-              Label(primaryControl.title, systemImage: primaryControl.systemImage)
-                .font(.system(size: 13, weight: .semibold))
-                .padding(.horizontal, 16)
-                .padding(.vertical, 11)
-                .buttonSurface(primaryControl.prominence.buttonChrome)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(primaryControl.prominence.foregroundStyle)
-          }
+      if let note = model.headerNote {
+        Text(note)
+          .font(.system(size: 12))
+          .foregroundStyle(SMColor.secondaryText)
+          .lineLimit(1)
+      }
 
-          if let secondaryControl {
-            ActionButton(
-              secondaryControl.title,
-              systemImage: secondaryControl.systemImage,
-              action: secondaryControl.action
-            )
-          }
+      if let primaryControl {
+        Button(action: primaryControl.action) {
+          Label(primaryControl.title, systemImage: primaryControl.systemImage)
+            .font(.system(size: 13, weight: .semibold))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .buttonSurface(primaryControl.prominence.buttonChrome)
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(primaryControl.prominence.foregroundStyle)
+      }
 
-        HStack(spacing: 10) {
-          if let updated = model.lastUpdatedLabel {
-            Label(updated, systemImage: "clock")
-              .font(.system(size: 12, weight: .medium))
-              .foregroundStyle(SMColor.secondaryText)
-          }
-
-          if let note = model.headerNote {
-            Text(note)
-              .font(.system(size: 12))
-              .foregroundStyle(SMColor.secondaryText)
-          }
-        }
+      if let secondaryControl {
+        ActionButton(
+          secondaryControl.title,
+          systemImage: secondaryControl.systemImage,
+          action: secondaryControl.action
+        )
       }
     }
   }
