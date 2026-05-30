@@ -558,15 +558,11 @@ struct ContentView: View {
         ) {
           store.browseSourceRoot()
         }
-        pathField(
+        field(
           appChromeLocalization.text(.setupTargetRootFieldTitle),
           text: $store.targetRootPath,
-          placeholder: appChromeLocalization.text(.setupTargetRootPlaceholder),
-          readiness: targetRootReadiness,
-          browseTitle: appChromeLocalization.text(.setupActionBrowseTargetRoot)
-        ) {
-          store.browseTargetRoot()
-        }
+          placeholder: appChromeLocalization.text(.setupTargetRootPlaceholder)
+        )
       }
     case .target:
       pathField(
@@ -619,7 +615,10 @@ struct ContentView: View {
   @ViewBuilder
   private func setupConfigCreationAction(for step: SetupGuide.Step) -> some View {
     if step.primaryTask == .profileInit, let title = step.primaryActionTitle {
-      let canCreate = sourceRootReadiness == "readable" && targetRootReadiness == "writable"
+      let hasTargetDestination = !store.targetRootPath
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .isEmpty
+      let canCreate = sourceRootReadiness == "readable" && hasTargetDestination
       PrimaryActionButton(title, systemImage: "doc.badge.plus", isEnabled: canCreate) {
         if store.selectedRole == .source && (profileSelectionState == .none || profileSelectionState == .missingFile) {
           store.useRecommendedProfileDestination()

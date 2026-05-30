@@ -909,17 +909,22 @@ Still not complete:
     paths, and profile identity fields remain available only under Advanced
     options. The ordinary config card no longer shows competing file-picking
     buttons.
-  - Empty source/target directory fields no longer show orange access badges;
-    readiness appears only after a user enters or chooses a path. The primary
-    create action is disabled until the source directory is readable and the
-    target directory is writable.
+  - Empty local directory fields no longer show orange access badges;
+    readiness appears only after a user enters or chooses a path.
+  - Source setup now treats the Target destination as a target-owned profile
+    path string, not as a local folder to browse or validate on the Source Mac.
+    The primary create action is enabled when the Source directory is readable
+    and the target-owned destination path is present. Target-local writeability
+    remains a Target-role / `profile set-target` concern.
   - Green evidence:
     `swift test --package-path macos --filter 'AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testSetupGuideShowsExistingTargetConfigWithoutCreationCTA|AppStoreTests/testLocalizedSetupGuideShowsTargetValidationActions|AppStoreTests/testLocalizedProfileSelectionDisplayDoesNotChangeRawConfigValues|AppStoreTests/testSetupGuideClarifiesExistingConfigRootInputsAreNotLoadedRoots|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
     - 8 tests, 0 failures.
+    `swift test --package-path macos --filter 'AppStoreTests/testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReadyAndTargetPathIsSet|AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testTaskRunGateAllowsProfileInitWithTargetOwnedDestinationPath|AppStoreTests/testTaskRunGateExplainsMissingProfileInitTargetAsTargetMacDestinationPath|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
+    - 7 tests, 0 failures.
     `swift build --package-path macos --product SuperMoverApp`
     - passed.
     Python resource-key audit: English and Simplified Chinese
-    `Localizable.strings` both have 140 keys, no duplicates, and no missing
+    `Localizable.strings` both have 142 keys, no duplicates, and no missing
     counterpart keys.
   - Boundary:
     This is basic Prepare UX simplification only. It keeps profile files as the

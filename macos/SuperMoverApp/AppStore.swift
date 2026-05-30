@@ -3199,10 +3199,11 @@ final class AppStore: ObservableObject {
         switch selectedRole {
         case .source:
             title = "Choose folders"
-            detail = "Choose the folder to move and the destination folder. Lint and Status read the saved setup."
+            detail = "Choose this Mac's folder to move, then enter the destination path that the target Mac will own."
             if creatingConfig || hasSourceRootInput || hasTargetRootInput {
-                statusLabel = "source \(sourceReadiness) / target \(targetReadiness)"
-                state = (sourceReadiness == "readable" && targetReadiness == "writable") ? .pass : .pending
+                let targetPathStatus = hasTargetRootInput ? "target path set" : "target path missing"
+                statusLabel = "source \(sourceReadiness) / \(targetPathStatus)"
+                state = (sourceReadiness == "readable" && hasTargetRootInput) ? .pass : .pending
             } else {
                 statusLabel = "optional unless creating/updating"
                 state = .neutral
@@ -3364,11 +3365,14 @@ final class AppStore: ObservableObject {
             title = localization.text(.setupFoldersTitleSource)
             detail = localization.text(.setupFoldersDetailSource)
             if creatingConfig || hasSourceRootInput || hasTargetRootInput {
+                let targetPathStatus = hasTargetRootInput
+                    ? localization.text(.setupStatusTargetPathSet)
+                    : localization.text(.setupStatusTargetPathMissing)
                 statusLabel = [
                     localizedRootStatus(prefix: "source", readiness: sourceReadiness, using: localization),
-                    localizedRootStatus(prefix: "target", readiness: targetReadiness, using: localization),
+                    targetPathStatus,
                 ].joined(separator: " / ")
-                state = (sourceReadiness == "readable" && targetReadiness == "writable") ? .pass : .pending
+                state = (sourceReadiness == "readable" && hasTargetRootInput) ? .pass : .pending
             } else {
                 statusLabel = localization.text(.setupStatusOptionalCreatingUpdating)
                 state = .neutral
@@ -3643,19 +3647,13 @@ final class AppStore: ObservableObject {
         let targetRoot = input.targetRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !targetRoot.isEmpty else {
             return .selectedOnly(
-                note: "New migration config destination selected. Choose a writable target root before writing the config file."
+                note: "New migration config destination selected. Enter the destination path from the target Mac before writing the config file."
             )
         }
         guard isReadableDirectory(sourceRoot) else {
             return .selectedOnly(
                 note:
                     "New migration config destination selected. Choose an accessible source directory before writing the config file."
-            )
-        }
-        guard isWritableDirectory(targetRoot) else {
-            return .selectedOnly(
-                note:
-                    "New migration config destination selected. Choose an accessible target directory before writing the config file."
             )
         }
 
@@ -3731,13 +3729,16 @@ final class AppStore: ObservableObject {
         if task.requiresSourceRoot && input.sourceRootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .blocked("Select a readable source root first.")
         }
-        if task.requiresTargetRoot && input.targetRootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if task.requiresTargetRootInput && input.targetRootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if task == .profileInit {
+                return .blocked("Enter the destination path from the target Mac first.")
+            }
             return .blocked("Select a target root first.")
         }
         if task.requiresSourceRoot, !isReadableDirectory(input.sourceRootPath) {
             return .blocked("Source root is not readable by this app. Choose an accessible source directory before writing a migration config.")
         }
-        if task.requiresTargetRoot, !isWritableDirectory(input.targetRootPath) {
+        if task.requiresWritableTargetRoot, !isWritableDirectory(input.targetRootPath) {
             return .blocked("Target root is not writable by this app. Choose an accessible target directory before writing target config evidence.")
         }
         if task.requiresSessionID && input.requiredSessionID.isEmpty {
@@ -5686,9 +5687,18 @@ private extension SuperMoverTaskKind {
         }
     }
 
-    var requiresTargetRoot: Bool {
+    var requiresTargetRootInput: Bool {
         switch self {
         case .profileInit, .profileSetTarget:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var requiresWritableTargetRoot: Bool {
+        switch self {
+        case .profileSetTarget:
             return true
         default:
             return false

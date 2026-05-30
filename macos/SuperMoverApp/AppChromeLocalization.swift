@@ -120,6 +120,8 @@ struct AppChromeLocalization {
         case setupStatusNotValidated = "setup.status.notValidated"
         case setupStatusLintPassed = "setup.status.lintPassed"
         case setupStatusStatusRead = "setup.status.statusRead"
+        case setupStatusTargetPathSet = "setup.status.targetPathSet"
+        case setupStatusTargetPathMissing = "setup.status.targetPathMissing"
         case setupDirectoryReadable = "setup.directory.readable"
         case setupDirectoryNotReadable = "setup.directory.notReadable"
         case setupDirectoryWritable = "setup.directory.writable"
@@ -316,19 +318,19 @@ struct AppChromeLocalization {
         case .setupRootInputsCardTitle:
             return "Choose Folders"
         case .setupRootInputsCardSubtitle:
-            return "Pick what to copy and where it should land."
+            return "On Source, choose this Mac's folder. On Target, choose where files land."
         case .setupChecksCardTitle:
             return "Config Checks"
         case .setupChecksCardSubtitle:
             return "Validate the selected config before moving to Connect or Move."
         case .setupSourceRootFieldTitle:
-            return "Folder to Move"
+            return "Folder to Move From This Mac"
         case .setupSourceRootPlaceholder:
-            return "Choose the folder on this Mac"
+            return "Choose the folder to move from this Mac"
         case .setupTargetRootFieldTitle:
-            return "Destination Folder"
+            return "Destination on Target Mac"
         case .setupTargetRootPlaceholder:
-            return "Choose where files should land"
+            return "Enter the folder path on the target Mac"
         case .setupObserverRootInputsNotice:
             return "Observer mode reads existing config and target evidence. Folder authoring is disabled for this role."
         case .setupActionOpenExistingConfig:
@@ -428,7 +430,7 @@ struct AppChromeLocalization {
         case .setupFoldersTitleObserver:
             return "Evidence target"
         case .setupFoldersDetailSource:
-            return "Choose the folder to move and the destination folder. Lint and Status read the saved setup."
+            return "Choose this Mac's folder to move, then enter the destination path that the target Mac will own."
         case .setupFoldersDetailTarget:
             return "Use this folder only when explicitly updating the selected setup target. Lint and Status read the saved setup."
         case .setupFoldersDetailObserver:
@@ -463,6 +465,10 @@ struct AppChromeLocalization {
             return "lint passed"
         case .setupStatusStatusRead:
             return "status read"
+        case .setupStatusTargetPathSet:
+            return "target path set"
+        case .setupStatusTargetPathMissing:
+            return "target path missing"
         case .setupDirectoryReadable:
             return "readable"
         case .setupDirectoryNotReadable:

@@ -42,13 +42,13 @@
 "setup.config.card.subtitle" = "SuperMover saves this setup in a recommended config file. Existing or custom files are advanced options.";
 "setup.config.selectedFile.title" = "Current Setup";
 "setup.rootInputs.card.title" = "Choose Folders";
-"setup.rootInputs.card.subtitle" = "Pick what to copy and where it should land.";
+"setup.rootInputs.card.subtitle" = "On Source, choose this Mac's folder. On Target, choose where files land.";
 "setup.checks.card.title" = "Config Checks";
 "setup.checks.card.subtitle" = "Validate the selected config before moving to Connect or Move.";
-"setup.sourceRoot.field.title" = "Folder to Move";
-"setup.sourceRoot.placeholder" = "Choose the folder on this Mac";
-"setup.targetRoot.field.title" = "Destination Folder";
-"setup.targetRoot.placeholder" = "Choose where files should land";
+"setup.sourceRoot.field.title" = "Folder to Move From This Mac";
+"setup.sourceRoot.placeholder" = "Choose the folder to move from this Mac";
+"setup.targetRoot.field.title" = "Destination on Target Mac";
+"setup.targetRoot.placeholder" = "Enter the folder path on the target Mac";
 "setup.observer.rootInputs.notice" = "Observer mode reads existing config and target evidence. Folder authoring is disabled for this role.";
 "setup.action.openExistingConfig" = "Open Existing Config";
 "setup.action.createRecommendedConfig" = "Create Migration Setup";
@@ -98,7 +98,7 @@
 "setup.guide.folders.title.source" = "Choose folders";
 "setup.guide.folders.title.target" = "Destination folder";
 "setup.guide.folders.title.observer" = "Evidence target";
-"setup.guide.folders.detail.source" = "Choose the folder to move and the destination folder. Lint and Status read the saved setup.";
+"setup.guide.folders.detail.source" = "Choose this Mac's folder to move, then enter the destination path that the target Mac will own.";
 "setup.guide.folders.detail.target" = "Use this folder only when explicitly updating the selected setup target. Lint and Status read the saved setup.";
 "setup.guide.folders.detail.observer" = "Observer mode reads existing target evidence; it does not author source or target folders.";
 "setup.guide.validation.title" = "Validate before moving";
@@ -116,6 +116,8 @@
 "setup.status.notValidated" = "not validated";
 "setup.status.lintPassed" = "lint passed";
 "setup.status.statusRead" = "status read";
+"setup.status.targetPathSet" = "target path set";
+"setup.status.targetPathMissing" = "target path missing";
 "setup.directory.readable" = "readable";
 "setup.directory.notReadable" = "not readable";
 "setup.directory.writable" = "writable";

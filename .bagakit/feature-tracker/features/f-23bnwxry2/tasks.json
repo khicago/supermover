@@ -908,9 +908,14 @@
           "status": "pass_prepare_recommended_config_ux_6_tests"
         },
         {
+          "command": "swift test --package-path macos --filter 'AppStoreTests/testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReadyAndTargetPathIsSet|AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testTaskRunGateAllowsProfileInitWithTargetOwnedDestinationPath|AppStoreTests/testTaskRunGateExplainsMissingProfileInitTargetAsTargetMacDestinationPath|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'",
+          "exit_code": 0,
+          "status": "pass_source_target_directory_ownership_7_tests"
+        },
+        {
           "command": "Python resource-key audit for macos/SuperMoverApp/Resources/{en.lproj,zh-Hans.lproj}/Localizable.strings",
           "exit_code": 0,
-          "status": "pass_141_keys_each_no_missing_no_duplicates"
+          "status": "pass_142_keys_each_no_missing_no_duplicates"
         },
         {
           "command": "feature-tracker validate-tracker --root .",
@@ -970,7 +975,7 @@
         "Post-review Prepare/setup localization fixes now localize visible role chrome in page headers, Task Dispatch, transfer metadata, and Control Room context, plus profile-selection guidance and the Advanced disclosure. Raw WorkbenchRole titles, raw SetupGuide copy, task titles, command previews, profile/config paths, evidence/proof values, artifact fields, and CLI output remain raw and audit-stable; focused review-regression tests pin the boundary. This UI polish does not close real two-Mac or release evidence gates.",
         "Final visible-role chrome closeout replaced remaining raw `label: \"role\"` and `Role •` display prefixes with the localized role label, and strengthened the static regression test to reject those raw app-owned chrome strings. This is display-only localization; raw role identity, command arguments, evidence values, and artifacts remain unchanged.",
         "Full Swift-suite closeout found test-fixture drift in AppStoreTests rather than a new product behavior gap: the fixture lagged the current release-proof contract by missing bundle-local notary logs, bundle-relative notary_log paths, and raw machine-bound operator evidence. The fixture now writes those current evidence fields, and AppStoreTests plus the full Swift suite pass.",
-        "Prepare profile creation UX now presents a single recommended setup summary in the basic Source flow, selects the recommended `~/.supermover/profile-local.json` destination only when creating the setup, and keeps existing config selection, custom destination picking, raw file paths, and identity fields under Advanced options. Empty directory fields no longer show orange access badges, and creation is disabled until source/target directory readiness is satisfied. This preserves profile files as the CLI `--profile` SSOT and does not close real two-Mac, permission, notarization, Gatekeeper, or final release gates.",
+        "Prepare profile creation UX now presents a single recommended setup summary in the basic Source flow, selects the recommended `~/.supermover/profile-local.json` destination only when creating the setup, and keeps existing config selection, custom destination picking, raw file paths, and identity fields under Advanced options. Empty local directory fields no longer show orange access badges. Source setup asks for a readable Source directory on this Mac plus a target-owned destination path string; it no longer asks the Source Mac to browse or validate the Target Mac's destination as a local writable directory. This preserves profile files as the CLI `--profile` SSOT and does not close real two-Mac, permission, notarization, Gatekeeper, or final release gates.",
         "Validation cost is now understood as a test-tiering issue, not as evidence to remove: focused UI/i18n changes should use the fast UI/resource/build subset first, appstore-release-contract tests when touching launch or packaging proof seams, and full swift test as a release/hygiene gate because AcceptanceTwoMachineScriptTests and release-evidence tests intentionally run real shell workflow surfaces and are slow."
       ]
     }

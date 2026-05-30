@@ -42,13 +42,13 @@
 "setup.config.card.subtitle" = "SuperMover 会把设置保存到推荐配置。已有配置和自定义位置放在高级选项里。";
 "setup.config.selectedFile.title" = "当前设置";
 "setup.rootInputs.card.title" = "选择目录";
-"setup.rootInputs.card.subtitle" = "选择要迁移的内容，以及文件要放到哪里。";
+"setup.rootInputs.card.subtitle" = "源端选择这台 Mac 上的目录；目标端选择文件保存位置。";
 "setup.checks.card.title" = "配置检查";
 "setup.checks.card.subtitle" = "进入连接或迁移前，先验证所选配置。";
-"setup.sourceRoot.field.title" = "要迁移的目录";
-"setup.sourceRoot.placeholder" = "选择这台 Mac 上的目录";
-"setup.targetRoot.field.title" = "迁移到";
-"setup.targetRoot.placeholder" = "选择文件要放到哪里";
+"setup.sourceRoot.field.title" = "从这台 Mac 迁出的目录";
+"setup.sourceRoot.placeholder" = "选择要从这台 Mac 传出的目录";
+"setup.targetRoot.field.title" = "目标 Mac 保存位置";
+"setup.targetRoot.placeholder" = "填写目标 Mac 上的目录路径";
 "setup.observer.rootInputs.notice" = "观察端只读取现有配置和目标端证据；该角色不写入目录配置。";
 "setup.action.openExistingConfig" = "打开现有配置";
 "setup.action.createRecommendedConfig" = "创建迁移设置";
@@ -98,7 +98,7 @@
 "setup.guide.folders.title.source" = "选择目录";
 "setup.guide.folders.title.target" = "目标目录";
 "setup.guide.folders.title.observer" = "证据目标";
-"setup.guide.folders.detail.source" = "选择要迁移的目录和文件要放到哪里。Lint 和 Status 会读取已保存的设置。";
+"setup.guide.folders.detail.source" = "选择这台 Mac 上要迁移的目录，然后填写目标 Mac 负责保存的路径。";
 "setup.guide.folders.detail.target" = "仅在显式更新所选设置的目标端时使用这个目录。Lint 和 Status 会读取已保存的设置。";
 "setup.guide.folders.detail.observer" = "观察端读取现有目标端证据；它不写入源端或目标端目录。";
 "setup.guide.validation.title" = "迁移前验证";
@@ -116,6 +116,8 @@
 "setup.status.notValidated" = "未验证";
 "setup.status.lintPassed" = "检查通过";
 "setup.status.statusRead" = "已读取状态";
+"setup.status.targetPathSet" = "目标路径已填写";
+"setup.status.targetPathMissing" = "目标路径未填写";
 "setup.directory.readable" = "可读取";
 "setup.directory.notReadable" = "不可读取";
 "setup.directory.writable" = "可写入";

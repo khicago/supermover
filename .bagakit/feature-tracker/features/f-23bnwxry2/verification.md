@@ -1736,15 +1736,19 @@
     selects the recommended `~/.supermover/profile-local.json` path before
     running `profile init`, while existing config selection, custom destination
     selection, raw file paths, and identity fields live under Advanced options.
-    Empty directory fields no longer show orange access badges, and the primary
-    create action is disabled until source and target directories satisfy their
-    read/write checks.
+    Empty local directory fields no longer show orange access badges. Source
+    setup now asks for a readable Source directory on this Mac plus a
+    target-owned destination path string; it no longer asks the Source Mac to
+    browse or validate the Target Mac's destination as a local writable
+    directory.
   - Green evidence:
     - `swift test --package-path macos --filter 'AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testSetupGuideShowsExistingTargetConfigWithoutCreationCTA|AppStoreTests/testLocalizedSetupGuideShowsTargetValidationActions|AppStoreTests/testLocalizedProfileSelectionDisplayDoesNotChangeRawConfigValues|AppStoreTests/testSetupGuideClarifiesExistingConfigRootInputsAreNotLoadedRoots|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
       (8 tests, 0 failures)
+    - `swift test --package-path macos --filter 'AppStoreTests/testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReadyAndTargetPathIsSet|AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testTaskRunGateAllowsProfileInitWithTargetOwnedDestinationPath|AppStoreTests/testTaskRunGateExplainsMissingProfileInitTargetAsTargetMacDestinationPath|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
+      (7 tests, 0 failures)
     - `swift build --package-path macos --product SuperMoverApp`: pass.
     - Python resource-key audit: English and Simplified Chinese
-      `Localizable.strings` both have 140 keys, no duplicates, and no missing
+      `Localizable.strings` both have 142 keys, no duplicates, and no missing
       counterpart keys.
   - Boundary:
     This is Prepare-page UX simplification only. It keeps profile files as the

@@ -1824,30 +1824,31 @@ final class AppStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testProfileDestinationPlanInitializesNewSourceProfileWhenRootsAreReady() throws {
+    func testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReadyAndTargetPathIsSet() throws {
         let store = AppStore()
         let sourceRoot = try makeTemporaryDirectory()
-        let targetRoot = try makeTemporaryDirectory()
+        let profileDirectory = try makeTemporaryDirectory()
+        let profileURL = profileDirectory.appendingPathComponent("studio.profile.json")
         defer {
             try? FileManager.default.removeItem(at: sourceRoot)
-            try? FileManager.default.removeItem(at: targetRoot)
+            try? FileManager.default.removeItem(at: profileDirectory)
         }
 
         store.selectedRole = .source
         store.sourceRootPath = sourceRoot.path
-        store.targetRootPath = targetRoot.path
+        store.targetRootPath = "TargetMac/Migration"
         store.profileName = "Studio Migration"
         store.profileID = "profile-studio"
         store.targetID = "target-1"
 
         XCTAssertEqual(
-            store.profileDestinationPlan(for: "/tmp/studio.profile.json"),
+            store.profileDestinationPlan(for: profileURL.path),
             .initialize(
                 arguments: [
                     "profile", "init",
-                    "--profile", "/tmp/studio.profile.json",
+                    "--profile", profileURL.path,
                     "--source", sourceRoot.path,
-                    "--target", targetRoot.path,
+                    "--target", "TargetMac/Migration",
                     "--id", "profile-studio",
                     "--name", "Studio Migration",
                     "--target-id", "target-1",
@@ -1904,7 +1905,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(guide.steps[0].primaryTask, .profileInit)
         XCTAssertNil(guide.steps[0].secondaryActionTitle)
         XCTAssertEqual(guide.steps[0].detail, "Choose folders, then create the recommended setup. Existing and custom config files live in Advanced.")
-        XCTAssertEqual(guide.steps[1].detail, "Choose the folder to move and the destination folder. Lint and Status read the saved setup.")
+        XCTAssertEqual(guide.steps[1].detail, "Choose this Mac's folder to move, then enter the destination path that the target Mac will own.")
         XCTAssertEqual(guide.steps[2].detail, "Create or open the config, then run Lint Config before treating setup as ready.")
     }
 
@@ -1940,15 +1941,16 @@ final class AppStoreTests: XCTestCase {
     func testSetupGuideShowsNewConfigDestinationAsCreationStep() throws {
         let store = AppStore()
         let sourceRoot = try makeTemporaryDirectory()
-        let targetRoot = try makeTemporaryDirectory()
+        let profileDirectory = try makeTemporaryDirectory()
+        let profileURL = profileDirectory.appendingPathComponent("studio.profile.json")
         defer {
             try? FileManager.default.removeItem(at: sourceRoot)
-            try? FileManager.default.removeItem(at: targetRoot)
+            try? FileManager.default.removeItem(at: profileDirectory)
         }
         store.selectedRole = .source
         store.sourceRootPath = sourceRoot.path
-        store.targetRootPath = targetRoot.path
-        store.applyProfileDestinationSelection("/tmp/studio.profile.json")
+        store.targetRootPath = "TargetMac/Migration"
+        store.applyProfileDestinationSelection(profileURL.path)
 
         let guide = store.setupGuide
 
@@ -1956,7 +1958,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(guide.steps[0].primaryActionTitle, "Create New Config File")
         XCTAssertEqual(guide.steps[0].detail, "New destination selected. Write the migration config through the CLI before other tasks use it.")
         XCTAssertEqual(guide.steps[1].state, .pass)
-        XCTAssertEqual(guide.steps[1].statusLabel, "source readable / target writable")
+        XCTAssertEqual(guide.steps[1].statusLabel, "source readable / target path set")
         XCTAssertEqual(guide.steps[2].state, .pending)
         XCTAssertEqual(guide.steps[2].primaryActionTitle, "Lint Config")
     }
@@ -2256,6 +2258,51 @@ final class AppStoreTests: XCTestCase {
         XCTAssertFalse(store.selectedTask.requiresExistingProfile)
         XCTAssertEqual(store.selectedProfilePathState, .newDestination)
         XCTAssertTrue(store.selectedProfileAllowsExplicitCreate)
+    }
+
+    @MainActor
+    func testTaskRunGateAllowsProfileInitWithTargetOwnedDestinationPath() throws {
+        let store = AppStore()
+        let sourceRoot = try makeTemporaryDirectory()
+        let profileDirectory = try makeTemporaryDirectory()
+        let profileURL = profileDirectory.appendingPathComponent("studio.profile.json")
+        defer {
+            try? FileManager.default.removeItem(at: sourceRoot)
+            try? FileManager.default.removeItem(at: profileDirectory)
+        }
+
+        store.selectedRole = .source
+        store.selectedTask = .profileInit
+        store.sourceRootPath = sourceRoot.path
+        store.targetRootPath = "TargetMac/Migration"
+        store.applyProfileDestinationSelection(profileURL.path)
+
+        let gate = store.taskRunGate()
+
+        XCTAssertTrue(gate.isRunnable)
+        XCTAssertNil(gate.note)
+    }
+
+    @MainActor
+    func testTaskRunGateExplainsMissingProfileInitTargetAsTargetMacDestinationPath() throws {
+        let store = AppStore()
+        let sourceRoot = try makeTemporaryDirectory()
+        let profileDirectory = try makeTemporaryDirectory()
+        let profileURL = profileDirectory.appendingPathComponent("studio.profile.json")
+        defer {
+            try? FileManager.default.removeItem(at: sourceRoot)
+            try? FileManager.default.removeItem(at: profileDirectory)
+        }
+
+        store.selectedRole = .source
+        store.selectedTask = .profileInit
+        store.sourceRootPath = sourceRoot.path
+        store.applyProfileDestinationSelection(profileURL.path)
+
+        let gate = store.taskRunGate()
+
+        XCTAssertFalse(gate.isRunnable)
+        XCTAssertEqual(gate.note, "Enter the destination path from the target Mac first.")
     }
 
     @MainActor
