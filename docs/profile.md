@@ -45,6 +45,7 @@ Optional top-level fields:
 - `exclude`: glob-like exclude rules, each with `pattern`.
 - `network`: profile-backed receiver and source-side network-transfer
   connection material.
+- `sync`: profile-backed local incremental sync runtime settings.
 - `supplemental_metadata`: string map for future migration annotations.
 
 ## Policy Fields
@@ -171,6 +172,94 @@ pinned TLS 1.3 mTLS receiver, and writes network transfer outcome artifacts
 through the protocol client/network-run path. With `--dry-run`, it performs
 preflight only and writes no target artifacts.
 
+`discovery` fields:
+
+- `advertise_receiver_hint`: optional boolean. When true, `discover advertise
+  --profile <path>` binds its UDP advertisement source to the profile-selected
+  `network.receiver_url` host:port so `sync network discover-run` can require a
+  LAN candidate that matches the reviewed receiver endpoint before running the
+  existing profile-pinned mTLS network queue pass.
+
+`discovery.advertise_receiver_hint` requires complete `network.receiver_url`
+and `network.local_tls_identity` material. It does not add identity trust to
+LAN discovery, does not write or mutate profiles, and does not expose profile
+IDs, device IDs, paths, usernames, hostnames, or file metadata in the
+advertisement payload.
+
+`sync` fields:
+
+- `local_polling.enabled`: optional boolean. When true,
+  `daemon run --foreground` runs the same local incremental queue consumer used
+  by `sync loop` in the foreground daemon process.
+- `local_polling.interval_millis`: positive polling interval required when
+  local polling is enabled.
+- `local_polling.retry_backoff_millis`: non-negative retry backoff duration.
+  A positive value is required when local polling is enabled.
+- `local_polling.session_prefix`: generated run receipt prefix required when
+  local polling is enabled. It must be a safe Supermover session-id prefix.
+- `network_polling.enabled`: optional boolean. When true,
+  `daemon run --foreground` runs the same profile-backed network queue pass
+  used by `sync network loop` as a source-side worker-only foreground daemon
+  mode.
+- `network_polling.interval_millis`: positive polling interval required when
+  network polling is enabled.
+- `network_polling.retry_backoff_millis`: non-negative retry backoff duration.
+  A positive value is required when network polling is enabled.
+- `network_polling.session_prefix`: generated network run receipt prefix
+  required when network polling is enabled. It must be a safe Supermover
+  session-id prefix.
+
+`repair` fields:
+
+- `drift_recording.enabled`: optional boolean. When true,
+  `daemon run --foreground` runs a target-side worker that periodically records
+  current live detector findings as durable `.supermover/drift/*.json` review
+  evidence.
+- `drift_recording.interval_millis`: positive polling interval required when
+  drift recording is enabled.
+- `persisted_reconcile_apply.enabled`: optional boolean. When true,
+  `daemon run --foreground` periodically reviews persisted drift records and
+  applies only currently planned persisted reconcile actions through the
+  existing reconcile apply receipt path.
+- `persisted_reconcile_apply.interval_millis`: positive polling interval
+  required when persisted reconcile apply is enabled.
+- `persisted_reconcile_apply.reason`: required review reason written to
+  resolved drift records and reconcile receipts when persisted reconcile apply
+  is enabled.
+- `persisted_reconcile_apply.reviewer`: optional reviewer/operator identifier
+  written to resolved drift records and reconcile receipts.
+
+Daemon polling sync is profile-only. `sync.local_polling` and
+`sync.network_polling` are mutually exclusive because they select different
+publication paths. The daemon command does not accept a runtime `--sync`
+override because migration behavior must remain auditable from the reviewed
+profile and target-side `.supermover` artifacts. The foreground daemon writes
+ordinary incremental-sync queue/run receipts and redacted `daemon_sync_*`
+lifecycle events. A foreground restart consumes
+`.supermover/daemon/restart-intent.json`, reloads the profile, and continues
+with fresh generated run IDs; a foreground process stop/start resumes the next
+generated run number from existing durable receipts. Network polling mode uses
+per-entry profile-backed mTLS network queue publication and does not serve
+pairing or receiver routes. `repair.drift_recording` is incompatible with
+`sync.network_polling` because network polling is a source-side worker-only
+mode. `repair.persisted_reconcile_apply` is also incompatible with
+`sync.network_polling` for the same reason, and it is mutually exclusive with
+`repair.drift_recording` so the daemon cannot implicitly turn live-only
+detector findings into automatic apply input. Drift recording may run with the
+normal foreground daemon and records review evidence only; it does not apply
+reconcile, retry repair, rewrite manifests, authorize prune, or mark targets
+restored. Persisted reconcile apply may run with the normal foreground daemon
+and consumes only already persisted, currently planned drift records. It does
+not call live recording, does not consume live-only detector findings, stops
+after any refusal or artifact problem for operator review, and does not rewrite
+manifests or authorize prune. These fields do not configure daemon-integrated
+OS file watching, detached service management, LAN-discovery-gated sync,
+automatic endpoint selection, or broad automatic repair. Use `sync watch` for
+the wired foreground OS file watcher surface, `sync network run` or `sync
+network loop` for explicit foreground network queue execution, and `sync
+network discover-run` when a low-information LAN candidate must match the
+profile-selected receiver address before the same network queue pass runs.
+
 `agent_knowledge.categories` entries:
 
 - `name`: required category name, for example `codex` or `claude`.
@@ -186,8 +275,13 @@ runs:
 - empty root list
 - invalid consistency, delete, metadata, or privacy modes
 - invalid traffic privacy level
+- invalid `repair.drift_recording` interval or incompatible use with
+  `sync.network_polling`
+- invalid `repair.persisted_reconcile_apply` interval/reason/reviewer or
+  incompatible use with `sync.network_polling` or `repair.drift_recording`
 - invalid paired target field shape or partial paired target fields
 - invalid network receiver URL or partial TLS identity references
+- invalid profile-backed local polling sync settings
 - prune mode without review
 - negative retention days
 - plaintext privacy mode without explicit plaintext restore approval

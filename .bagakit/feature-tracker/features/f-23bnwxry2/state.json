@@ -1,0 +1,502 @@
+{
+  "version": 1,
+  "feat_id": "f-23bnwxry2",
+  "title": "Native macOS app-first LAN migration workbench",
+  "slug": "native-macos-app-first-lan-migration-workbench",
+  "goal": "Design and implement a complete native macOS app-first LAN migration workbench that guides source and target operators through discovery, pairing, bounded network sync, verification, evidence review, and safe follow-up actions while preserving profile and target evidence as the source of truth.",
+  "status": "in_progress",
+  "workspace_mode": "current_tree",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": "T-011",
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 1,
+    "round_count": 14
+  },
+  "gate": {
+    "last_result": "partial",
+    "last_task_id": "T-011",
+    "last_check_commands": [
+      {
+        "command": "sh -n macos/script/lib/acceptance-common.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "sh -n macos/script/lib/acceptance-two-machine.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "sh -n macos/script/acceptance-two-machine.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AppStoreTests/testTaskRunGateBlocksProfileInitForExistingProfileFile|AppStoreTests/testTaskRunGateBlocksExistingProfileTasksForNewProfileDestination|AppStoreTests/testTaskRunGateBlocksPublishWithoutSessionID|AppStoreTests/testTaskRunGateBlocksReconcileApplyWithoutReason|WorkbenchNavigationTests|WorkbenchChromeTests/testDetailPageStickyHeaderStopsAtPaneTopWithoutOvershoot'",
+        "exit_code": 0,
+        "status": "pass_9_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceBundleRootTrustTests/testOperatorEvidenceStoreRejectsHardlinkedMetaBeforeWriting|AcceptanceBundleRootTrustTests/testAcceptanceBundleReaderRejectsHardlinkedMetaFile|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairReceiptArtifactIsMalformed|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairReceiptArtifactIsMissing|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairReceiptArtifactIsDirectory|AcceptanceEvaluationModeTests|AcceptanceInstalledAppLaunchGateTests'",
+        "exit_code": 0,
+        "status": "pass_25_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsBundleLocalArtifactHardlinks|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsTargetControlPlaneHardlinks'",
+        "exit_code": 0,
+        "status": "pass_2_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsLinkedBundleMeta|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsLinkedBundleMeta|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusDoesNotUseHardlinkedMachineFactArtifactsAsProof|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusDoesNotUseHardlinkedReleaseArtifactsAsReady|AcceptanceBundleRootTrustTests/testAcceptanceBundleReaderRejectsSpecialMetaFile|AcceptanceBundleRootTrustTests/testOperatorEvidenceStoreRejectsSpecialMetaBeforeWriting|AcceptanceBundleRootTrustTests/testAcceptanceBundleReaderRejectsHardlinkedMetaFile|AcceptanceBundleRootTrustTests/testOperatorEvidenceStoreRejectsHardlinkedMetaBeforeWriting|AcceptanceBundleTests/testAcceptanceBundleReaderLoadsEvidenceCollectedBundle|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairReceiptArtifactIsMalformed'",
+        "exit_code": 0,
+        "status": "pass_10_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachinePackAndUnpackBundleRoundTripsEvidence|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRecordsVerifiedArchiveHandoffEvidence|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleFailsClosedWhenManifestExportIdentityIsTampered|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleFailsClosedWhenManifestExportIdentityFieldsAreMissing|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleFailsClosedOnMalformedArchive|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundlePreservesExistingBundleWhenArchiveMissingExportIdentity|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleFailsClosedOnArchiveDigestMismatch|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRejectsSymlinkedArchiveEntriesBeforePublish|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRejectsHardlinkedArchiveEntriesBeforePublish|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRejectsSpecialArchiveEntriesBeforePublish'",
+        "exit_code": 0,
+        "status": "pass_10_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceHealthArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceStatusArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMalformedSourceStatusArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMalformedSourceHealthArtifact'",
+        "exit_code": 0,
+        "status": "pass_4_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceEvaluationTests'",
+        "exit_code": 0,
+        "status": "pass_28_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceInstalledAppReleaseEvidenceEvaluationScriptTests'",
+        "exit_code": 0,
+        "status": "pass_1_test"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceHealthArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceStatusArtifact|AcceptanceTwoMachineScriptTests/testTwoMachinePackAndUnpackBundleRoundTripsEvidence|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRecordsVerifiedArchiveHandoffEvidence|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRejectsSymlinkedArchiveEntriesBeforePublish|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRejectsHardlinkedArchiveEntriesBeforePublish|AcceptanceTwoMachineScriptTests/testTwoMachineUnpackBundleRejectsSpecialArchiveEntriesBeforePublish'",
+        "exit_code": 0,
+        "status": "pass_7_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceScriptHarnessTests/testRunProcessAllowFailureDrainsStdoutAndStderrWhileProcessRuns'",
+        "exit_code": 0,
+        "status": "pass_1_test"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceHealthArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceStatusArtifact|AcceptanceTwoMachineScriptTests/testTwoMachinePackAndUnpackBundleRoundTripsEvidence'",
+        "exit_code": 0,
+        "status": "pass_3_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceScriptHarnessTests|AppAuditTamperTests|NotarizeAppScriptTests'",
+        "exit_code": 0,
+        "status": "pass_17_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceEvaluationIntegrationTests|AcceptanceBundleAppOperationsIntegrationTests'",
+        "exit_code": 0,
+        "status": "pass_24_env_gated_skips"
+      },
+      {
+        "command": "rg -n \"waitUntilExit\\(\\)|readDataToEndOfFile\\(\\)\" macos/SuperMoverAppTests -g '*.swift'",
+        "exit_code": 0,
+        "status": "only_shared_harness_hits"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceStatusSessionMismatchesTransfer|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceHealthLacksTransferSession'",
+        "exit_code": 0,
+        "status": "pass_2_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceStatusSessionMismatch|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceHealthWithoutTransferSession'",
+        "exit_code": 0,
+        "status": "pass_2_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryAdvancesToEvaluateWithoutOperatorEvidenceWhenInstalledAppProofIsMissing|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceReportReceiptMismatchesSourcePair|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceReportReceiptHasWhitespace|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceStatusSessionMismatchesTransfer|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceHealthLacksTransferSession|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceConsistencySessionHasWhitespace|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryUsesSourceConsistencyArtifactBaselineBeforeMeta'",
+        "exit_code": 0,
+        "status": "pass_7_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusAdvancesToEvaluateWhenVerifiedMachinePairHandoffExists|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedSourceVerifyCounts|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusFailsClosedWhenSourceReportReceiptMismatchesSourcePair|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusFailsClosedWhenSourceReportReceiptHasWhitespace|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceStatusSessionMismatch|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceHealthWithoutTransferSession|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusFailsClosedWhenSourceConsistencySessionHasWhitespace|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusUsesSourceConsistencyArtifactBaselineBeforeMeta|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceHealthArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceStatusArtifact'",
+        "exit_code": 0,
+        "status": "pass_10_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedSourceBrowseArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceBrowseArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedTargetAdvertiseArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedTargetAdvertiseArtifact'",
+        "exit_code": 0,
+        "status": "pass_4_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusAdvancesToEvaluateWhenVerifiedMachinePairHandoffExists|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedSourceVerifyCounts|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceVerifyCounts|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceHealthArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceStatusArtifact|AcceptanceInstalledAppCollectionProofParityScriptTests/testEvaluateFailsClosedWhenRecordedAlternateDiscoveryArtifactIsInvalid'",
+        "exit_code": 0,
+        "status": "pass_6_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMissingTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMissingTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedTargetReadyArtifact|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenTargetReadyArtifactIsMissing|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenTargetReadyArtifactIsMalformed|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMissingTargetReadyArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMalformedTargetReadyArtifact'",
+        "exit_code": 0,
+        "status": "pass_8_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusAdvancesToEvaluateWhenVerifiedMachinePairHandoffExists|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedSourceBrowseArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedTargetAdvertiseArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceBrowseArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedTargetAdvertiseArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorWritesEvaluationArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorCanonicalMachineFactsPreferCanonicalArtifactsOverAlternateMetaOutputs|AcceptanceEvaluationTests/testEvaluationCoordinatorExplicitNonCanonicalSourceArtifactsStayAlignedWithShellEvaluate'",
+        "exit_code": 0,
+        "status": "pass_8_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsWrongMachinePairHandoff|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsRoleMatchedHandoffWhenMetaMachineFactsDisagree|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMachineFactArtifactMismatch|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsContradictoryVerifiedHandoffsEvenWhenOneMatchesRecordedMachinePair|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsAlternateMetaMachineFactOutputsThatMaskCanonicalMismatch'",
+        "exit_code": 0,
+        "status": "pass_5_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceTransferReceiverMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferReceiverMismatchWithTargetReady|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairTargetAddressMismatchesTargetReady|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceTransferReceiverMismatchesTargetReady|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourceTransferReceiverMismatchWithTargetReady'",
+        "exit_code": 0,
+        "status": "pass_8_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMissingTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMissingTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedTargetReadyArtifact|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenTargetReadyArtifactIsMissing|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenTargetReadyArtifactIsMalformed|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMissingTargetReadyArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMalformedTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusAdvancesToEvaluateWhenVerifiedMachinePairHandoffExists|AcceptanceEvaluationTests/testEvaluationCoordinatorWritesEvaluationArtifact'",
+        "exit_code": 0,
+        "status": "pass_10_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceTransferWhenTargetReadyLacksReceiverTransferProof|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferWhenTargetReadyLacksReceiverTransferProof|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceTransferLacksReceiverReadyTargetArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourceTransferWhenTargetReadyLacksReceiverTransferProof'",
+        "exit_code": 0,
+        "status": "pass_4_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMissingTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMalformedTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceTransferReceiverMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceTransferWhenTargetReadyLacksReceiverTransferProof|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMissingTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferReceiverMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferWhenTargetReadyLacksReceiverTransferProof|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenTargetReadyArtifactIsMissing|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenTargetReadyArtifactIsMalformed|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairTargetAddressMismatchesTargetReady|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceTransferReceiverMismatchesTargetReady|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceTransferLacksReceiverReadyTargetArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMissingTargetReadyArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMalformedTargetReadyArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourceTransferReceiverMismatchWithTargetReady|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourceTransferWhenTargetReadyLacksReceiverTransferProof|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusAdvancesToEvaluateWhenVerifiedMachinePairHandoffExists|AcceptanceEvaluationTests/testEvaluationCoordinatorWritesEvaluationArtifact'",
+        "exit_code": 0,
+        "status": "pass_22_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMissingReferencedTargetImportArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMissingReferencedTargetImportArtifact|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenReferencedTargetImportArtifactIsMissing|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMissingReferencedTargetImportArtifact'",
+        "exit_code": 0,
+        "status": "pass_4_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusFailsClosedWhenSourcePairReceiptArtifactIsMissing|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusFailsClosedWhenSourcePairReceiptArtifactIsMalformed|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMissingReferencedTargetImportArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusAdvancesToEvaluateWhenVerifiedMachinePairHandoffExists|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMissingReferencedTargetImportArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedTargetReadyArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferReceiverMismatchWithTargetReady|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairReceiptArtifactIsMissing|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenReferencedTargetImportArtifactIsMissing|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourcePairTargetAddressMismatchesTargetReady|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsMissingReferencedTargetImportArtifact|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourcePairTargetAddressMismatchWithTargetReady|AcceptanceEvaluationTests/testEvaluationCoordinatorWritesEvaluationArtifact'",
+        "exit_code": 0,
+        "status": "pass_14_tests"
+      },
+      {
+        "command": "sh -n macos/script/lib/acceptance-two-machine.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "sh -n macos/script/acceptance-two-machine.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'UIPreferencesTests|WorkbenchNavigationTests|AppStoreTests/testUIPreferencesDoNotChangeCommandInputsOrPreviewContracts|AcceptanceScriptHarnessTests/testBuildAppResourceCopyIncludesProcessedLocalizationDirectories'",
+        "exit_code": 0,
+        "status": "pass_15_tests"
+      },
+      {
+        "command": "sh -n macos/script/build-app.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "sh -n macos/script/lib/app-build-resources.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "macos/script/build-app.sh",
+        "exit_code": 0,
+        "status": "pass_unsigned_local_app"
+      },
+      {
+        "command": "test -f macos/dist/SuperMover.app/Contents/Resources/en.lproj/Localizable.strings",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "test -f macos/dist/SuperMover.app/Contents/Resources/zh-hans.lproj/Localizable.strings",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "sh -n macos/script/lib/acceptance-two-machine.sh && sh -n macos/script/acceptance-two-machine.sh",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferEvidenceFromDifferentTargetRoot|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsEvaluatedSourceTransferTargetRootsFromDifferentTargetRoot'",
+        "exit_code": 1,
+        "status": "fail_red_2_tests_before_target_root_binding"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferEvidenceFromDifferentTargetRoot|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsEvaluatedSourceTransferTargetRootsFromDifferentTargetRoot'",
+        "exit_code": 0,
+        "status": "pass_2_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceTransferTargetRootsDisagree|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourceTransferEvidenceFromDifferentTargetRoot|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMixedSourceTransferTargetRoots|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsEvaluatedSourceTransferTargetRootsFromDifferentTargetRoot|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferEvidenceFromDifferentTargetRoot'",
+        "exit_code": 0,
+        "status": "pass_5_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceStatusSessionMismatch|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsSourceHealthWithoutTransferSession|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceHealthArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMalformedSourceStatusArtifact|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusAdvancesToEvaluateWhenVerifiedMachinePairHandoffExists|AcceptanceEvaluationTests/testEvaluationCoordinatorWritesEvaluationArtifact|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceStatusSessionMismatchesTransfer|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceHealthLacksTransferSession'",
+        "exit_code": 0,
+        "status": "pass_8_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatus|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejects'",
+        "exit_code": 1,
+        "status": "fail_fixture_drift_before_report_target_root_fixture_repair"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsWrongMachinePairHandoff|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsContradictoryVerifiedHandoffsEvenWhenOneMatchesRecordedMachinePair|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsRoleMatchedHandoffWhenMetaMachineFactsDisagree|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsAlternateMetaMachineFactOutputsThatMaskCanonicalMismatch|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsMachineFactArtifactMismatch'",
+        "exit_code": 0,
+        "status": "pass_5_fixture_repairs"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatus|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejects'",
+        "exit_code": 0,
+        "status": "pass_77_tests"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenEvaluatedSourceTransferTargetRootsChange'",
+        "exit_code": 1,
+        "status": "fail_red_post_commit_swift_advisory_gap"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenEvaluatedSourceTransferTargetRootsChange'",
+        "exit_code": 0,
+        "status": "pass_1_test"
+      },
+      {
+        "command": "swift test --package-path macos --filter 'AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenSourceTransferTargetRootsDisagree|AcceptanceBundleTests/testAcceptanceBundleLoadedSnapshotWorkflowSummaryFailsClosedWhenEvaluatedSourceTransferTargetRootsChange|AcceptanceEvaluationTests/testEvaluationCoordinatorRejectsSourceTransferEvidenceFromDifferentTargetRoot|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsMixedSourceTransferTargetRoots|AcceptanceTwoMachineScriptTests/testTwoMachineWorkflowStatusRejectsEvaluatedSourceTransferTargetRootsFromDifferentTargetRoot|AcceptanceTwoMachineScriptTests/testTwoMachineEvaluateRejectsSourceTransferEvidenceFromDifferentTargetRoot'",
+        "exit_code": 0,
+        "status": "pass_6_tests"
+      }
+    ],
+    "last_log_path": ".bagakit/feature-tracker/features/f-23bnwxry2/artifacts/app-acceptance-T-011.md"
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "dag_dependencies_updated",
+      "detail": "depends_on=f-226nwy2vy,f-227nw2p2n,f-22znw2utc,f-232nwu2nw,f-235nwsp4y"
+    },
+    {
+      "action": "plan_reviewed",
+      "detail": "research/subagent review promoted app-owned profile bootstrap, command coverage, structured events, process supervision, artifact readers, macOS deployment gates, and negative validation into the task graph"
+    },
+    {
+      "action": "workspace_assigned",
+      "detail": "proposal_only -> current_tree; root_branch=main"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-001"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-001 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-002"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-002 => fail"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-002 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-002 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-002 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-003"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-003 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-003 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-004"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-004 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-004 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-005"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-005 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-005 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-006"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-006 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-006 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-006 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-007"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-007 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-007 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-008"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-008 => fail"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-008 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-008 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-008 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-009"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-009 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-009 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-010"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-010 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-010 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-011"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial local packaged-loopback and localhost mTLS pass; two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial local release audit added; unsigned/ad-hoc builds correctly block distribution readiness"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial archive handoff restore staging pass; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial target-ready proof parity; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial source pair/transfer target-ready consistency; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial receiver transfer readiness parity; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial target-import referenced artifact parity; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial target-import adopted transcript field parity; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial bounded app chrome localization and packaged localization resources; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial source transfer proof parity and manual evidence gate clarity; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial Swift-compatible counter tokens and raw operator binding parity; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial source transfer target-root binding parity; real two-machine/signing acceptance still open"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-011 => partial Swift advisory source-transfer target-root currentness follow-up; real two-machine/signing acceptance still open"
+    }
+  ],
+  "depends_on": [
+    "f-226nwy2vy",
+    "f-227nw2p2n",
+    "f-22znw2utc",
+    "f-232nwu2nw",
+    "f-235nwsp4y"
+  ]
+}

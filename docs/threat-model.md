@@ -11,8 +11,8 @@ plaintext files.
   protocol.
 - CLI/operator wiring for explicit first pairing and persistent device identity
   pinning, with TLS peer leaf SPKI hashes bound to those pins before transfer.
-- Planned LAN discovery treated as unauthenticated address hints.
-- Planned sparse discovery advertisements.
+- LAN discovery treated as unauthenticated address hints.
+- Sparse discovery advertisements.
 - Protocol-client traffic privacy level 2 padding, batching, and bounded timing
   jitter to reduce some record-size, burst, and timing signals.
 - Audit records for privacy-relevant choices.

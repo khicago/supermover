@@ -2,17 +2,27 @@
 
 The target-side `.supermover` directory stores machine-readable artifacts for
 current `verify`, `deleted list`, `prune`, `health`, `drift list`, `drift
-record`, `drift acknowledge`, `drift resolve`, narrow `reconcile plan/apply`,
-`report`, `status`, `recover`, and foreground `daemon` lifecycle commands. The
+record`, `drift acknowledge`, `drift expire`, `drift resolve`, narrow
+`reconcile plan/review/apply`, `report`, `status`, `recover`, foreground `daemon`
+lifecycle commands, and incremental `sync queue`/`sync run`/`sync loop`/
+`sync watch`/`sync network run`/`sync network loop` commands. When the profile enables
+`sync.local_polling`, the foreground daemon also writes the same
+incremental-sync queue/run artifacts from its local polling worker. When the
+profile enables `sync.network_polling`, the foreground daemon writes the same
+queue/run artifacts from its source-side network polling worker. The
 Go schema/path foundation in
 `internal/control` also
 includes planned history and recovery-state artifacts plus schema validation
 for pairing and target-drift artifacts. `drift record` writes persisted
-target-drift artifacts from current live detector findings; `drift resolve`
-can close existing persisted drift records when a fresh detector no longer
-reports drift for the same path and expected baseline; `reconcile plan/apply`
-can handle only selected persisted-drift missing regular-file restores and
-already-restored/absent resolve-noop. Broad reconcile/repair UX remains
+target-drift artifacts from current live detector findings; `drift expire` can
+retire persisted drift review evidence without claiming target restoration;
+`drift resolve` can close existing persisted drift records when a fresh
+detector no longer reports drift for the same path and expected baseline;
+`reconcile plan/apply` can handle only selected persisted-drift missing
+regular-file restores and already-restored/absent resolve-noop. `reconcile
+review` is read-only and reports persisted plan readiness, live-only
+record-required detector inputs, and planned broad repair boundaries without
+writing control-plane artifacts. Broad automatic reconcile/repair UX remains
 planned.
 
 Documents owned by `internal/control` use JSON with `version: 1`. Writers emit
@@ -43,8 +53,8 @@ Current conditional review artifact paths and planned foundation paths:
 - history index: `.supermover/history/index.json`
 - pairing receipt: `.supermover/pairings/<id>.json`
 - target drift: `.supermover/drift/<id>.json`
-- reconcile receipts: not yet durable control-plane artifacts; current
-  `reconcile plan/apply` receipts are command output only
+- reconcile apply receipts:
+  `.supermover/reconcile/receipts/<receipt-id>.json`
 - recovery state: `.supermover/recovery/state.json`
 - network transfer outcome:
   `.supermover/sessions/<session_id>/network-transfer.json`
@@ -55,6 +65,10 @@ Current conditional review artifact paths and planned foundation paths:
 - daemon stop intent: `.supermover/daemon/stop-intent.json`
 - daemon restart intent: `.supermover/daemon/restart-intent.json`
 - daemon lifecycle events: `.supermover/daemon/events/<id>.json`
+- incremental sync queue:
+  `.supermover/incremental-sync/profiles/<profile-scope>/targets/<target-scope>/queue.json`
+- incremental sync run receipt:
+  `.supermover/incremental-sync/profiles/<profile-scope>/targets/<target-scope>/runs/<session-id>.json`
 
 ## Artifact Schemas
 
@@ -80,10 +94,57 @@ foreground daemon lifecycle surface:
   stderr or pairing verification codes.
 
 These records do not prove OS service installation, detached background process
-management, crash supervision, LAN browsing, file watching, or ongoing sync.
+management, crash supervision, daemon-integrated file watching,
+automatic discovery-selected changed-file sync, automatic endpoint selection,
+or broad repair.
 `daemon run --foreground` polls `stop-intent.json` and `restart-intent.json`.
 Stop exits through the same serve shutdown path; restart tears down and starts
-serve listeners again in the same foreground process.
+serve listeners again in the same foreground process. If the profile enables
+`sync.local_polling`, restart also tears down and starts the foreground local
+polling worker in that same process. If the profile enables
+`sync.network_polling`, `daemon run --foreground` runs a source-side worker-only
+network polling daemon instead of serve listeners; stop/restart intents tear
+down and restart that worker in the same foreground process.
+
+`incremental-sync` records are written by `internal/incrementalsync` and the
+`sync` CLI surface, not by `internal/control` document writers. The queue path
+stores profile/target-scoped changed-file entries with statuses such as
+`queued`, `in_flight`, `backoff`, `canceled`, `done`, and `failed`. Queue
+entries include root ID, slash-relative path, kind, digest/metadata evidence
+where available, attempt count, retry backoff, explicit failed-at review
+timestamp, and other lifecycle timestamps. Hidden files and dot-directories are
+ordinary queue entries. `sync queue fail` records terminal operator review
+evidence only; it does not repair, retry, publish, or prove target restoration.
+`sync queue list` is the read-only per-entry CLI view over this queue artifact;
+`sync queue ready` remains the filtered executable subset.
+`sync run` writes a run receipt with schema
+`supermover.incremental_sync.run/v1`, session ID, queue state path, run path,
+ready/in-flight/published/retried entry lists, summary counts, and any retry
+error. `sync loop` writes the same run receipt schema for each foreground
+polling pass using generated session IDs. `sync watch` writes the same run
+receipt schema for its baseline pass and each coalesced OS file-event batch.
+`sync network run` writes the same run receipt schema for one bounded
+profile-backed network queue pass; `sync network discover-run` writes that
+same receipt only after a low-information LAN candidate matches the
+profile-selected `network.receiver_url`; `sync network loop` writes one receipt
+per foreground network polling pass using generated session IDs. Publication
+uses a per-entry profile-backed mTLS network manifest built from ready queue
+entries, and transfer outcomes still live in the receiver-side
+`network-transfer` artifact when a receiver session is stored. Regular-file
+replacement is allowed only when the manifest carries previous published
+session/manifest/size/digest/mode/modtime evidence and the receiver revalidates
+that the current target still matches it. Idle queue passes write run receipts
+without contacting the receiver. Missing or invalid network configuration and
+failed discovery gates are rejected before queue mutation, while network runtime
+failures become retry/backoff run evidence.
+Profile-enabled foreground-daemon local polling writes the same run receipt
+schema with generated session IDs and adds redacted `daemon_sync_*` lifecycle
+events. Profile-enabled foreground-daemon network polling writes the same run
+receipt schema with generated session IDs, uses the same per-entry
+profile-backed mTLS network queue publication, and adds redacted
+`daemon_sync_*` lifecycle events. These artifacts do not prove detached
+background execution, automatic LAN endpoint selection, broad repair, or
+bidirectional conflict resolution.
 
 `profile_snapshot` captures the profile SSOT used for a run:
 
@@ -267,19 +328,22 @@ same detector and writes current findings as durable
 `.supermover/drift/<id>.json` review records. Current `verify`, `health`, and
 `report` consume `.supermover/drift/*.json` and surface matching unresolved
 persisted records as review-required target state. Valid persisted records with
-`review_state=resolved` are still decoded and validated, but they are excluded
-from review-required persisted drift counts. `report` also runs the live detector
-and exposes its observations under a separate report surface, such as JSON
-`live_target_drift` with `live_target_drifts` and
+`review_state=resolved` or `review_state=expired` are still decoded and
+validated, but they are excluded from review-required persisted drift counts.
+`report` also runs the live detector and exposes its observations under a
+separate report surface, such as JSON `live_target_drift` with
+`live_target_drifts` and
 `live_target_drift_artifact_problems` summary counters. Those report/status/list
 observations are not written to `.supermover/drift/*.json` unless the operator
 runs `drift record`. `drift acknowledge` can mutate only an existing persisted
 `.supermover/drift/<id>.json` record after profile scope, published receipt,
-manifest, root, and artifact-boundary checks. `drift resolve` uses the same
-persisted-record safety boundary, runs a fresh profile-scoped live detector,
-and writes `review_state=resolved` only when that detector no longer reports
-drift for the same path and expected baseline. Broad reconcile, repair, prune
-integration, and background scans remain planned.
+manifest, root, and artifact-boundary checks. `drift expire` and
+`drift resolve` use the same persisted-record safety boundary; `drift expire`
+retires stale persisted review evidence only, while `drift resolve` runs a
+fresh profile-scoped live detector and writes `review_state=resolved` only
+when that detector no longer reports drift for the same path and expected
+baseline. Broad reconcile, repair, prune integration, and background scans
+remain planned.
 
 Current emitted fields:
 
@@ -331,11 +395,15 @@ explicit review evidence instead of relying on prose strings alone:
 `needs_review` means the target must be inspected before the migration can be
 treated as clean. `acknowledged` means an operator has seen and intentionally
 accepted the divergence as a known condition; it does not rewrite manifests or
-resume refused updates by itself. `resolved` means `drift resolve` closed the
-persisted record after a fresh profile-scoped live detector no longer reported
-drift for the same path and expected baseline. The current local push writer
-and `drift record` emit `needs_review`; older drift records without this field
-are treated as review-required by `verify`, `health`, and `report`.
+resume refused updates by itself. `expired` means an operator intentionally
+retired stale persisted review evidence without claiming target restoration; it
+removes that persisted record from unresolved review counts, but current live
+drift can still keep review surfaces non-clean and a later redetection can
+reopen the record. `resolved` means `drift resolve` closed the persisted
+record after a fresh profile-scoped live detector no longer reported drift for
+the same path and expected baseline. The current local push writer and
+`drift record` emit `needs_review`; older drift records without this field are
+treated as review-required by `verify`, `health`, and `report`.
 
 `drift acknowledge --profile <path> --id <persisted-drift-id> --reason <text>
 [--reviewer <id>] [--format text|json]` is the current narrow CLI path that
@@ -348,6 +416,19 @@ created by `drift record`, refuses live-only detector IDs from `drift list`,
 record, repair target files, rewrite manifests, suppress live detector output,
 resume refused updates, authorize prune, or make a review-required target
 clean.
+
+`drift expire --profile <path> --id <persisted-drift-id> --reason <text>
+[--reviewer <id>] [--format text|json]` is the narrow persisted drift review
+retirement command. It derives the target only from the profile, accepts IDs
+from persisted `target_drifts` evidence, refuses live-only detector IDs, and
+rechecks the same persisted record, published receipt, manifest, root, and
+artifact-boundary evidence as acknowledgement. It writes
+`review_state=expired`, `reviewed_at`, optional `reviewed_by`,
+`review_reason`, and `review_action=expire` only when the operator is retiring
+stale persisted review evidence. It does not claim the target is restored, it
+does not repair target files, rewrite manifests, authorize prune, or suppress
+future detector findings, and a later redetection of the same logical drift can
+reopen the record.
 
 `drift resolve --profile <path> --id <persisted-drift-id> --reason <text>
 [--reviewer <id>] [--format text|json]` is the narrow persisted drift closeout
@@ -372,18 +453,63 @@ the current source file still matches that digest/size evidence, plus
 resolve-noop actions for already-restored missing-file drift and already-absent
 expected-missing paths. Other drift classes are refused.
 
+`reconcile review --profile <path> [--session <id>] [--format text|json]` is
+the current read-only broad repair boundary inventory. It runs the persisted
+plan and live detector without mutating the target or writing receipts. The
+output reports `persisted_drift_reconcile` as the only apply-capable boundary
+when persisted plan actions exist, reports unpersisted live detector findings
+under `live_only_repair_inputs` with `status=record_required`, and keeps
+`background_scans`, `manifest_rewrite`, `daemon_ongoing_sync_integration`,
+`drift_to_prune_handoff`, and `automatic_retry_policy` as planned,
+non-apply-capable boundaries. Live-only findings must still be persisted with
+`drift record` before selected `reconcile apply`.
+
+Reconcile refusal evidence includes stable `reason_code`, `conflict_class`, and
+`retry_advice` fields. Current conflict classes are `operator_intent`,
+`scope_mismatch`, `unsafe_path`, `unsupported_drift`,
+`target_state_conflict`, `artifact_integrity`, `published_evidence`,
+`source_evidence`, and `mutation_failure`. Current retry advice is operator
+guidance such as `fix_command_and_retry`, `select_matching_profile_or_record`,
+`review_target_state_before_retry`, `repair_artifacts_before_retry`,
+`restore_published_evidence_or_republish`,
+`restore_source_evidence_before_retry`,
+`inspect_mutation_result_then_replan`, or `manual_review_required`; it is not
+an automatic retry runner or background policy.
+
 `reconcile apply --profile <path> --id <persisted-drift-id> [--id <id>...]
 --apply --reason <text> [--reviewer <id>] [--session <id>]
-[--format text|json]` is the matching explicit mutation path. It takes the
-target lock, replans before mutation, restores selected missing regular files
-with no-replace target publish semantics, and marks the selected persisted drift
+[--format text|json]` and `reconcile apply --profile <path>
+--all-persisted-planned --apply --reason <text> [--reviewer <id>]
+[--session <id>] [--format text|json]` are explicit persisted-evidence
+mutation paths. `reconcile apply --profile <path> --record-live --apply
+--reason <text> [--reviewer <id>] [--session <id>] [--format text|json]` is
+the explicit live-recording gate. `--all-persisted-planned` first runs the
+read-only boundary review and selects only currently planned persisted
+reconcile actions. `--record-live` first persists current live detector
+findings as durable drift records, then applies only the resulting persisted
+planned actions. Neither gate applies planned broad boundaries. Apply takes the target
+lock, replans before mutation, restores selected missing regular files with
+no-replace target publish semantics, and marks the selected persisted drift
 record resolved only after the target evidence matches. It can also resolve the
 already-restored or already-absent noop cases without restoring file content.
-The current receipt schema is emitted as command output; no durable
-`.supermover/reconcile` repair receipt is written yet. Broad automatic
-reconcile, conflict-class taxonomy beyond the refusal reason codes, retry
-policy, live-only repair, manifest rewrite, background scans, daemon/ongoing
-sync integration, and drift-to-prune integration remain planned.
+`apply` writes a durable started receipt before mutation and a final
+`.supermover/reconcile/receipts/<receipt-id>.json` receipt after applied,
+partial, or refused outcomes; if the final write fails, the started receipt
+remains audit evidence. `report` and `status` surface reconcile receipt counts
+and non-applied receipt issues. Broad automatic reconcile, background retry
+policy, background live-only repair beyond explicit live-recording gates,
+manifest rewrite, broad background scans, broad daemon repair retry/background
+policy, and drift-to-prune integration remain planned. The wired foreground
+daemon can run `repair.drift_recording` to persist current live detector
+findings as durable drift review evidence; that worker records evidence only and
+does not apply reconcile, retry repair, rewrite manifests, or authorize prune.
+It can also run `repair.persisted_reconcile_apply` to apply only already
+persisted, currently planned reconcile actions through the existing reconcile
+receipt path. That worker does not record live-only detector findings, does not
+consume live-only IDs, does not rewrite manifests or authorize prune, and stops
+after refusals or artifact problems so an operator can inspect the receipt
+before retrying. It is profile-validation-mutually-exclusive with
+`repair.drift_recording` to avoid implicit live-only-to-apply chaining.
 
 `prune --dry-run` is a current CLI review surface, not a durable control-plane
 artifact. It reads published `.supermover/deleted/*.json` records and prints
@@ -404,6 +530,11 @@ target files, write `prune_receipt` artifacts, or approve selected IDs that are
 not current candidates. The fresh dry-run must be free of refusals and artifact
 problems before any approval is written. `prune --apply --approval <id>` is the
 only current wired physical prune path.
+`prune approvals --profile <path>` is current wired read-only inventory over
+current-scope approval artifacts. `prune supersede --profile <path> --id
+<approval-id> --reason <text> --reviewer <id>` is current wired approval
+mutation for updating one existing approval artifact to durable
+`status=superseded` review metadata without applying prune.
 
 `prune_approval` is a current schema and apply input for reviewed physical
 prune. `prune approve` authors valid approval artifacts by binding operator
@@ -418,10 +549,11 @@ outside the current profile, target, or session scope are skipped rather than
 reported as current-profile `prune_approval` problems. Corrupt, unparseable,
 symlinked, unreadable, or current-scope invalid approval artifacts may surface
 as `prune_approval` artifact problems. This read path distinguishes
-authored-but-unapplied approvals from approvals that already have applied or
-partial receipt evidence, but it does not author approvals, supersede
-approvals, apply prune decisions, write receipts, delete files or symlinks,
-automatically release a migration, close v1, or duplicate the full apply-time
+authored-but-unapplied approvals from approvals that already have linked prune
+receipt evidence, and compact `status` narrows that read path to aggregate
+counts plus prune review status/action. These read paths do not author
+approvals, supersede approvals, apply prune decisions, write receipts, delete
+files or symlinks, automatically release a migration, close v1, or duplicate the full apply-time
 validation owned by `prune --apply --approval <id>`.
 
 Fields:
@@ -482,7 +614,8 @@ Fields:
 - `items`: each entry has `soft_delete_id`, `target_path`,
   `intended_action`, `pre_prune_observed`, `result`, optional `error_code` /
   `error`, and optional `pruned_at`
-- `refusals`: structured refusal reasons, not prose-only output
+- `refusals`: structured refusal reasons, conflict classes, retry advice, and
+  messages, not prose-only output
 
 Apply writes a no-replace `started` receipt before any deletion. Final prune
 receipts must show that target state was checked against trusted manifest and

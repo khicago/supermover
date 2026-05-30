@@ -1,8 +1,12 @@
 # v1 Scope And Non-Goals
 
-Supermover v1 is a conservative one-way migration tool. The design favors
+Supermover v1 is a conservative one-way migration tool. The product favors
 reviewable state, explicit trust, and recoverable operations over broad sync
 magic.
+
+Read this document as a scope contract, not a roadmap pitch. If a behavior is
+not listed in scope, or is listed only as planned, it should not be described
+elsewhere as implemented.
 
 ## In Scope
 
@@ -24,20 +28,57 @@ magic.
   detector evidence as read-only surfaces. `drift record` persists current live
   detector findings as `.supermover/drift/*.json` review records without
   resolving, repairing, pruning, or suppressing future detector output. `drift
-  acknowledge` is wired for existing persisted drift records, including records
-  created by `drift record`, surfaced as `target_drifts`; `drift resolve` is
-  wired for existing persisted drift records after a fresh detector no longer
-  reports the same path and expected baseline. Broad drift reconcile/repair,
-  drift-to-prune integration, and background scans remain planned.
+  acknowledge` and `drift expire` are wired for existing persisted drift
+  records, including records created by `drift record`, surfaced as
+  `target_drifts`; `drift resolve` is wired for existing persisted drift
+  records after a fresh detector no longer reports the same path and expected
+  baseline. `reconcile review` is wired as a read-only boundary inventory over
+  persisted plan readiness, live-only record-required inputs, and planned broad
+  repair surfaces. `reconcile apply --record-live` is wired as an explicit gate
+  that first persists current live detector findings, then applies only the
+  resulting persisted planned actions. Profile-backed foreground daemon drift
+  recording can also periodically persist current live detector findings as
+  durable review evidence without applying repair. Profile-backed foreground
+  daemon persisted reconcile apply can apply only currently planned persisted
+  drift records through existing reconcile receipts and stops after refusals for
+  operator review. Broad automatic drift reconcile/repair, drift-to-prune
+  integration, background live-only repair beyond explicit live-recording gates,
+  broad daemon repair retry/background policy, and broad background repair scans
+  remain planned.
   History surfaces remain planned. Operator-facing non-dry-run
   `push --network` is wired through profile-backed pinned TLS 1.3 mTLS and
   network transfer outcome artifacts. Current recovery evidence includes a
   bounded same-session CLI/Runner rerun after receiver-accepted payload bytes
   and simulated transport failure. A foreground daemon lifecycle surface is
   wired for install/run/status/stop evidence around existing `serve` behavior.
-  LAN browsing, OS service-manager daemon installation, detached background
-  process management, ongoing incremental sync, and broad resume acceptance
-  remain planned.
+  Bounded low-information LAN browse/advertise is wired. Local incremental queue
+  execution is wired for one bounded `sync run` pass and foreground `sync loop`
+  polling through the existing local push safety path. Foreground `sync watch`
+  OS file-event execution is wired over existing source directories and writes
+  the same durable queue/run receipts. Bounded `sync network run` execution is
+  wired for one profile-backed network queue pass that writes queue/run receipts
+  under the profile-selected target control plane and publishes ready queue
+  entries through a per-entry profile-backed mTLS network manifest. Regular-file
+  replacement requires previous published manifest evidence and receiver-side
+  target revalidation.
+  Foreground `sync network loop` repeats that same profile-backed network queue
+  pass with generated session IDs and optional `--max-runs` smoke bounds.
+  `sync network discover-run` is wired as one bounded LAN-discovery-gated
+  profile-backed network queue pass: the low-information LAN candidate must
+  match the reviewed `network.receiver_url` host:port before the same pinned
+  mTLS transfer path runs. The LAN match is availability gating only, not trust
+  establishment or endpoint selection.
+  Foreground daemon local
+  polling sync is wired only when the profile enables `sync.local_polling`; it
+  runs that same local queue consumer in the foreground daemon process and
+  writes the same run receipt schema across foreground restart. Foreground
+  daemon source-side network polling sync is wired only when the profile
+  enables `sync.network_polling`; it runs the same profile-backed network queue
+  pass as a worker-only foreground daemon mode and resumes generated run
+  numbering from existing durable receipts after process stop/start. OS
+  service-manager daemon installation, detached background process management,
+  daemon-integrated OS watcher sync, automatic LAN discovery endpoint
+  selection, and broad resume acceptance remain planned.
 - Local push vertical slice that copies supported regular files to a trusted
   local target and writes auditable control artifacts.
 - Explicit warning records for recoverable or reviewable gaps.
@@ -84,8 +125,8 @@ magic.
   represent zero-byte regular files through explicit completion evidence, and the
   operator-facing profile-backed `push --network` path now sends that evidence
   through `protocolclient`, `networkpush`, and the CLI. This does not complete
-  LAN browsing, daemon workflow, ongoing sync, broad resume acceptance, or
-  arbitrary process-kill recovery.
+  daemon workflow, continuous watcher/network sync, broad resume acceptance, or arbitrary
+  process-kill recovery.
 - Internal TLS/mTLS transport adapter library. It derives device IDs from leaf
   certificate SPKI SHA-256 hashes, configures TLS 1.3 mTLS with client
   certificate requirements and certificate validity checks, validates peer pins,
@@ -95,20 +136,99 @@ magic.
   `serve` only for paired profiles with complete profile-selected network
   material; non-dry-run `push --network` uses the corresponding source-side
   TLS client configuration.
-- Low-information explicit-address `discover` adapter. It emits untrusted
-  operator-provided address hints, returns no hints on timeout with no source,
-  and does not browse LAN services. Address hints are still peer-address
-  metadata leakage, not privacy protection.
+- Low-information `discover` adapters. Top-level `discover --address` emits
+  untrusted operator-provided address hints and returns no hints on timeout
+  with no source. `discover browse` listens for sparse UDP LAN datagrams within
+  a bounded timeout and classifies unique, duplicate, and ambiguous candidates.
+  `discover advertise --profile <path>` sends sparse profile-backed
+  advertisements containing only service, protocol, ephemeral nonce, and
+  minimal capability flags. Address hints and LAN presence are still
+  peer-address metadata leakage, not privacy protection.
 - Foreground daemon lifecycle commands: `daemon install`, `daemon run
   --foreground`, `daemon status`, `daemon logs`, `daemon restart`, and
   `daemon stop`. They use the profile SSOT, write
   `.supermover/daemon/{install,state,stop-intent,restart-intent}.json` plus
   redacted `.supermover/daemon/events/*.json`, and wrap the same serve
   pairing/receiver behavior. Restart is a foreground intent consumed by a
-  running daemon process, not OS process supervision. They do not install an OS
-  service manager, spawn a detached process, recover crashes, browse LAN
-  services, watch files, or run ongoing sync.
-- Planned LAN discovery that exposes low-information address hints only.
+  running daemon process, not OS process supervision. When the profile enables
+  `sync.local_polling.enabled`, the same foreground process also runs local
+  polling incremental sync through the existing queue/run/local-push path,
+  records `daemon_sync_*` lifecycle events, and continues with fresh generated
+  run receipt IDs after foreground restart. When the profile enables
+  `sync.network_polling.enabled`, `daemon run --foreground` runs a source-side
+  network queue worker instead of pairing/receiver serve listeners, writes the
+  same run receipt schema and redacted `daemon_sync_*` lifecycle events, and
+  resumes generated run numbering from existing durable receipts after a
+  foreground process stop/start. They do not install an OS service manager,
+  spawn a detached process, recover crashes, watch files, execute
+  LAN-discovery-gated sync, select endpoints automatically, or run broad repair.
+- Incremental sync queue commands: `sync queue enqueue`, `sync queue status`,
+  `sync queue list`, `sync queue ready`, `sync queue cancel`,
+  `sync queue fail`, `sync run`, `sync loop`, `sync watch`, and `sync network
+  run`/`sync network loop`. Queue commands store and inspect durable changed-file queue evidence under the
+  profile-selected target. `sync run --profile <path> --session <id>` snapshots
+  the profile roots into the queue, marks ready entries `in_flight`, runs the
+  existing local push safety path once, and writes a durable
+  `.supermover/incremental-sync/.../runs/<session>.json` run receipt.
+  `sync loop --profile <path> --session-prefix <id>` repeats the same local
+  pass in the foreground with generated session IDs until interrupted or until
+  `--max-runs` is reached. A clean run marks entries `done`; a refused publish
+  records retry backoff. `sync queue fail` explicitly marks one entry failed as
+  terminal operator review evidence; it does not retry, repair, publish, or
+  prove the target is restored. A later changed source observation can enqueue
+  new work for the same path. `sync watch --profile <path> --session-prefix
+  <id>` arms recursive OS watchers for existing source directories, runs one
+  baseline pass, and coalesces file events into the same local queue/run/local
+  push path until interrupted or until `--max-events` is reached. `sync network
+  run --profile <path> --session <id>` validates profile trust, network
+  material, local TLS identity, and the network push contract before queue
+  mutation, then runs one bounded queue pass publishing ready entries through a
+  per-entry profile-backed mTLS network manifest. Regular-file replacement
+  requires previous published manifest evidence and receiver-side target
+  revalidation.
+  `sync network loop --profile <path> --session-prefix <id>` repeats that same
+  network pass in the foreground with generated session IDs until interrupted or
+  until `--max-runs` is reached. Idle queue passes write run receipts and do
+  not contact the receiver. Network runtime failures are recorded as
+  retry/backoff queue evidence; missing or invalid network configuration is
+  rejected before queue mutation. `daemon run --foreground` can run the same
+  local polling executor only when the profile enables `sync.local_polling`,
+  or the same network queue pass only when the profile enables
+  `sync.network_polling`; these are profile-backed foreground integrations,
+  not runtime overrides. `sync network discover-run --profile <path>
+  --session <id>` first requires a low-information LAN candidate matching the
+  profile-selected `network.receiver_url`; when no candidate matches, it exits
+  with discovery gate evidence and writes no queue/run receipt. This is not
+  automatic endpoint selection, detached background sync, broad repair, or
+  bidirectional sync engine.
+  `report` and `status` read the persisted queue and run receipts as operator
+  evidence: clean completed entries and published run receipts are audit
+  context, while queued, ready, `in_flight`, backoff, failed entries, retrying
+  runs, and malformed queue/run artifacts require review. `sync queue list`
+  provides the read-only per-entry queue detail view behind those compact
+  counts.
+- Local-only read-only `dashboard --profile <path> [--listen <loopback-ip:port>]`.
+  It serves a target-side operator page that runs existing `verify` and live
+  extra-path detection against the latest published manifest on page load or
+  explicit refresh, without digest-reading expected files twice. It refuses
+  overlapping full checks and non-loopback listening, and requires its emitted
+  per-process access-token URL before serving the active page. It does not
+  persist detector output, repair files, execute synchronization, compare a
+  post-publish source tree, or provide a Merkle/tree-root digest.
+- Native macOS app workbench under `macos/`. The current app is a CLI-backed
+  operator surface for profile setup, native discovery/pairing command
+  orchestration, selected wired commands, sync queue/run/loop/watch/network
+  controls, role-scoped foreground process supervision, structured app events,
+  visible artifact decode problems, and typed `verify --format json`
+  target-vs-published-manifest comparator evidence. It explicitly shows
+  Merkle/root proof as unavailable because current control-plane evidence does
+  not emit a Merkle tree or content-root artifact. Sync loops and watchers are
+  supervised foreground child processes, not detached daemons. The app does not
+  yet provide the complete app-first source/target workflow for
+  Merkle/root-comparison evidence, evidence-browser safe actions, signed
+  packaging readiness, or final two-machine acceptance.
+- LAN discovery exposes low-information address hints only and does not
+  establish trust.
 - Pairing receipts and pinned device identity as the trust boundary.
 - Internal protocol-client bounded traffic metadata reduction now covers
   padding, batching, and bounded jitter at defined policy levels;
@@ -124,11 +244,14 @@ magic.
 - Automatic physical prune from review evidence. `prune --dry-run` is
   review-only candidate/refusal evidence and never deletes files; `prune
   approve` writes durable approval artifacts plus profile snapshots without
-  deleting files or writing prune receipts; `prune review` and `report` surface
-  current profile/target approval evidence, prune candidates, refusals,
-  existing receipts, and receipt issues as read-only evidence; `status` exposes
-  approval counts/source breakdown as compact read-only evidence for
-  authored-but-unapplied approvals;
+  deleting files or writing prune receipts; `prune approvals` is read-only
+  approval inventory; `prune supersede` updates one existing approval artifact
+  to durable superseded review metadata without applying prune; `prune review`
+  and `report` surface current profile/target approval evidence, prune
+  candidates, refusals, existing receipts, and receipt issues as read-only
+  evidence; `status` exposes compact prune release counts plus prune review
+  status/action for authored-but-unapplied, stale, expired, consumed, and
+  receipt-attention states;
   `prune --apply --approval <id>` remains the only physical prune path.
 - Runtime flags that silently override profile policy for delete, privacy,
   metadata, or target identity behavior.
@@ -172,9 +295,12 @@ never authorizes deletion. Approval artifacts live under
 `.supermover/prune/approvals/<id>.json`; apply writes receipts under
 `.supermover/prune/receipts/<id>.json`. `prune approve` authors approval
 artifacts plus profile snapshots from fresh dry-run candidate evidence without
-deleting target files or writing prune receipts. `report` and compact `status`
-read approval artifacts as audit evidence only; `status` narrows this to counts
-and source breakdown. They do not apply, supersede, or validate approvals for
+deleting target files or writing prune receipts. `prune approvals` is read-only
+approval inventory, and `prune supersede` updates one existing approval
+artifact to durable superseded review metadata without applying prune. `report`
+and compact `status` read approval artifacts as audit evidence only; `status`
+narrows this to compact prune release counts plus prune review status/action.
+These read-only surfaces do not apply, supersede, or validate approvals for
 mutation, and they do not automatically release a migration or close v1.
 
 Refusal remains the default when policy, approval evidence, target identity,
@@ -192,12 +318,12 @@ conditions but does not mutate the target control plane. Current records include
 session/profile/target/root scope, target-relative path, detection time,
 `change`, structured expected manifest evidence, structured observed target
 state, `review_state`, and evidence strings so review UX can distinguish
-unreviewed, acknowledged, and resolved records without implying automatic
-reconciliation.
+unreviewed, acknowledged, expired, and resolved records without implying
+automatic reconciliation.
 
 Unresolved persisted drift records surfaced by `verify`, `health`, and the
 report `target_drifts` view are review-required. Acknowledged records remain
-review-required metadata; valid resolved records are excluded from
+review-required metadata; valid resolved or expired records are excluded from
 review-required counts. `drift list --profile
 <path> [--session <id>] [--format text|json]` is read-only and derives the
 target from the profile only. It classifies missing, changed, type-mismatched,
@@ -237,6 +363,17 @@ Acknowledgement does not repair files, resolve/reconcile the record, rewrite
 manifests, suppress future detector findings, resume refused updates, authorize
 prune, or mark the target clean.
 
+`drift expire --profile <path> --id <persisted-drift-id> --reason <text>
+[--reviewer <id>] [--format text|json]` retires one existing persisted drift
+record as stale review evidence. It derives target scope from the profile,
+accepts only an existing `.supermover/drift/<id>.json` record that remains
+visible through published profile/session evidence, and writes
+`review_state=expired` plus review metadata only. Expired persisted records no
+longer make `verify`, `health`, `report`, or `status` review-required, but
+they do not claim the target is restored and they do not suppress current live
+detector findings. A later redetection of the same logical drift can reopen the
+record.
+
 `drift resolve --profile <path> --id <persisted-drift-id> --reason <text>
 [--reviewer <id>] [--format text|json]` is wired as the narrow persisted drift
 closeout path. It derives target scope from the profile, accepts only an
@@ -249,6 +386,32 @@ or `status` review-required. Resolve does not repair files, rewrite manifests,
 suppress future detector findings, resume refused updates, authorize prune, or
 provide broad reconcile.
 
+`reconcile plan/review/apply` remains a selected persisted-drift repair surface
+over durable drift evidence. `review` is read-only and marks live-only detector
+inputs as record-required before apply, while keeping background scans,
+manifest rewrite, daemon/ongoing sync integration, drift-to-prune handoff, and
+automatic retry policy as planned. `apply` accepts explicit persisted drift
+IDs, `--all-persisted-planned`, or `--record-live`. The all-persisted mode is a
+gated durable persisted-evidence selection path. The record-live mode first
+persists current live detector findings and then applies only the resulting
+persisted planned actions; it is not a background repair loop. Refusal evidence
+includes a stable
+`reason_code`,
+`conflict_class`, and `retry_advice` so operators can distinguish command
+intent, scope mismatch, unsafe paths, unsupported drift classes, target-state
+conflicts, artifact integrity, published evidence, source evidence, and
+mutation-failure cases. Retry advice is review guidance only; it does not start
+automatic retries, background scans, background live-only repair beyond the
+explicit record-live gate, manifest rewrite, broad daemon repair retry,
+prune integration, or broad automatic reconcile.
+Profile-backed foreground daemon persisted reconcile apply is wired only for
+already persisted, currently planned reconcile actions. It uses the same apply
+receipt path, does not record live-only detector findings before apply, does
+not consume live-only IDs, does not rewrite manifests or authorize prune, and
+stops after refused actions or artifact problems for operator review. It is
+mutually exclusive with profile-backed drift recording so live-only detector
+findings cannot become implicit daemon apply input.
+
 ### Compact Local Status
 
 `status` is wired as `supermover status --profile <path> [--format text|json]`.
@@ -257,8 +420,12 @@ profile SSOT, target `.supermover` artifacts, and target files needed for
 verification/live drift detection, and is read-only. It reuses report, health,
 verify, and drift evidence. It does not include foreground daemon lifecycle
 state; use `daemon status` for `.supermover/daemon` install/state/stop-intent
-evidence. It does not imply LAN, encrypted transport, or long-running sync
-status; pairing and network fields are evidence only.
+evidence and `sync queue`/`sync run`/`sync loop`/`sync watch`/`sync network loop` for incremental queue evidence.
+Profile-enabled foreground-daemon local polling and network polling have their
+own incremental-sync run receipts. This surface does not imply LAN, encrypted
+transport, detached daemon service, daemon-integrated watcher,
+automatic LAN discovery endpoint selection, broad repair, or broad resumable
+network recovery; pairing and network fields are evidence only.
 Session-scoped historical review remains
 `report --profile <path> --session <id>`.
 
@@ -282,15 +449,19 @@ bootstrap only after that code is presented. When the profile is already paired
 and includes complete profile-selected receiver URL plus local TLS identity
 material, `serve` also binds that receiver URL and mounts authenticated receiver
 routes over pinned mutual TLS. Paired partial receiver material fails closed
-before any listener reports ready. It does not browse or advertise on LAN.
+before any listener reports ready. Long-running LAN advertisement is owned by
+`discover advertise` or a future managed daemon slice, not by `serve` itself.
 Current `pair` requires the verification code before writing a local
 receipt/profile pins.
-`discover` has a low-information explicit-address adapter; with no configured
-source it waits for the requested timeout and returns no untrusted hints.
+`discover --address` has a low-information explicit-address adapter; with no
+configured source it waits for the requested timeout and returns no untrusted
+hints. `discover browse` adds bounded LAN datagram browsing and candidate
+classification. `discover advertise --profile <path>` emits sparse
+low-information LAN advertisements.
 
-Planned LAN browsing still remains unwired. Discovery returns unauthenticated
-address hints only. Discovery advertisements must remain sparse and must not
-disclose identity, local layout, profile data, or inventory size.
+Discovery returns unauthenticated address hints only. Discovery advertisements
+must remain sparse and must not disclose identity, local layout, profile data,
+or inventory size.
 
 Pairing evidence starts only after explicit pairing verification writes a
 receipt and pins device identity. A discovered endpoint without pairing is not a
@@ -316,13 +487,17 @@ go run ./cmd/supermover drift list --profile <path>
 go run ./cmd/supermover drift list --profile <path> --session <session-id>
 go run ./cmd/supermover drift record --profile <path> [--session <session-id>]
 go run ./cmd/supermover drift acknowledge --profile <path> --id <persisted-drift-id> --reason <text>
+go run ./cmd/supermover drift expire --profile <path> --id <persisted-drift-id> --reason <text>
 go run ./cmd/supermover drift resolve --profile <path> --id <persisted-drift-id> --reason <text>
 go run ./cmd/supermover report --profile <path>
 go run ./cmd/supermover report --profile <path> --session <session-id>
 go run ./cmd/supermover status --profile <path> [--format text|json]
 go run ./cmd/supermover prune --help
 go run ./cmd/supermover prune --profile <path> --dry-run
+go run ./cmd/supermover prune approvals --profile <path> [--format text|json]
 go run ./cmd/supermover prune approve --profile <path> --id <approval-id> --soft-delete <soft-delete-id> --reason <text> --reviewer <reviewer-id>
+go run ./cmd/supermover prune review --profile <path> [--session <session-id>] [--format text|json]
+go run ./cmd/supermover prune supersede --profile <path> --id <approval-id> --reason <text> --reviewer <reviewer-id> [--format text|json]
 go run ./cmd/supermover prune --profile <path> --apply --approval <approval-id>
 go run ./cmd/supermover recover --profile <path> --session <session-id>
 go run ./cmd/supermover daemon install --profile <target-profile>
@@ -331,22 +506,25 @@ go run ./cmd/supermover daemon status --profile <target-profile> [--format text|
 go run ./cmd/supermover daemon logs --profile <target-profile> [--tail <n>] [--format text|json]
 go run ./cmd/supermover daemon restart --profile <target-profile> [--reason <text>]
 go run ./cmd/supermover daemon stop --profile <target-profile> [--reason <text>]
+go run ./cmd/supermover discover browse [--timeout <duration>]
+go run ./cmd/supermover discover advertise --profile <target-profile>
 ```
 
 Wired network trust skeleton:
 
 ```bash
 go run ./cmd/supermover serve --profile <target-profile>
-go run ./cmd/supermover discover
+go run ./cmd/supermover discover browse
 go run ./cmd/supermover pair --profile <path> --target <address> --verification-code <code>
 go run ./cmd/supermover push --network --profile <path> --dry-run
 go run ./cmd/supermover push --network --profile <path> --session <session-id>
 ```
 
-These commands do not yet advertise on LAN. `serve` exposes low-information
-discovery, gates pairing bootstrap behind the operator verification code, and
-mounts receiver upload routes only on a paired profile's profile-selected mTLS
-receiver listener. `push --network --dry-run` validates
+`serve` exposes low-information discovery, gates pairing bootstrap behind the
+operator verification code, and mounts receiver upload routes only on a paired
+profile's profile-selected mTLS receiver listener. `discover browse` and
+`discover advertise` exchange sparse LAN candidate hints without selecting or
+trusting a target. `push --network --dry-run` validates
 profile/pairing/network-material evidence, local TLS identity files and pins,
 source scan, and manifest shape, and writes no target artifacts;
 non-dry-run `push --network` transfers over the profile-selected pinned mTLS
@@ -357,11 +535,12 @@ The current operator CLI exposes `prune --dry-run` for profile-policy
 validation and non-mutating candidate/refusal evidence over published
 soft-delete records, including `retention_window_active` refusals while
 retention is active. It exposes `prune approve` for durable approval authoring
-from fresh dry-run candidates, and conservative physical prune apply through
-`prune --apply --approval <id>` when the approval artifact exists under the
-target control plane. Apply re-runs the prune plan before deletion, so
-retention-active approved items produce refusal receipts instead of deletion.
-`prune review` and `report` surface prune candidates, refusals, current-scope
-approval evidence, existing receipts, and receipt issues as read-only audit
-evidence, while `status` exposes approval counts/source breakdown. Broader
-release workflow surfaces beyond this evidence remain future work.
+from fresh dry-run candidates, `prune approvals` for read-only approval
+inventory, `prune supersede` for durable approval supersede metadata, and
+conservative physical prune apply through `prune --apply --approval <id>` when
+the approval artifact exists under the target control plane. Apply re-runs the
+prune plan before deletion, so retention-active approved items produce refusal
+receipts instead of deletion. `prune review` and `report` surface prune
+candidates, refusals, current-scope approval evidence, existing receipts, and
+receipt issues as read-only audit evidence, while `status` exposes compact
+prune release counts plus prune review status/action.

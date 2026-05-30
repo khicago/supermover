@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "feat_id": "f-239nwv337",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Implement reviewed repair-to-prune handoff",
+      "status": "todo",
+      "summary": "Add explicit handoff review between drift/repair evidence and prune approval workflows without granting deletion authority from repair evidence.",
+      "gate_result": null,
+      "last_gate_commands": [],
+      "last_commit_hash": null,
+      "notes": [
+        "Handoff evidence must not authorize physical prune.",
+        "Existing prune dry-run, approval, apply, receipt, and supersede controls remain authoritative.",
+        "Unresolved or stale drift/repair evidence must block handoff."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "feat_id": "f-236nwqshz",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Design retry policy over durable repair evidence",
+      "status": "todo",
+      "summary": "Define retry eligibility, terminal refusal states, backoff limits, and receipt lineage for persisted drift repair retries without broad scans or manifest/prune handoff.",
+      "gate_result": null,
+      "last_gate_commands": [],
+      "last_commit_hash": null,
+      "notes": [
+        "Inputs must be durable persisted drift records, reconcile receipts, conflict_class, retry_advice, profile policy, and fresh target preflight.",
+        "Do not consume live-only detector findings directly.",
+        "Do not implement broad scans, manifest rewrite, prune handoff, or UX aggregation in this task."
+      ]
+    }
+  ]
+}

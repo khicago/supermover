@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "feat_id": "f-22tnwsds8",
+  "tasks": [
+      {
+        "id": "T-001",
+        "title": "Normalize remaining v1 backlog and dependency order",
+        "status": "done",
+        "summary": "Maintain the implemented/planned/missing table for all known v1 gaps and keep future implementation features independent.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Covers true LAN browsing, agent daemon, ongoing incremental sync, broad interruption recovery, durable drift persistence/reconcile, approval/release UX, broader repair/reconcile, and traffic privacy level 2 release acceptance.",
+          "Non-goal: product code changes in this proposal-only feature.",
+          "DAG root remains f-22tnwsds8; follow-up implementation scopes are split into separate proposal-only features."
+        ]
+      },
+      {
+        "id": "T-002",
+        "title": "Open scoped prune release review UX implementation feature",
+        "status": "done",
+        "summary": "Create a separate current_tree implementation feature for a read-only prune review/release checklist command backed by existing prune review evidence.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Implemented and archived as f-22unwv5qs; commit d938d40 feat(prune): add read-only release review.",
+          "The broader follow-up was completed in f-234nwra8e with approval inventory, supersede mutation, stale approval handling, readiness counts, and receipt comparison."
+        ]
+      },
+      {
+        "id": "T-003",
+        "title": "Open traffic privacy level 2 release acceptance feature",
+        "status": "done",
+        "summary": "Create a separate feature for repeatable level 2 traffic-shape acceptance evidence on the current profile-backed network path.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Opened as f-22vnwgwjj.",
+          "Acceptance must explicitly say this is bounded traffic-shape protection, not anonymity."
+        ]
+      },
+      {
+        "id": "T-004",
+        "title": "Open broad network recovery acceptance feature",
+        "status": "done",
+        "summary": "Create a separate feature for interruption and resume acceptance across bounded network failure modes.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Opened as f-22wnwd5pe.",
+          "Do not claim arbitrary recovery until kill/restart/reboot evidence exists."
+        ]
+      },
+      {
+        "id": "T-005",
+        "title": "Open durable drift detector persistence and reconcile feature",
+        "status": "done",
+        "summary": "Create a separate feature to persist live detector findings and reconcile them through durable drift surfaces.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Opened as f-22xnwetxr.",
+          "Separate durable evidence from later automatic repair application."
+        ]
+      },
+      {
+        "id": "T-006",
+        "title": "Open LAN browsing discovery feature",
+        "status": "done",
+        "summary": "Create a separate feature for LAN advertisement/browse UX and bounded discovery evidence.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Opened as f-22ynwqndn.",
+          "DAG dependency: f-22ynwqndn depends on f-22znw2utc because managed daemon lifecycle should own long-running advertise/listen surfaces.",
+          "Do not bundle daemon lifecycle or ongoing sync into LAN browsing."
+        ]
+      },
+      {
+        "id": "T-007",
+        "title": "Open agent daemon lifecycle feature",
+        "status": "done",
+        "summary": "Create a separate feature for managed daemon lifecycle around profile SSOT and existing serve behavior.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Opened as f-22znw2utc.",
+          "Do not add runtime overrides that bypass profile configuration."
+        ]
+      },
+      {
+        "id": "T-008",
+        "title": "Open ongoing incremental sync feature",
+        "status": "done",
+        "summary": "Create a separate feature for durable changed-file queueing and long-running incremental sync.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Opened as f-232nwu2nw.",
+          "DAG dependency: f-232nwu2nw depends on f-22znw2utc and f-22wnwd5pe because stable daemon lifecycle and network recovery evidence are prerequisites for ongoing sync.",
+          "Depends on stable daemon/session lifecycle decisions."
+        ]
+      },
+      {
+        "id": "T-009",
+        "title": "Open broader automatic repair and reconcile feature",
+        "status": "done",
+        "summary": "Create a separate feature for safe repair/reconcile planning, application, and receipts.",
+        "gate_result": null,
+        "last_gate_commands": [],
+        "last_commit_hash": null,
+        "notes": [
+          "Opened as f-233nwduwz.",
+          "DAG dependency: f-233nwduwz depends on f-22xnwetxr and f-234nwra8e because repair needs durable drift evidence and release/prune approval semantics.",
+          "Require preflight and explicit receipts before target mutation."
+        ]
+      }
+  ]
+}

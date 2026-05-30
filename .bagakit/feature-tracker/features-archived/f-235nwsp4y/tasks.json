@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "feat_id": "f-235nwsp4y",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Build the native macOS operator shell foundation",
+      "status": "done",
+      "summary": "Add the native SwiftUI shell, authoritative CLI resolution, packaged app bundle path, and honest operator-facing task naming over current CLI truth.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented: native SwiftUI shell, dev and packaged CLI resolution, packaged `SuperMover.app`, bundled `supermover` binary, and honest task naming over current CLI truth.",
+        "Non-goal: this task did not close LAN browsing, detached daemon lifecycle, or ongoing incremental sync."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Deepen structured operator review surfaces",
+      "status": "done",
+      "summary": "Replace raw stdout dependence for current review and lifecycle commands with structured cards for status/report/prune, health/drift, and daemon evidence.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "cd macos && swift build",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "cd macos && ./script/build-app.sh",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented across commits `e7d1736`, `df2b100`, and `72b2441`: structured `status`, `report`, `prune review`, `health`, `drift list`, `daemon status`, and `daemon logs` cards.",
+        "Daemon surfaces remain durable lifecycle evidence, not live liveness or detached service management.",
+        "Non-goal: this task did not add mutating drift or prune approval workflows."
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "Add persisted drift review and narrow reconcile operator surfaces",
+      "status": "done",
+      "summary": "Wire structured app support for persisted drift acknowledge/resolve and narrow reconcile plan/apply without presenting it as broad automatic repair.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "cd macos && swift build",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Current working tree adds task launch, multi-id-aware reconcile input handling, and structured result cards for `drift acknowledge`, `drift resolve`, `reconcile plan`, and `reconcile apply`.",
+        "Aligned the app adapter back to CLI truth: `reconcile plan` keeps optional ids and `reconcile apply` keeps repeatable ids instead of app-only single-id narrowing.",
+        "Included a narrow daemon foreign-state test assertion fix so full-suite gate evidence stays stable without changing daemon status product semantics.",
+        "Acceptance boundary: persisted drift metadata mutation and narrow persisted-drift reconcile only.",
+        "Do not rename this surface into broad repair, detached daemon recovery, or ongoing sync."
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "Add prune approval lifecycle read-only operator surfaces",
+      "status": "done",
+      "summary": "Expose richer read-only prune lifecycle truth in the macOS shell through full `prune review` and `prune approvals` inventory surfaces.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "cd macos && swift build",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "cd macos && ./script/build-app.sh",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Current slice deepens the read model first: richer `prune review` plus `prune approvals` inventory before approval mutations.",
+        "Keep `prune review` as release-review truth with candidates, refusals, approvals, receipts, and read-only authorization contract; do not reduce it to approval inventory.",
+        "Current working tree adds `prune approvals` inventory plus richer `prune review` read-only cards for authorization contract, candidates, refusals, approval lifecycle, receipts, and artifact problems.",
+        "Non-goal: bypass existing approval/apply gates or turn compact status into a second full inventory surface."
+      ]
+    },
+    {
+      "id": "T-005",
+      "title": "Add prune approval artifact mutation surfaces",
+      "status": "done",
+      "summary": "Expose `prune approve` and `prune supersede` as explicit approval-artifact mutations after the read surface is stable.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "cd macos && swift build",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "cd macos && ./script/build-app.sh",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Current slice adds explicit approval id, soft-delete ids, reviewer, reason, and optional expiry inputs for artifact mutation only.",
+        "Current slice adds structured results for `prune approve` authoring and `prune supersede` review-state mutation.",
+        "Non-goal: `prune --apply --approval <id>` target deletion remains outside this mutation slice unless tracked separately."
+      ]
+    }
+  ]
+}

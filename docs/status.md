@@ -19,29 +19,53 @@ verification and live drift detection. It is read-only. It does not repair,
 recover, prune, rewrite profiles, acknowledge review state, persist live
 detector output, or run background scans.
 
-`status` also exposes compact current profile/target prune approval counts and
-source breakdown from durable `.supermover/prune/approvals/*.json` artifacts.
-It does not list the full approval inventory; use `prune review` for the
-focused read-only prune release inventory. These counts are read-only audit
-evidence for review of authored-but-unapplied approvals; they do not authorize
-prune, author approvals, supersede approvals, apply prune decisions, write
-prune receipts, delete files or symlinks, repair or reconcile drift, make a
-review-required target clean, automatically release a migration, or close v1.
+`status` also exposes compact current profile/target prune approval counts,
+prune receipt counts/issues, reconcile receipt counts/issues, prune review
+status/action, and artifact-problem source breakdown from durable
+`.supermover/prune/approvals/*.json`, `.supermover/prune/receipts/*.json`, and
+`.supermover/reconcile/receipts/*.json` artifacts. It does not list the full
+approval or receipt inventory; use `prune review` for the focused read-only
+prune release inventory and `report --format json` for reconcile receipt
+inventory. These counts are read-only audit evidence for review of
+authored-but-unapplied approvals, stale or expired approvals, consumed
+approvals, prune receipt-attention states, and non-applied reconcile receipts;
+they do not authorize prune, author approvals, supersede approvals, apply prune
+decisions, write prune receipts, delete files or symlinks, repair or reconcile
+drift, make a review-required target clean, automatically release a migration,
+or close v1.
 
 Persisted target-drift review state is managed by separate commands:
 `supermover drift acknowledge --profile <path> --id <persisted-drift-id>
---reason <text>` and `supermover drift resolve --profile <path> --id
-<persisted-drift-id> --reason <text>`. `status` may continue to show
-acknowledged persisted drift as review-required evidence because
-acknowledgement is not repair or reconciliation. Valid persisted drift records
-closed by `drift resolve` are excluded from status review counts, but current
-live detector findings remain review-required read-only evidence.
-The separate `reconcile plan/apply` command surface may repair only a narrow
-selected persisted-drift slice: missing regular-file restores from matching
-published manifest and current source evidence, plus already-restored or
-already-absent resolve-noop cases. `status` does not run that planner or
-apply repair; it only reports the resulting persisted drift state and current
-live detector evidence.
+--reason <text>`, `supermover drift expire --profile <path> --id
+<persisted-drift-id> --reason <text>`, and `supermover drift resolve
+--profile <path> --id <persisted-drift-id> --reason <text>`. `status` may
+continue to show acknowledged persisted drift as review-required evidence
+because acknowledgement is not repair or reconciliation. Valid persisted drift
+records closed by `drift resolve`, or retired by `drift expire`, are excluded
+from status review counts, but current live detector findings remain
+review-required read-only evidence. `drift expire` retires stale persisted
+review evidence only; it does not claim the target is restored.
+The separate `reconcile plan/review/apply` command surface may repair only a
+narrow selected persisted-drift slice: missing regular-file restores from
+matching published manifest and current source evidence, plus already-restored
+or already-absent resolve-noop cases. `reconcile apply` can select explicit
+persisted IDs or use `--all-persisted-planned` to select only currently planned
+persisted actions after review, or use `--record-live` to first persist current
+live detector findings and then apply only the resulting persisted planned
+actions. `reconcile review` is read-only boundary evidence. `status` does not
+run that planner, boundary review, or apply repair; it only reports the
+resulting persisted drift state, current live detector evidence, durable
+reconcile receipt counts, and non-applied reconcile receipt issues.
+When profile-backed `repair.drift_recording` runs under the foreground daemon,
+it can add durable drift review records that status later reports, but status
+still does not apply reconcile or infer that the target was repaired.
+When profile-backed `repair.persisted_reconcile_apply` runs under the
+foreground daemon, it can add durable reconcile receipts and close selected
+persisted drift records through the same narrow apply path that status later
+reports. Status still does not run apply, record live-only drift, retry repair,
+rewrite manifests, authorize prune, or infer broad automatic repair. The worker
+is mutually exclusive with profile-backed drift recording to avoid implicit
+live-only-to-apply chaining.
 
 `status` reuses the same evidence classes as `report`, `health`, `verify`, and
 `drift list` instead of inventing a second truth source. Pairing and network
@@ -50,7 +74,8 @@ state; use `supermover daemon status --profile <path>` for
 `.supermover/daemon` install/state/stop-intent/restart-intent evidence and
 recent redacted lifecycle events, or `supermover daemon logs --profile <path>`
 for the scoped event history. `status` output does not imply daemon health,
-LAN browsing, encrypted transport readiness, or long-running sync status.
+LAN candidate availability, encrypted transport readiness, or long-running sync
+status.
 
 ## Output Fields
 
@@ -74,8 +99,12 @@ be stable for the same evidence set. The current top-level fields are:
   completeness summary.
 - `counts`: counts for warnings, soft deletes, persisted target drift, live
   target drift, prune approvals, authored-but-unapplied prune approvals,
-  recovery issues, invalid health records, artifact problems, verification
-  findings, pairing evidence issues, and network-transfer evidence.
+  active/stale/expired/consumed prune approvals, prune receipts, prune receipt
+  issues, reconcile receipts, reconcile receipt issues, recovery issues,
+  invalid health records, artifact problems, verification findings, pairing
+  evidence issues, and network-transfer evidence.
+- `prune_review`: compact prune release-review status/action copied from the
+  broader report/review evidence without expanding to full item inventory.
 - `pairing`: local pairing/profile-pin evidence state.
 - `privacy`: profile privacy evidence and current local/network wiring status.
 - `traffic_privacy_acceptance`: level 2 acceptance evidence for the
@@ -101,9 +130,9 @@ status surface. It must not accept runtime policy overrides.
 
 Review-required status includes warnings, soft deletes, unresolved persisted
 target drift, live target drift, authored-but-unapplied prune approvals,
-recovery issues, invalid or unreadable control artifacts, verification
-warning/error findings, pairing evidence issues, network artifact issues, or no
-published manifest for the current
+non-applied reconcile receipts, recovery issues, invalid or unreadable control
+artifacts, verification warning/error findings, pairing evidence issues,
+network artifact issues, or no published manifest for the current
 profile-selected target.
 Clean published network transfers, including zero-byte regular files published
 through explicit final empty completion, should not create a `status` review

@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "feat_id": "f-234nwra8e",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Prepare richer prune and release workflow implementation slice",
+      "status": "done",
+      "summary": "Extend prune release workflow beyond read-only review with approval lifecycle and release readiness gates.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented today: `prune --dry-run`, `prune approve`, `prune review`, `prune --apply`, approval inventory, receipts, and stale/expired/consumed/blocked approval classification exist.",
+        "Remaining closure after T-001 was approval lifecycle mutation, broader release readiness gates, and receipt comparison.",
+        "Builds on archived `f-22unwv5qs` / commit d938d40.",
+        "Non-goal: approval bypass or physical pruning changes without existing apply gates."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Complete richer prune release workflow closure",
+      "status": "done",
+      "summary": "Complete prune release closure with approval inventory, supersede mutation, receipt comparison, compact readiness counts, and honest docs while keeping target mutation behind existing apply gates.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented: `prune approvals` read-only inventory, `prune supersede` durable approval mutation, receipt-linked approval states, and compact status prune review status/action plus readiness counts.",
+        "Keeps supersede mutation separate from physical prune apply; `prune --apply --approval <id>` remains the only target-deleting path.",
+        "Do not bypass existing dry-run/apply approval gates."
+      ]
+    }
+  ]
+}

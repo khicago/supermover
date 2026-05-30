@@ -222,14 +222,17 @@ The `serve` command is wired as a low-information target listener for pairing
 and, when a profile is already paired with complete profile-selected network
 material, as an authenticated receiver listener. `pair` can consume the pairing
 endpoint with an operator-entered verification code to write a local pairing
-receipt and update profile target pins. `discover` also has a low-information
-explicit-address adapter. `push --network` is wired as the source-side
-profile-backed network path:
+receipt and update profile target pins. `discover` has a low-information
+explicit-address adapter plus bounded sparse UDP LAN browse/advertise
+subcommands. `push --network` is wired as the source-side profile-backed
+network path:
 
 ```bash
 go run ./cmd/supermover serve --profile <target-profile>
 go run ./cmd/supermover discover --timeout 2s
 go run ./cmd/supermover discover --address 127.0.0.1:9000 --format json
+go run ./cmd/supermover discover browse --timeout 2s
+go run ./cmd/supermover discover advertise --profile <target-profile>
 go run ./cmd/supermover pair --profile <source-profile> --target <address> --verification-code <code>
 go run ./cmd/supermover push --network --profile <source-profile> --dry-run
 go run ./cmd/supermover push --network --profile <source-profile> --session <session-id>
@@ -245,12 +248,17 @@ complete `network.receiver_url` plus `network.local_tls_identity`, `serve`
 derives the receiver listen address from that URL, loads the local certificate
 and key from the profile, validates pairing trust and the target certificate
 SPKI pin, then mounts receiver begin/status/chunk/commit routes behind pinned
-TLS 1.3 mutual authentication. `discover` returns untrusted address hints only;
-with no configured source it waits for the requested timeout and returns an
-empty hint list. `--address` values are operator-provided hint material and
-still disclose peer address metadata. `pair` validates the verification code,
-writes a local `control.PairingReceipt`, updates the profile's pinned target
-identity fields, and writes a profile snapshot for audit. The profile schema
+TLS 1.3 mutual authentication. `discover --address` returns untrusted
+operator-provided address hints; with no configured source it waits for the
+requested timeout and returns an empty hint list. `discover browse` listens for
+sparse UDP LAN advertisements and reports unique, duplicate, or ambiguous
+candidates without auto-selecting. `discover advertise --profile <path>` sends
+sparse profile-backed LAN advertisements containing only service, protocol,
+ephemeral nonce, and minimal capability flags. `--address`, browse candidates,
+and LAN presence still disclose peer address metadata. `pair` validates the
+verification code, writes a local `control.PairingReceipt`, updates the
+profile's pinned target identity fields, and writes a profile snapshot for
+audit. The profile schema
 defines `network.receiver_url` and `network.local_tls_identity` as the SSOT for
 operator network connection material; these are references and pins, not a
 runtime override surface. `push --network` reads the profile, pairing receipt
@@ -303,22 +311,23 @@ evidence. The bounded f-22wnwd5pe/T-002 matrix also covers receiver listener
 restart over preserved target state, commit-only retry, published-session retry,
 and missing/corrupt/mismatched prior transfer evidence that fails closed with
 `payload_overhead_missing`. This does not make `recover` a network recovery
-command and does not change the remaining limits around LAN browsing, daemon
-workflow, ongoing sync, broad arbitrary interruption recovery, broad resume
-acceptance, arbitrary process-kill recovery, power-loss recovery, or anonymity.
+command and does not change the remaining limits around daemon workflow,
+continuous watcher/network sync, broad arbitrary interruption recovery, broad resume acceptance,
+arbitrary process-kill recovery, power-loss recovery, or anonymity.
 
 Current skeleton limits:
 
 - `serve` does not browse or advertise on LAN or disclose inventory. Receiver
   upload endpoints are enabled only on the profile-selected mTLS listener after
   pairing and network material validate.
-- `discover` does not browse LAN services, perform mDNS/DNS-SD, or trust any
-  address.
+- `discover browse` is sparse UDP LAN browsing, not mDNS/DNS-SD, and does not
+  trust any address.
 - `pair` writes local pairing evidence only after operator verification. It is
   not a defense against active endpoint deception before a non-dry-run
   `push --network` validates the pinned TLS peer.
 
-LAN browsing, a transfer daemon, ongoing incremental sync, broad arbitrary
+Transfer daemon behavior, continuous watcher/network sync, broad arbitrary
 interruption recovery, broad resume acceptance, network `recover`, automatic
 retry/reconcile, power-loss recovery, and arbitrary process-kill recovery remain
-planned future slices.
+planned future slices. LAN browse/advertise is wired only as unauthenticated
+low-information discovery.

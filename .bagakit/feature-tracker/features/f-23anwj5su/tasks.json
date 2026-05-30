@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "feat_id": "f-23anwj5su",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Implement background repair operator UX aggregation",
+      "status": "todo",
+      "summary": "Add operator-facing status/report/review/runbook surfaces that distinguish repair evidence, retry, mutation, manifest rewrite, prune handoff, and unresolved review states.",
+      "gate_result": null,
+      "last_gate_commands": [],
+      "last_commit_hash": null,
+      "notes": [
+        "UX must describe only wired behavior as implemented.",
+        "Every summarized state must map back to durable evidence or a clearly planned boundary.",
+        "Do not count this UX slice as implementing retry, scan, manifest rewrite, or prune handoff behavior."
+      ]
+    }
+  ]
+}

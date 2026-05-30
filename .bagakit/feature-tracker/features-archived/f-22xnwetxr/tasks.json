@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "feat_id": "f-22xnwetxr",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Prepare durable live drift persistence and reconcile implementation slice",
+      "status": "done",
+      "summary": "Persist live detector findings automatically or durably across command boundaries and reconcile them through explicit drift semantics.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented today: explicit `drift record` can persist current live detector findings; persisted drifts can be listed, acknowledged, resolved, and reopened when the detector sees the same path again.",
+        "Implemented in adjacent code paths: local push refusal handling already records durable target-drift artifacts automatically and reuses/reopens logical findings through `driftstore.Put`.",
+        "What still remained after T-001 was not narrow reconcile itself, but honest feature scoping plus any explicit expiry or broader durable-persistence closure that still belongs to drift evidence.",
+        "Non-goal: broad automatic repair application before the durable drift model is stable."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Complete durable drift detector persistence closure",
+      "status": "done",
+      "summary": "Repair tracker/docs truth and add the remaining durable-persistence or explicit expiry behavior that still belongs to drift evidence rather than to broader reconcile work.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Keeps implemented explicit record/reopen behavior separate from future background scan/watcher and broader repair behavior.",
+        "Do not keep counting narrow `reconcile plan/apply` as missing here; it is already implemented and tracked separately under `f-233nwduwz`.",
+        "Real remaining closure is around honest durable-persistence boundaries and any explicit expiry semantics, not around broad automatic repair.",
+        "Current working tree introduces an explicit `drift expire` lifecycle plus expired-record reopen/filter semantics and operator docs that distinguish expired from resolved review closure.",
+        "Targeted package tests, `go test -count=1 ./...`, `go vet ./...`, `go mod tidy -diff`, `git diff --check`, `go run ./cmd/supermover help`, and `go run ./cmd/supermover drift expire --help` now pass with repo-local Go temp/build/cache relocation."
+      ]
+    }
+  ]
+}

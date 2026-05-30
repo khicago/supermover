@@ -97,6 +97,19 @@ Acknowledgement is not reconciliation: it does not repair target files, rewrite
 manifests, suppress live detector output, resolve records, authorize prune, or
 make review-required reports clean.
 
+`supermover drift expire --profile <path> --id <persisted-drift-id> --reason
+<text> [--reviewer <id>] [--format text|json]` can retire one existing
+persisted target-drift record as stale review evidence. The ID must come from
+persisted `target_drifts` evidence, not directly from live detector output.
+The command derives target scope from the profile, rechecks the persisted
+record, published receipt, manifest, root, and artifact boundary, and writes
+`review_state=expired` plus review time/reviewer/reason metadata only. Expired
+records no longer make `verify`, `health`, `report`, or `status`
+review-required through persisted drift counts, but live detector output
+remains read-only review evidence. Expire is not repair or restoration: it
+does not mutate target files, rewrite manifests, authorize prune, suppress
+future detector findings, or claim the target is clean.
+
 `supermover drift resolve --profile <path> --id <persisted-drift-id> --reason
 <text> [--reviewer <id>] [--format text|json]` can close one existing persisted
 target-drift record. The ID must come from persisted `target_drifts` evidence,

@@ -237,10 +237,10 @@ effective target paths before begin.
   staged file or a pre-existing target file. The profile-backed
   operator-facing `push --network` path now sends that completion through
   `protocolclient`, `networkpush`, and the CLI end to end. This is file
-  transfer support only; LAN browsing, daemon workflow, ongoing sync, broad
-  arbitrary interruption recovery, broad resume acceptance, and arbitrary
-  process-kill recovery remain planned. Anonymity is not claimed; strong
-  anonymity is out of scope.
+  transfer support only; it does not make discovery trusted. Daemon workflow,
+  continuous watcher/network sync, broad arbitrary interruption recovery, broad resume acceptance,
+  and arbitrary process-kill recovery remain planned. Anonymity is not claimed;
+  strong anonymity is out of scope.
 
 0-RTT or replayable early data must not be used for `POST /v1/sessions`,
 `POST /v1/chunks`, or `POST /v1/commit`; any future QUIC/HTTP3 adapter inherits

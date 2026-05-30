@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "feat_id": "f-232nwu2nw",
+  "title": "Ongoing incremental sync",
+  "slug": "ongoing-incremental-sync",
+  "goal": "Add durable changed-file queueing and long-running incremental synchronization with receipts, status, backoff, and cancellation, building on stable daemon and recovery decisions.",
+  "status": "archived",
+  "workspace_mode": "current_tree",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 5
+  },
+  "gate": {
+    "last_result": "pass",
+    "last_task_id": "T-003",
+    "last_check_commands": [
+      {
+        "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go mod tidy -diff",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "git diff --check",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go run ./cmd/supermover help",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go run ./cmd/supermover version",
+        "exit_code": 0,
+        "status": "pass"
+      }
+    ],
+    "last_log_path": ".bagakit/feature-tracker/features/f-232nwu2nw/artifacts/gate-T-003-r5-0001.log"
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "dag_dependencies_updated",
+      "detail": "depends_on=f-22tnwsds8,f-22znw2utc,f-22wnwd5pe"
+    },
+    {
+      "action": "workspace_assigned",
+      "detail": "proposal_only -> current_tree; root_branch=main"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-001"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-001 => done"
+    },
+    {
+      "action": "feature_reopened",
+      "detail": "restored in_progress after splitting remaining LAN-discovery and per-entry transport tasks"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-002"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-002 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-002 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-003"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-003 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-003 => done"
+    },
+    {
+      "action": "feat_archived",
+      "detail": "moved + cleaned"
+    }
+  ],
+  "depends_on": [
+    "f-22tnwsds8",
+    "f-22znw2utc",
+    "f-22wnwd5pe"
+  ],
+  "closed_from_status": "done",
+  "archived_cleanup": {
+    "workspace_mode": "current_tree",
+    "base_ref": "main",
+    "branch_merged": false,
+    "worktree_removed": false,
+    "worktree_pruned": false,
+    "branch_deleted": false,
+    "note": "worktree mode removes/prunes worktree and deletes merged branch; current_tree/proposal_only only archive feat metadata",
+    "preserved_root_entries": [
+      "artifacts/closeout-preserved-root/proposal.md",
+      "artifacts/closeout-preserved-root/spec-delta.md",
+      "artifacts/closeout-preserved-root/verification.md"
+    ]
+  }
+}

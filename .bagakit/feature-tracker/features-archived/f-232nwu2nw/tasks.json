@@ -1,0 +1,238 @@
+{
+  "version": 1,
+  "feat_id": "f-232nwu2nw",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Prepare ongoing incremental sync implementation slice",
+      "status": "done",
+      "summary": "Add durable changed-file queueing, read-only per-entry queue listing, explicit failed-terminal queue review state, bounded and foreground local incremental execution, foreground OS watcher execution, profile-enabled foreground-daemon local polling sync, bounded and foreground profile-backed network queue execution, profile-enabled source-side foreground-daemon network polling sync, and compact report/status visibility before the remaining LAN-discovery-gated network and per-entry transport slices.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./internal/profile ./internal/cli -run 'TestValidateAcceptsProfileBackedNetworkPollingSync|TestValidateRejectsMultipleDaemonPollingModes|TestWriteReadRoundTrip|TestDaemonHelpIncludesLogsAndRestartWithoutOverclaiming|TestDaemonRunForegroundRunsProfileBackedNetworkPollingSync'",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=20 -run TestDaemonRunForegroundLocalPollingSyncResumesSessionSequenceFromReceipts ./internal/cli",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=10 -run 'TestDaemonRunForeground(LocalPollingSyncResumesSessionSequenceFromReceipts|RunsProfileBackedLocalPollingSyncAcrossRestart|RunsProfileBackedNetworkPollingSync)' ./internal/cli",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -race -p=1 -count=1 ./internal/cli -run 'TestDaemonRunForegroundRunsProfileBackedLocalPollingSyncAcrossRestart|TestDaemonRunForegroundRunsProfileBackedNetworkPollingSync|TestDaemonRunForegroundLocalPollingSyncResumesSessionSequenceFromReceipts'",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -race -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover daemon --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover daemon run --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover sync --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "bash \"$BAGAKIT_FEATURE_TRACKER_SKILL_DIR/scripts/feature-tracker.sh\" validate-tracker --root .",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "sh \"$BAGAKIT_LIVING_KNOWLEDGE_SKILL_DIR/scripts/bagakit-living-knowledge.sh\" doctor --root .",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented before this task: repeated `push` runs can publish changed snapshots.",
+        "Implemented in current slices: `sync queue` durable enqueue/status/list/ready/cancel/fail, read-only per-entry queue detail, explicit failed-terminal operator review state with `failed_at` evidence, `sync run` bounded local scan/enqueue/publish pass, foreground local `sync loop` polling with generated session IDs and optional `--max-runs`, foreground OS watcher `sync watch` with baseline and coalesced event run receipts plus optional `--max-events`, bounded profile-backed `sync network run` with pre-mutation network material validation, receiver-side network-transfer evidence, idle not-attempted output, and retry/backoff on runtime network refusal, foreground profile-backed `sync network loop` with generated session IDs, optional `--max-runs`, idle not-attempted passes, and the same retry/backoff behavior, profile-enabled foreground-daemon local polling sync via `sync.local_polling`, daemon restart acceptance for fresh local polling run receipts, profile-enabled source-side foreground-daemon network polling sync via `sync.network_polling`, foreground process restart sequence recovery from existing durable local and network run receipts, durable run receipts, `in_flight`/`done`/`backoff`/`failed` status accounting, retry backoff on refused publish, stale in-flight requeue before a new pass, hidden-file/dot-directory queue coverage, and report/status aggregation for queue/run receipt counts plus malformed queue/run artifact problems.",
+        "Remaining closure after T-001: LAN-discovery-gated network changed-file sync and per-entry network transport.",
+        "DAG dependency: depends on agent daemon lifecycle and broad network recovery acceptance.",
+        "Non-goal: bidirectional sync or conflict semantics beyond one-way migration."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Wire LAN-discovery-gated network changed-file sync",
+      "status": "done",
+      "summary": "Add a bounded `sync network discover-run` pass that uses low-information LAN discovery as an availability gate only: a non-ambiguous candidate must match the profile-selected `network.receiver_url` before the existing profile-pinned mTLS network queue pass runs.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./internal/profile ./internal/cli -run 'TestValidateRejectsInvalidProfiles|TestWriteReadRoundTrip|TestSyncNetworkDiscoverRunHelpIsHonest|TestDaemonHelpIncludesLogsAndRestartWithoutOverclaiming|TestSyncNetworkRunUsageErrors|TestSyncNetworkDiscoverRunPublishesAfterMatchingLANCandidate|TestSyncNetworkDiscoverRunNoMatchDoesNotMutateQueue|TestDiscoverAdvertiseWritesLowInfoDatagram|TestDiscoverAdvertiseReceiverHintRequiresPairedNetworkProfile'",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./internal/cli ./internal/profile ./internal/discovery ./internal/pairing ./internal/receiverserve ./internal/networkpush ./internal/incrementalsync ./internal/report ./internal/status ./internal/agentdaemon",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -race -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover sync network discover-run --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover sync network --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover discover advertise --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover sync --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover daemon --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "bash \"$BAGAKIT_FEATURE_TRACKER_SKILL_DIR/scripts/feature-tracker.sh\" validate-tracker --root .",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Must preserve discovery-is-not-trust: LAN browse candidates are availability hints only; profile trust and pinned mTLS remain the transfer boundary.",
+        "Must keep profile as SSOT; do not add endpoint/runtime overrides for sync behavior.",
+        "Must keep current sync.network_polling as implemented source-side worker-only network polling, not relabel it as LAN-discovery-gated sync.",
+        "A failed discovery gate must write no queue/run receipt and must not mutate profile receiver_url."
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "Add per-entry network transport for queued changes",
+      "status": "done",
+      "summary": "Move beyond whole-profile/root push --network delegation so queued changed-file entries can be transported and receipted at per-entry granularity.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Must not weaken target preflight, path safety, profile trust, hidden-file handling, or durable queue/run receipt evidence.",
+        "Must keep bounded network run/loop and sync.network_polling docs honest until per-entry transport is actually wired."
+      ]
+    }
+  ]
+}

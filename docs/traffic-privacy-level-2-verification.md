@@ -95,10 +95,10 @@ completion.
 
 The remaining acceptance work is not "can the CLI send a file over mTLS" or
 "can the narrow interruption seam rerun." Those paths are wired. Deferred
-surfaces are LAN browsing, daemon behavior, ongoing incremental sync, broad
-resume acceptance and runbook UX, receiver-side recovery UX, arbitrary
-process-kill recovery, and broader release smoke evidence beyond simulated
-transport failure. Future gates must preserve the profile, command output,
+surfaces are daemon behavior, continuous watcher/network sync, broad resume acceptance
+and runbook UX, receiver-side recovery UX, arbitrary process-kill recovery, and
+broader release smoke evidence beyond simulated transport failure. Future gates
+must preserve the profile, command output,
 `health` output, `report` output, `network-transfer.json` when a transfer
 attempt reaches receiver begin and stores a session, receiver-side session
 evidence when present, and interruption/resume evidence. They must also show

@@ -3,3 +3,9 @@
 .agents
 .worktrees
 coverage.out
+macos/.build
+macos/DerivedData
+macos/dist
+.tmp
+.tmp*
+output/

@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "feat_id": "f-239nwv337",
+  "title": "Repair to prune handoff",
+  "slug": "repair-to-prune-handoff",
+  "goal": "Define and implement the reviewed handoff between durable drift or repair evidence and prune approval workflows without letting repair implicitly authorize destructive prune.",
+  "status": "proposal",
+  "workspace_mode": "proposal_only",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 0
+  },
+  "gate": {
+    "last_result": null,
+    "last_task_id": null,
+    "last_check_commands": [],
+    "last_log_path": null
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "dag_dependencies_updated",
+      "detail": "depends_on=f-233nwduwz,f-234nwra8e"
+    }
+  ],
+  "depends_on": [
+    "f-233nwduwz",
+    "f-234nwra8e"
+  ]
+}

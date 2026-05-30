@@ -1,0 +1,431 @@
+{
+  "version": 1,
+  "feat_id": "f-233nwduwz",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Document narrow persisted repair and remaining broader reconcile work",
+      "status": "done",
+      "summary": "Keep docs and tracker honest that current reconcile plan/apply is a narrow selected persisted-drift slice, while broad repair/reconcile remains planned.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "GOTMPDIR=$PWD/.tmp/go-build go run ./cmd/supermover reconcile --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "GOTMPDIR=$PWD/.tmp/go-build go run ./cmd/supermover reconcile plan --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "GOTMPDIR=$PWD/.tmp/go-build go run ./cmd/supermover reconcile apply --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented today: local recovery, persisted-drift resolve, and narrow reconcile plan/apply exist.",
+        "Current reconcile scope: non-mutating plan; apply requires selected persisted drift IDs, explicit --apply, and --reason; profile remains SSOT with no --target or --state-dir override.",
+        "Repair support is narrow: missing regular-file restores from published/source evidence plus already-restored or already-absent resolve-noop.",
+        "Remaining closure after durable selected-ID apply receipts: broad automatic reconcile, background retry policy, background scans, background live-only repair beyond the later explicit record-live gate, manifest rewrite, daemon/ongoing sync, drift-to-prune integration, and broad operator review/apply UX.",
+        "DAG dependency: depends on durable drift detector persistence and richer prune/release workflow.",
+        "Non-goal: claiming v1 complete or allowing automatic destructive target mutation without explicit preflight and durable evidence."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Persist selected-ID reconcile apply receipts",
+      "status": "done",
+      "summary": "Write durable started/final receipts for selected persisted-drift reconcile apply outcomes and surface receipt counts in report/status without claiming broad automatic repair.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "T-001 intentionally landed only the narrow selected persisted-drift reconcile CLI.",
+        "Implemented in this slice: selected persisted-drift `reconcile apply` writes durable started/final `.supermover/reconcile/receipts/<receipt-id>.json` receipts and report/status surface receipt counts plus non-applied receipt issues.",
+        "Keep broad automatic repair, background retry policy, background live-only repair beyond the later explicit record-live gate, manifest rewrite, daemon/ongoing sync integration, broad operator UX, and drift-to-prune integration as missing until implemented and gated later.",
+        "Do not start this task until f-22xnwetxr durable drift closure and f-234nwra8e prune-release closure are ready enough to consume."
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "Classify reconcile refusals and retry guidance",
+      "status": "done",
+      "summary": "Add stable conflict_class and retry_advice fields to reconcile plan/apply refusal evidence without adding automatic background retry or broad repair.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implement only operator-facing refusal taxonomy and retry guidance for the selected persisted-drift reconcile slice.",
+        "Fields must be durable in plan/apply JSON and visible in text output/help/docs.",
+        "Do not implement automatic retry, background scans, live-only repair, manifest rewrite, daemon/ongoing sync integration, broad operator UX, or drift-to-prune integration in this task.",
+        "Continue to consume durable drift evidence and profile SSOT; do not add `--target` or `--state-dir` runtime override paths."
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "Plan background and live repair boundaries without mutation",
+      "status": "done",
+      "summary": "Define the next non-mutating broad repair boundary for background scans, live-only repair inputs, manifest rewrite decisions, daemon/ongoing sync integration, and drift-to-prune handoff before any automatic mutation work.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "This task exists because T-003 was narrowed to taxonomy/advice only.",
+        "Implemented in this slice: `reconcile review` is a read-only CLI/code boundary inventory with text/json output.",
+        "The review distinguishes persisted plan readiness from live-only detector findings that must be persisted with `drift record` before selected apply.",
+        "The review keeps background scans, manifest rewrite, broad daemon repair retry/background policy, drift-to-prune handoff, and automatic retry policy as planned non-apply-capable boundaries.",
+        "Do not claim broad automatic repair is implemented until each boundary has wired CLI/code behavior and validation evidence.",
+        "Keep destructive mutation behind explicit selected persisted evidence, preflight, profile SSOT, and durable receipts."
+      ]
+    },
+    {
+      "id": "T-005",
+      "title": "Implement gated persisted planned apply after boundary review",
+      "status": "done",
+      "summary": "Add an explicit persisted-evidence selection gate that reviews durable persisted reconcile actions and applies only currently planned persisted actions without consuming live-only or background repair boundaries.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented in this slice: `reconcile apply --all-persisted-planned` is an explicit mutation gate over durable persisted planned actions only.",
+        "The gate first runs the read-only boundary review and selects only planned persisted reconcile actions.",
+        "Do not treat `reconcile review` record_required/planned broad-boundary output as automatic repair.",
+        "Background live-only repair beyond explicit live-recording gates, automatic/background retry policy, background scans, manifest rewrite, broad daemon repair retry/background policy, and drift-to-prune handoff remain missing until separate wired behavior and validation evidence exist.",
+        "Any destructive or automatic mutation must remain behind selected durable evidence, profile SSOT, target preflight, explicit gates, and durable receipts."
+      ]
+    },
+    {
+      "id": "T-006",
+      "title": "Implement explicit record-live repair gate",
+      "status": "done",
+      "summary": "Add an explicit `reconcile apply --record-live` gate that persists current live detector findings as durable drift records before applying only the resulting persisted planned actions.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "This task exists because T-005 intentionally refused to consume live-only detector findings directly.",
+        "Implemented scope is explicit operator-invoked `--record-live`: record current live findings durably, then reuse the persisted planned apply path.",
+        "`--record-live` still requires `--apply` and `--reason`, remains mutually exclusive with explicit `--id` and `--all-persisted-planned`, and derives source/target from the profile SSOT.",
+        "Do not treat this as automatic/background repair, background scans, retry policy, manifest rewrite, daemon/ongoing sync integration, or drift-to-prune handoff."
+      ]
+    },
+    {
+      "id": "T-007",
+      "title": "Implement daemon drift recording evidence worker",
+      "status": "done",
+      "summary": "Add profile-backed `repair.drift_recording` so the foreground daemon can periodically persist current live detector findings as durable drift review evidence without applying repair.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "This task narrows the earlier background integration bucket to evidence recording only.",
+        "Implemented scope must be profile SSOT: `repair.drift_recording.enabled` plus interval, no runtime target/state-dir override.",
+        "The daemon worker may call the same durable recording path as `drift record`, writes `daemon_drift_recording_*` lifecycle events, and must not call reconcile apply.",
+        "It records review evidence only: no automatic repair, retry policy, manifest rewrite, drift-to-prune handoff, target restoration claim, or broad background repair UX."
+      ]
+    },
+    {
+      "id": "T-008",
+      "title": "Implement daemon persisted planned apply worker",
+      "status": "done",
+      "summary": "Add profile-backed foreground daemon apply over already persisted, currently planned reconcile actions only, using existing receipts and stopping after refusals for operator review.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "This task keeps T-007 honest: T-007 records durable review evidence only.",
+        "Implemented scope is profile SSOT: `repair.persisted_reconcile_apply.enabled`, interval, required reason, and optional reviewer.",
+        "The daemon worker selects only already persisted, currently planned reconcile actions and applies through the existing receipt path.",
+        "It is mutually exclusive with `repair.drift_recording` so live-only detector findings cannot become implicit daemon apply input.",
+        "It must not call live drift recording, consume live-only detector findings, rewrite manifests, authorize prune, or claim broad automatic repair.",
+        "It stops after refused actions or artifact problems so an operator can inspect durable receipts before retry."
+      ]
+    },
+    {
+      "id": "T-009",
+      "title": "Plan broad repair retry and handoff boundaries",
+      "status": "done",
+      "summary": "Define the remaining automatic/background repair retry policy, broad scans, manifest rewrite decisions, drift-to-prune handoff, and broad background repair UX as separately gated future slices.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "This task keeps T-008 honest: T-008 applies only persisted planned reconcile actions from profile policy.",
+        "Remaining candidates are split into follow-up features: f-236nwqshz retry policy, f-237nwzbyq broad repair scan inventory, f-238nwybkh manifest rewrite decisions, f-239nwv337 repair-to-prune handoff, and f-23anwj5su background repair operator UX.",
+        "Any additional destructive or automatic mutation must remain behind durable evidence, target preflight, profile SSOT, explicit review gates, and durable receipts."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "feat_id": "f-237nwzbyq",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Implement non-mutating broad repair scan inventory",
+      "status": "todo",
+      "summary": "Add profile-backed durable scan evidence for broad repair review without applying repair, retrying, rewriting manifests, or authorizing prune.",
+      "gate_result": null,
+      "last_gate_commands": [],
+      "last_commit_hash": null,
+      "notes": [
+        "Scanner output must be durable operator evidence, not target restoration evidence.",
+        "Hidden files and dot-directories are in scope.",
+        "Target mutation, retry, manifest rewrite, and prune approval remain out of scope."
+      ]
+    }
+  ]
+}

@@ -23,8 +23,9 @@ they are not required for the local workflow.
 - Operator summaries are derived from the profile SSOT and target
   control-plane artifacts. Command stdout is useful for triage, but the durable
   evidence lives under `.supermover`.
-- Discovery is address discovery only. A discovered endpoint is not trusted
-  until pairing verifies and pins device identity. LAN browsing remains planned.
+- Discovery is address discovery only, including explicit address hints and
+  bounded sparse UDP LAN browse candidates. A discovered endpoint is not
+  trusted until pairing verifies and pins device identity.
 
 ## Current Commands
 
@@ -41,10 +42,18 @@ go run ./cmd/supermover deleted list --profile ./supermover.profile.json
 go run ./cmd/supermover health --profile ./supermover.profile.json
 go run ./cmd/supermover drift list --profile ./supermover.profile.json
 go run ./cmd/supermover drift record --profile ./supermover.profile.json
+go run ./cmd/supermover drift expire --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<stale review reason>"
 go run ./cmd/supermover drift resolve --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<target restored reason>"
 go run ./cmd/supermover reconcile plan --profile ./supermover.profile.json --id <persisted-drift-id>
 go run ./cmd/supermover report --profile ./supermover.profile.json
 go run ./cmd/supermover status --profile ./supermover.profile.json
+go run ./cmd/supermover sync queue enqueue --profile ./supermover.profile.json
+go run ./cmd/supermover sync queue ready --profile ./supermover.profile.json
+go run ./cmd/supermover sync run --profile ./supermover.profile.json --session sync-run-001
+go run ./cmd/supermover sync loop --profile ./supermover.profile.json --session-prefix sync-loop --max-runs 2
+go run ./cmd/supermover sync watch --profile ./supermover.profile.json --session-prefix sync-watch --max-events 1
+go run ./cmd/supermover sync network run --profile ./source.profile.json --session sync-network-001
+go run ./cmd/supermover sync network loop --profile ./source.profile.json --session-prefix sync-network --max-runs 2
 go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 go run ./cmd/supermover prune --help
 go run ./cmd/supermover prune --profile ./supermover.profile.json --dry-run
@@ -58,6 +67,13 @@ it:
 
 ```bash
 go run ./cmd/supermover drift acknowledge --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<operator review reason>"
+```
+
+Use `drift expire` only when the operator wants to retire stale persisted
+review evidence without claiming the target has been restored:
+
+```bash
+go run ./cmd/supermover drift expire --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<stale review reason>"
 ```
 
 Use `drift resolve` only after the target has been restored so a fresh live
@@ -93,42 +109,64 @@ artifacts under the target `.supermover` directory and does not repair them.
 the profile-selected target. `drift record` runs the same live detector and
 persists current findings as durable `.supermover/drift/*.json` review records;
 it does not acknowledge, repair, prune, suppress later detector findings, run
-background scans, or broadly reconcile. `drift acknowledge` and `drift resolve`
+background scans, or broadly reconcile. `drift acknowledge`, `drift expire`, and `drift resolve`
 are narrow persisted-record review commands:
 
 ```bash
 go run ./cmd/supermover drift record --profile ./supermover.profile.json --format json
 go run ./cmd/supermover drift acknowledge --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<operator review reason>" --format json
+go run ./cmd/supermover drift expire --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<stale review reason>" --format json
 go run ./cmd/supermover drift resolve --profile ./supermover.profile.json --id <persisted-drift-id> --reason "<target restored reason>" --format json
 ```
 
 Use IDs from persisted `target_drifts` in `verify --format json` or
 `report --format json`, or IDs returned by `drift record`. Live-only IDs from
 `drift list` or `report.live_target_drift` must be recorded before they can be
-acknowledged or resolved. Acknowledgement writes review metadata only and keeps
-the persisted record review-required. Resolve writes review metadata only after
-a fresh live detector no longer reports the same path and expected baseline.
-Neither command repairs target files, suppresses live detector output,
-authorizes prune, performs broad reconcile, or edits manifests. Valid resolved
+acknowledged, expired, or resolved. Acknowledgement writes review metadata only
+and keeps the persisted record review-required. Expire writes review metadata
+only and retires stale persisted review evidence without claiming the target is
+restored. Resolve writes review metadata only after a fresh live detector no
+longer reports the same path and expected baseline. None of these commands
+repairs target files, suppresses live detector output, authorizes prune,
+performs broad reconcile, or edits manifests. Valid resolved or expired
 persisted records no longer make status/report/health/verify review-required,
 but current live detector drift remains review-required.
 
-Use `reconcile plan/apply` only for the narrow persisted-drift repair slice:
+Use `reconcile plan/review/apply` only for the persisted-drift repair surface:
 
 ```bash
 go run ./cmd/supermover reconcile plan --profile ./supermover.profile.json --id <persisted-drift-id> --format json
+go run ./cmd/supermover reconcile review --profile ./supermover.profile.json --format json
 go run ./cmd/supermover reconcile apply --profile ./supermover.profile.json --id <persisted-drift-id> --apply --reason "<operator repair reason>" --format json
+go run ./cmd/supermover reconcile apply --profile ./supermover.profile.json --all-persisted-planned --apply --reason "<operator repair reason>" --format json
+go run ./cmd/supermover reconcile apply --profile ./supermover.profile.json --record-live --apply --reason "<operator repair reason>" --format json
 ```
 
-`plan` is non-mutating. `apply` requires one or more selected persisted drift
-IDs, explicit `--apply`, and `--reason`; source and target paths still come
-from the profile SSOT, with no `--target` or `--state-dir` override. Current
-repair support is limited to missing regular-file restores when published
-manifest evidence and the current source file match, plus resolve-noop when the
-target already matches expected evidence or an expected-absent target path is
-already absent. It does not consume live-only drift, run broad automatic
-reconcile, write durable repair receipts, rewrite manifests, retry in the
-background, or participate in daemon/ongoing sync.
+`plan` is non-mutating. `review` is also non-mutating: it shows persisted plan
+readiness, marks unpersisted live detector findings as `record_required`, and
+keeps broad background scans, manifest rewrite, broad daemon repair retry,
+drift-to-prune handoff, and automatic retry policy as planned
+boundaries.
+`apply` requires persisted-drift selection intent, explicit `--apply`, and
+`--reason`: pass one or more `--id` values, use `--all-persisted-planned` to
+first review durable persisted evidence and select only currently planned
+persisted actions, or use `--record-live` to first persist current live
+detector findings and then apply only the resulting persisted planned actions.
+Source and target paths still come from the profile SSOT, with no `--target` or
+`--state-dir` override. Current repair support is limited to missing
+regular-file restores when published manifest evidence and the current source
+file match, plus resolve-noop when the target already matches expected evidence
+or an expected-absent target path is already absent. It does not run broad
+automatic reconcile, rewrite manifests, retry in the background, or participate
+in daemon/continuous sync.
+Refusals include `conflict_class` and `retry_advice` review fields; the advice
+explains whether to fix command intent, select matching scope, inspect target
+state, repair artifacts, restore published or source evidence, inspect a
+mutation result, or leave the record for manual review. It does not
+automatically retry. `apply` writes durable
+`.supermover/reconcile/receipts/<receipt-id>.json` receipts for applied,
+partial, or refused outcomes; non-applied reconcile receipts remain review
+evidence in `report` and `status`.
 
 `report` is a read-only aggregation command over the same evidence. It
 summarizes warnings, profile suggestions, soft-delete records, persisted target
@@ -137,11 +175,12 @@ existing prune receipts, receipt issues, health/recovery issues, artifact
 problems, pairing evidence state, and published-manifest verification state at
 report time. It also runs the live target drift detector and reports
 review-required drift separately from persisted `.supermover/drift/*.json`
-records. `status` narrows prune approval evidence to counts and source
-breakdown. Prune report/status state is evidence-only; report/status do not
-author approval artifacts, supersede approvals, apply prune decisions, write
-receipts, delete files or symlinks, repair/reconcile drift, make the target
-clean, automatically release a migration, or close v1. Use
+records. `status` narrows prune approval evidence to compact prune release
+counts plus prune review status/action. Prune report/status state is
+evidence-only; report/status do not author approval artifacts, supersede
+approvals, apply prune decisions, write receipts, delete files or symlinks,
+repair/reconcile drift, make the target clean, automatically release a
+migration, or close v1. Use
 `prune approve` for durable approval authoring and
 `prune --apply --approval <id>` for physical prune. Pairing state is evidence-only;
 examples include `unpaired`, `paired_receipt_valid`,
@@ -163,13 +202,167 @@ recovery subset.
 profile/target view over profile SSOT, target `.supermover` evidence, and
 target files needed for verification/live drift detection, with no `--session`
 flag and no repair, recover, prune, profile-update, background-scan, daemon,
-LAN, encrypted transport, or long-running sync semantics. Use
+LAN, encrypted transport, or continuous sync semantics. Use
 `report --profile ... --session ...` for historical session-scoped evidence.
+
+`sync queue`, `sync run`, `sync loop`, and `sync watch` are the current local
+incremental queue surfaces:
+
+```bash
+go run ./cmd/supermover sync queue enqueue --profile ./supermover.profile.json
+go run ./cmd/supermover sync queue status --profile ./supermover.profile.json
+go run ./cmd/supermover sync queue list --profile ./supermover.profile.json
+go run ./cmd/supermover sync queue ready --profile ./supermover.profile.json
+go run ./cmd/supermover sync queue cancel --profile ./supermover.profile.json --id <entry-id> --reason "<operator reason>"
+go run ./cmd/supermover sync run --profile ./supermover.profile.json --session sync-run-001
+go run ./cmd/supermover sync loop --profile ./supermover.profile.json --session-prefix sync-loop --max-runs 2
+go run ./cmd/supermover sync watch --profile ./supermover.profile.json --session-prefix sync-watch --max-events 1
+```
+
+`sync queue enqueue` snapshots profile roots and stores durable changed-file
+queue evidence under the profile-selected target. `sync run` performs one
+bounded local pass: it snapshots roots into that queue, marks ready entries
+`in_flight`, calls the existing local push safety path once, writes a durable
+run receipt, and marks entries `done` or retry-backoff. `sync loop` repeats
+that same local pass in the foreground with generated session IDs until
+interrupted or until `--max-runs` is reached. `sync watch` arms foreground OS
+watchers for existing source directories, writes one baseline run receipt, and
+coalesces file events into additional local queue/run receipts until
+interrupted or until `--max-events` is reached. `sync queue fail` records an
+explicit failed terminal review state for one queue entry; it does not repair
+the target, retry the entry, or prove that source and target match. A later
+changed source observation can queue new work for the same path. The queue
+includes hidden files and dot-directories. These commands do not provide
+detached background daemon management, automatic LAN discovery endpoint selection,
+or bidirectional conflict resolution.
+
+`sync network run`, `sync network discover-run`, and `sync network loop` are
+the current profile-backed network queue surfaces:
+
+```bash
+go run ./cmd/supermover sync network run --profile ./source.profile.json --session sync-network-001
+go run ./cmd/supermover sync network discover-run --profile ./source.profile.json --session sync-network-discover-001
+go run ./cmd/supermover sync network loop --profile ./source.profile.json --session-prefix sync-network --max-runs 2
+```
+
+It requires the same paired profile-backed network material as non-dry-run
+`push --network`, plus the profile-selected `target.local_path` for local
+queue/run receipts. Both commands validate profile trust, network material,
+local TLS identity, and the network push contract before queue mutation, then
+run queue passes through per-entry profile-backed mTLS network manifests.
+Regular-file replacement requires previous published manifest evidence and
+receiver-side target revalidation. `sync network discover-run` first requires a
+low-information LAN candidate that exactly matches the profile-selected
+`network.receiver_url`; the match is an availability gate, not trust or
+endpoint selection. `sync network loop` repeats those passes in the foreground
+with generated session IDs; use `--max-runs` for bounded smoke and release
+checks. Idle queue passes write run receipts and do not contact the receiver. A
+network runtime refusal records retry/backoff evidence instead of hiding the
+work. These commands are not automatic endpoint selection, OS file watchers,
+broad repair, or detached daemon management.
+
+If you want the foreground daemon to run the same local polling queue consumer,
+enable it in the profile rather than using a runtime override:
+
+```json
+"sync": {
+  "local_polling": {
+    "enabled": true,
+    "interval_millis": 60000,
+    "retry_backoff_millis": 60000,
+    "session_prefix": "daemon-sync"
+  }
+}
+```
+
+Then run `daemon run --foreground --profile <path>` under your own supervisor.
+The foreground daemon will write ordinary incremental-sync queue/run receipts
+and redacted `daemon_sync_*` lifecycle events. A foreground `daemon restart`
+reloads the profile, restarts serve listeners, restarts the local polling
+worker, and continues with fresh generated run receipt IDs. This is local
+polling only; it is not OS file watching, detached service management,
+source-side network polling, automatic endpoint selection, or bidirectional
+conflict resolution.
+
+If you want the foreground daemon to periodically persist live target drift as
+review evidence, enable `repair.drift_recording` in the target profile:
+
+```json
+"repair": {
+  "drift_recording": {
+    "enabled": true,
+    "interval_millis": 60000
+  }
+}
+```
+
+This writes durable `.supermover/drift/*.json` review records like
+`drift record`; it does not repair files, retry reconcile, rewrite manifests,
+authorize prune, or mark the target restored.
+
+If you want the foreground daemon to apply only already persisted, currently
+planned reconcile actions, enable `repair.persisted_reconcile_apply` in the
+target profile:
+
+```json
+"repair": {
+  "persisted_reconcile_apply": {
+    "enabled": true,
+    "interval_millis": 60000,
+    "reason": "restore persisted drift from daemon policy",
+    "reviewer": "ops@example.com"
+  }
+}
+```
+
+This writes ordinary `.supermover/reconcile/receipts/*.json` apply evidence and
+uses the same narrow persisted-drift repair rules as `reconcile apply`. It does
+not record live-only detector findings, does not consume live-only IDs, does
+not rewrite manifests, authorize prune, or run broad background retry, and it
+stops after refused actions or artifact problems for operator review. Do not
+enable it together with `repair.drift_recording`; that combination is rejected
+so live-only detector findings cannot become implicit daemon apply input.
+
+If you want the foreground daemon to run source-side network polling, enable
+`sync.network_polling` in the source profile instead. `sync.local_polling` and
+`sync.network_polling` are mutually exclusive profile modes:
+
+```json
+"sync": {
+  "network_polling": {
+    "enabled": true,
+    "interval_millis": 60000,
+    "retry_backoff_millis": 60000,
+    "session_prefix": "daemon-network-sync"
+  }
+}
+```
+
+Then run `daemon run --foreground --profile ./source.profile.json` while the
+paired target `serve` receiver is running. This foreground daemon mode writes
+ordinary incremental-sync run receipts, redacted `daemon_sync_*` lifecycle
+events, and receiver-side network transfer evidence when a network pass reaches
+the receiver. It uses the same per-entry profile-backed mTLS network queue
+publication as `sync network loop`; it is not LAN discovery, automatic endpoint
+selection, detached daemon management, or bidirectional conflict resolution.
+
+`report --profile <path>` and `status --profile <path>` also summarize the
+persisted incremental sync queue and run receipts. A successful bounded run
+appears as `done` queue entries plus a published run receipt without requiring
+review. Queued, ready, `in_flight`, backoff, retrying runs, or malformed
+queue/run artifacts appear as review evidence; failed queue entries also remain
+review evidence until a changed source observation reopens the path as queued.
+Inspect `sync queue list` for per-entry queue detail, `sync queue ready` for the
+currently executable subset, `sync loop --format json` / `sync watch --format
+json` output when used, and
+`.supermover/incremental-sync/.../runs/<session>.json` before retrying.
 
 ## Prepare A Profile
 
 1. Choose a profile path that can be reviewed and versioned with your migration
-   plan.
+   plan. In the native macOS app, the basic Source flow creates the profile at
+   the recommended `~/.supermover/profile-local.json` path; selecting a custom
+   destination is an Advanced action.
 2. Initialize the profile:
 
    ```bash
@@ -341,9 +534,10 @@ a substitute for preserving the artifacts. JSON reports expose live drift as
 `live_target_drift`, with counters such as `live_target_drifts` and
 `live_target_drift_artifact_problems`; persisted `.supermover/drift/*.json`
 records remain the separate `target_drifts` evidence. Use `drift record` when
-current live findings should become durable review records; use `drift resolve`
-only for existing persisted records after a fresh detector no longer reports
-drift for the same path and expected baseline. In scripts, capture
+current live findings should become durable review records; use `drift expire`
+to retire stale persisted review evidence without claiming the target is
+restored; use `drift resolve` only for existing persisted records after a fresh
+detector no longer reports drift for the same path and expected baseline. In scripts, capture
 the output before acting on a non-zero exit; non-zero means review is required
 unless stderr says the report could not be generated.
 
@@ -420,10 +614,16 @@ approval when the fresh dry-run has no refusals or artifact problems, and
 selected IDs must be current dry-run candidates.
 
 After authoring, `report` exposes current profile/target approval evidence from
-`.supermover/prune/approvals/*.json`, while `status` exposes the related counts
-and source breakdown. This helps release review distinguish
-authored-but-unapplied approvals from applied receipts, but it is not deletion
-authorization or automatic release evidence by itself.
+`.supermover/prune/approvals/*.json`, while `status` exposes compact prune
+release counts plus prune review status/action. This helps release review
+distinguish authored-but-unapplied approvals, stale or expired approvals,
+consumed approvals, and receipt-attention states from applied receipts, but it
+is not deletion authorization or automatic release evidence by itself.
+Use `prune approvals --profile ./supermover.profile.json` for read-only
+inventory over current-scope approval artifacts, and
+`prune supersede --profile ./supermover.profile.json --id <approval-id>
+--reason <text> --reviewer <reviewer-id>` to mark an older approval superseded
+without deleting target files or writing prune receipts.
 Use `prune review --profile ./supermover.profile.json` for the focused
 read-only prune release-review view; it reads candidates, approvals, and
 receipts without writing approvals, receipts, or deleting target files.
@@ -452,10 +652,12 @@ deletion remains outside Supermover audit and must be tracked separately.
 
 ## LAN Discovery And Trust
 
-Current `discover` uses explicit address hints and does not browse LAN
-services. Discovery advertisements are intentionally low information: service
-type, protocol, nonce, and minimal capability flags. They must not include
-usernames, hostnames, profile labels, paths, inventory sizes, or friendly names.
+Current `discover` supports explicit address hints and bounded sparse UDP LAN
+browsing. `discover browse` reports low-information candidates; `discover
+advertise --profile <path>` sends sparse profile-backed advertisements.
+Discovery advertisements are intentionally low information: service type,
+protocol, nonce, and minimal capability flags. They must not include usernames,
+hostnames, profile labels, paths, inventory sizes, or friendly names.
 
 Discovery answers only "where might a target be reachable?" Trust requires
 pairing, explicit verification, a pairing receipt, and pinned device identity in

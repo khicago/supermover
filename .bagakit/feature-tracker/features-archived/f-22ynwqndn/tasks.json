@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "feat_id": "f-22ynwqndn",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Prepare LAN browsing discovery implementation slice",
+      "status": "done",
+      "summary": "Add bounded sparse UDP LAN advertisement and browsing discovery UX with low-info candidate handling.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented: `discover browse` listens for sparse UDP LAN datagrams with bounded timeout and reports unique/duplicate/ambiguous candidates.",
+        "Implemented: `discover advertise --profile <path>` requires a valid low-info profile and emits only service, protocol, ephemeral nonce, and capability flags.",
+        "Preserved: top-level `discover --address` remains untrusted explicit-address hint compatibility.",
+        "Non-goal: pairing trust, daemon lifecycle, managed background advertisement, or continuous sync implementation in this feature."
+      ]
+    }
+  ]
+}

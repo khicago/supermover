@@ -20,30 +20,58 @@ verified pairing bootstrap; plus an authenticated receiver listener only when
 the profile is already paired and has complete profile-selected network
 material. `pair` is wired to require that verification code, write a durable
 local pairing receipt, update profile target pins, and record a profile
-snapshot. `discover` is wired for low-information explicit address hints only;
-`--address` is operator-provided hint material and still leaks peer address
-metadata. It does not browse LAN services or establish trust by itself.
+snapshot. `discover` is wired for low-information explicit address hints plus
+bounded sparse UDP LAN browse/advertise; `--address` and LAN candidates are
+operator hint material and still leak peer address metadata. It does not
+establish trust by itself.
 Source-side non-dry-run `push --network` is wired for paired profile-backed
 pinned TLS 1.3 mTLS transfer through the receiver protocol, and the current
 operator path supports traffic privacy level 2 only. Its dry-run mode is still
 preflight-only: it validates profile, pairing, network material, local TLS
 identity, source scan, and manifest shape without contacting the receiver or
-writing target artifacts. Operational LAN agent browsing, daemon behavior,
-ongoing network sync, and broad operator resume/recovery acceptance remain
-planned or partially designed. `drift record` is wired to persist current live
+writing target artifacts. Operational automatic LAN endpoint selection,
+detached daemon behavior, and broad operator resume/recovery acceptance remain
+planned or partially designed.
+`drift record` is wired to persist current live
 detector findings as durable `.supermover/drift/<id>.json` review records.
-`drift acknowledge` is wired for existing persisted drift records, including
-records created by `drift record`, surfaced as `target_drifts`; `drift
-resolve` is wired for existing persisted drift records after a fresh detector
-no longer reports the same path and expected baseline. Broad drift
-reconcile/repair, drift-to-prune integration, background scans, and broader
-prune release workflow surfaces remain planned or partially designed.
+`drift acknowledge` and `drift expire` are wired for existing persisted drift
+records, including records created by `drift record`, surfaced as
+`target_drifts`; `drift resolve` is wired for existing persisted drift records
+after a fresh detector no longer reports the same path and expected baseline.
+Narrow selected persisted-drift `reconcile plan/review/apply` is wired with
+durable apply receipts plus refusal `conflict_class` and `retry_advice` review
+fields. `reconcile review` is read-only and exposes persisted plan readiness,
+live-only record-required inputs, and planned broad repair boundaries.
+`reconcile apply --all-persisted-planned` is an explicit persisted-evidence
+selection gate only; it first reviews durable persisted actions and does not
+consume live-only findings directly. `reconcile apply --record-live` is an
+explicit gate that first persists current live detector findings, then applies
+only the resulting persisted planned actions. Broad automatic drift
+reconcile/repair, automatic/background retry, drift-to-prune integration,
+background live-only repair beyond explicit live-recording gates, manifest
+rewrite, broad daemon repair retry/background policy, and broad background
+scans remain planned or partially designed. Profile-backed foreground daemon
+drift recording can persist live detector findings as durable review evidence,
+but it is not automatic repair. Profile-backed foreground daemon persisted
+reconcile apply can apply only already persisted, currently planned reconcile
+actions through the existing receipt path; it does not record live-only drift,
+does not rewrite manifests or authorize prune, and stops after refusals for
+operator review. It is mutually exclusive with profile-backed drift recording
+so live-only detector findings cannot become implicit daemon apply input.
 The read-only local migration `report` command, read-only `drift list`
-detector, compact local `status` command, `drift record`, `drift resolve`,
-`prune --dry-run`, focused read-only `prune review`, `prune approve`, and
-`prune --apply --approval <id>` are wired, but they are not substitutes for LAN,
-daemon status, ongoing sync, broad drift reconciliation, drift repair,
-background scans, drift-to-prune integration, or broader release automation.
+detector, compact local `status` command, `drift record`, `drift expire`,
+`drift resolve`, `prune --dry-run`, `prune approvals`, focused read-only
+`prune review`, `prune approve`, `prune supersede`,
+`prune --apply --approval <id>`, `sync queue` including read-only per-entry
+listing and explicit queue fail review state, one bounded local `sync run`
+pass, foreground local `sync loop` polling, foreground OS watcher `sync watch`,
+bounded profile-backed per-entry `sync network run`, foreground profile-backed
+per-entry `sync network loop`, bounded LAN-discovery-gated
+`sync network discover-run`, profile-enabled foreground daemon local polling
+sync, and profile-enabled source-side foreground daemon network polling sync are wired,
+but they are not substitutes for LAN trust, detached daemon status,
+daemon-integrated watcher, automatic LAN endpoint selection, broad drift
+reconciliation, drift repair, background scans, or drift-to-prune integration.
 
 ## Primary Status Sources
 
@@ -121,8 +149,8 @@ Dependency notes:
   `f-226nwy2vy`
 - traffic privacy level 2 depends on secure transport from `f-227nw2p2n`
 - release hardening must close the current local and profile-backed network
-  gates and leave explicit future gates for LAN browsing, daemon behavior,
-  ongoing sync, and broader operator recovery/privacy release acceptance
+  gates and leave explicit future gates for daemon behavior, continuous sync, and
+  broader operator recovery/privacy release acceptance
 
 Before implementation, assign the selected feature to `current_tree` or a
 worktree and start the first task through feature-tracker commands when local

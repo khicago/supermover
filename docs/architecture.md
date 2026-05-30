@@ -12,8 +12,9 @@ optimization.
 - Deletion: source deletions become soft-delete records first; physical pruning
   is separate.
 - Consistency: `live`, `strict`, and `snapshot` are explicit modes.
-- Discovery: current discovery supports explicit address hints only and does not
-  browse LAN. Pairing and pinned device identity establish trust.
+- Discovery: current discovery supports explicit address hints and bounded
+  low-information LAN datagram browse candidates. Pairing and pinned device
+  identity establish trust.
 
 ## Control Plane
 
@@ -37,9 +38,9 @@ The schema and path foundation also covers planned history surfaces:
 
 The control plane must be machine-readable and stable enough for current
 `verify`, `deleted list`, `prune`, `health`, `drift list`, `drift record`,
-`drift acknowledge`, `drift resolve`, `report`, `status`, and `recover`
-commands plus planned broad drift reconcile/repair and agent-facing reporting
-commands.
+`drift acknowledge`, `drift expire`, `drift resolve`, `report`, `status`, and
+`recover` commands plus planned broad drift reconcile/repair and agent-facing
+reporting commands.
 
 ## Implementation Boundary
 

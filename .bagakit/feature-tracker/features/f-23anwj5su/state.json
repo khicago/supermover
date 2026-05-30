@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "feat_id": "f-23anwj5su",
+  "title": "Background repair operator UX",
+  "slug": "background-repair-operator-ux",
+  "goal": "Define and implement operator-facing status, report, runbook, and review surfaces for future background repair activity, separating evidence recording, retry, mutation, manifest rewrite, and prune handoff states.",
+  "status": "proposal",
+  "workspace_mode": "proposal_only",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 0
+  },
+  "gate": {
+    "last_result": null,
+    "last_task_id": null,
+    "last_check_commands": [],
+    "last_log_path": null
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "dag_dependencies_updated",
+      "detail": "depends_on=f-236nwqshz,f-237nwzbyq,f-238nwybkh,f-239nwv337"
+    }
+  ],
+  "depends_on": [
+    "f-236nwqshz",
+    "f-237nwzbyq",
+    "f-238nwybkh",
+    "f-239nwv337"
+  ]
+}

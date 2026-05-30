@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "feat_id": "f-237nwzbyq",
+  "title": "Broad repair scan inventory",
+  "slug": "broad-repair-scan-inventory",
+  "goal": "Define and implement an explicit non-mutating broad repair scan inventory that turns profile-scoped target evidence into durable review inputs without applying repair, rewriting manifests, or pruning target files.",
+  "status": "proposal",
+  "workspace_mode": "proposal_only",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 0
+  },
+  "gate": {
+    "last_result": null,
+    "last_task_id": null,
+    "last_check_commands": [],
+    "last_log_path": null
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "dag_dependencies_updated",
+      "detail": "depends_on=f-233nwduwz"
+    }
+  ],
+  "depends_on": [
+    "f-233nwduwz"
+  ]
+}

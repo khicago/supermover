@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "feat_id": "f-233nwduwz",
+  "title": "Narrow persisted repair and reconcile boundary",
+  "slug": "broader-automatic-repair-reconcile",
+  "goal": "Add safe selected persisted repair planning, application, durable receipts, conflict classes, and preflight gates, then split remaining broad/background repair work into separately gated follow-up features.",
+  "status": "archived",
+  "workspace_mode": "current_tree",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 13
+  },
+  "gate": {
+    "last_result": "pass",
+    "last_task_id": "T-009",
+    "last_check_commands": [
+      {
+        "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go mod tidy -diff",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "git diff --check",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go run ./cmd/supermover help",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go run ./cmd/supermover version",
+        "exit_code": 0,
+        "status": "pass"
+      }
+    ],
+    "last_log_path": ".bagakit/feature-tracker/features/f-233nwduwz/artifacts/gate-T-009-r13-0001.log"
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "dag_dependencies_updated",
+      "detail": "depends_on=f-22tnwsds8,f-22xnwetxr,f-234nwra8e"
+    },
+    {
+      "action": "workspace_assigned",
+      "detail": "proposal_only -> current_tree; root_branch=main"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-001"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-001 => done"
+    },
+    {
+      "action": "planning_corrected",
+      "detail": "T-001 completed narrow persisted-drift reconcile slice only; broader automatic repair/reconcile remains ready for later T-002"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-002"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-002 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-002 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-003"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-003 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-003 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-004"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-004 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-004 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-005"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-005 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-005 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-006"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-006 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-006 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-007"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-007 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-007 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-008"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-008 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-008 => done"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-009"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-009 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-009 => done"
+    },
+    {
+      "action": "feat_archived",
+      "detail": "moved + cleaned"
+    }
+  ],
+  "depends_on": [
+    "f-22tnwsds8",
+    "f-22xnwetxr",
+    "f-234nwra8e"
+  ],
+  "closed_from_status": "done",
+  "archived_cleanup": {
+    "workspace_mode": "current_tree",
+    "base_ref": "main",
+    "branch_merged": false,
+    "worktree_removed": false,
+    "worktree_pruned": false,
+    "branch_deleted": false,
+    "note": "worktree mode removes/prunes worktree and deletes merged branch; current_tree/proposal_only only archive feat metadata",
+    "preserved_root_entries": [
+      "artifacts/closeout-preserved-root/proposal.md",
+      "artifacts/closeout-preserved-root/spec-delta.md",
+      "artifacts/closeout-preserved-root/verification.md"
+    ]
+  }
+}

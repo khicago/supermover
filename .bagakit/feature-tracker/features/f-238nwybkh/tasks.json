@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "feat_id": "f-238nwybkh",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Implement reviewed manifest rewrite decision flow",
+      "status": "todo",
+      "summary": "Add explicit proposal, approval/apply, and receipt evidence for manifest rewrites derived from durable repair evidence.",
+      "gate_result": null,
+      "last_gate_commands": [],
+      "last_commit_hash": null,
+      "notes": [
+        "Manifest rewrite must be separate from repair apply.",
+        "Superseded manifest evidence must remain auditable.",
+        "Do not use manifest rewrite as target restoration proof."
+      ]
+    }
+  ]
+}
