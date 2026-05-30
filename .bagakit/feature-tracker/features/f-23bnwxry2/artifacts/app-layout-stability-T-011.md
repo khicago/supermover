@@ -18,9 +18,12 @@ vertical scrolling or window resizing.
   decision only inside the view tree.
 - Use one tighter main-content top inset for all page hosts and fixed owner
   toolbars, while keeping the larger bottom inset for long-page breathing room.
-- Keep the sticky detail header's stop line tied to that same top inset so
-  Prepare, Connect, Move, Verify/Repair, Evidence, Task Dispatch, and Settings
-  do not drift apart.
+- Pin shared detail-page headers with SwiftUI native pinned section headers so
+  Prepare, Task Dispatch, Settings, and other `DetailPageHost` pages keep their
+  page title visible while the body scrolls.
+- Do not emulate fixed detail headers by measuring scroll position and applying
+  a visual offset. That leaves the header in the scroll view's layout flow and
+  can still let the title disappear or clip during real scrolling.
 
 ## Non-goals
 
@@ -34,9 +37,12 @@ vertical scrolling or window resizing.
 
 - `swift test --package-path macos --filter 'WorkbenchNavigationTests|WorkbenchChromeTests|AppStoreTests'`:
   pass; 136 tests, 0 failures.
+- `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`:
+  pass; 31 tests, 0 failures.
 - `WorkbenchNavigationTests/testOwnerSectionsDeclareFixedModeStripPolicy` pins
   the owner-section policy for fixed mode strips.
 - `WorkbenchChromeTests/testFixedOwnerModeStripLeavesDedicatedBodyGap` pins the
   body gap used when the fixed owner toolbar is present.
-- `WorkbenchChromeTests/testDetailPageStickyHeaderStopsAtPaneTopWithoutOvershoot`
-  pins the sticky header stop line to the shared top inset.
+- `WorkbenchChromeTests/testDetailPageHeaderUsesNativePinnedSectionHeader` pins
+  `DetailPageHost` to native pinned section headers and rejects the old
+  `GeometryReader` plus offset shim.

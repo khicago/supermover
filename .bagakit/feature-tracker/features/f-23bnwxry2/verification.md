@@ -1873,6 +1873,28 @@
     real two-Mac installed-app transfer success, Local Network/firewall prompt
     evidence, signed/notarized distribution readiness, Merkle/current-source
     proof, or final T-011 release closure.
+- Step: T-011 shared detail-page header pinning correction.
+  - Outcome: `DetailPageHost` now uses SwiftUI native pinned section headers
+    instead of measuring scroll position and applying an offset. This fixes the
+    Prepare page title disappearing during vertical scroll and applies through
+    the shared detail host rather than a page-specific workaround.
+  - Outcome: the obsolete `detailPageStickyHeaderOffset` helper,
+    `DetailPageHeaderMinYPreferenceKey`, and `GeometryReader` plus offset shim
+    were removed so future code cannot keep validating the failed approach.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
+      (31 tests, 0 failures)
+    - `git diff --check`: pass.
+  - Detail:
+    Updated notes are recorded in
+    `artifacts/app-layout-stability-T-011.md` and
+    `artifacts/recent-issue-root-cause-sweep-T-011.md`.
+  - Boundary:
+    This fixes shared macOS detail-page header pinning. It does not claim a
+    full visual QA matrix across every window size, real two-Mac installed-app
+    transfer success, Local Network/firewall prompt evidence,
+    signed/notarized distribution readiness, Merkle/current-source proof, or
+    final T-011 release closure.
 
 ## Residual Risks
 

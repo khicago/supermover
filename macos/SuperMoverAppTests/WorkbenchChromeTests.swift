@@ -77,15 +77,29 @@ final class WorkbenchChromeTests: XCTestCase {
         )
     }
 
-    func testDetailPageStickyHeaderStopsAtPaneTopWithoutOvershoot() {
-        let paneTop = WorkbenchLayoutMetrics.mainContentTopPadding
+    func testDetailPageHeaderUsesNativePinnedSectionHeader() throws {
+        let source = try workbenchChromeSource()
+        guard
+            let hostStart = source.range(of: "struct DetailPageHost<"),
+            let nextComponent = source.range(
+                of: "\nstruct WorkbenchMediaSlot",
+                range: hostStart.upperBound..<source.endIndex
+            )
+        else {
+            return XCTFail("Expected DetailPageHost source section")
+        }
+        let hostSource = String(source[hostStart.lowerBound..<nextComponent.lowerBound])
 
-        XCTAssertEqual(WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: 40), 0)
-        XCTAssertEqual(paneTop + WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: paneTop), paneTop)
-        XCTAssertEqual(8 + WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: 8), paneTop)
-        XCTAssertEqual(0 + WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: 0), paneTop)
-        XCTAssertEqual(-12 + WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: -12), paneTop)
-        XCTAssertEqual(WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: .nan), 0)
+        XCTAssertTrue(
+            hostSource.contains("LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders])")
+        )
+        XCTAssertTrue(hostSource.contains("Section {"))
+        XCTAssertFalse(hostSource.contains("GeometryReader"))
+        XCTAssertFalse(hostSource.contains("stickyHeaderOffset"))
+        XCTAssertFalse(hostSource.contains("headerPositionReader"))
+        XCTAssertFalse(hostSource.contains("offset(y:"))
+        XCTAssertFalse(source.contains("detailPageStickyHeaderOffset"))
+        XCTAssertFalse(source.contains("DetailPageHeaderMinYPreferenceKey"))
     }
 
     func testFixedOwnerModeStripLeavesDedicatedBodyGap() {
@@ -135,6 +149,15 @@ final class WorkbenchChromeTests: XCTestCase {
                 WorkbenchWrappedRowMetrics(indices: [0, 1, 2], width: 424, height: 30),
             ]
         )
+    }
+
+    private func workbenchChromeSource() throws -> String {
+        let repoRoot = AcceptanceScriptHarness.repoRootURL()
+        let workbenchChromeURL = repoRoot
+            .appendingPathComponent("macos")
+            .appendingPathComponent("SuperMoverApp")
+            .appendingPathComponent("WorkbenchChrome.swift")
+        return try String(contentsOf: workbenchChromeURL, encoding: .utf8)
     }
 
     @MainActor

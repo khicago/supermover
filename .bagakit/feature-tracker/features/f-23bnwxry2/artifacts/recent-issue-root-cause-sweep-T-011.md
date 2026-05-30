@@ -68,6 +68,11 @@ Recent issues checked:
   scroll path, and the workbench used one vertical padding metric for both top
   and bottom spacing. That allowed title/header context to move with content
   and made compact windows feel overly pushed down.
+- Follow-up root cause: `DetailPageHost` tried to keep page headers visible by
+  measuring scroll position and applying an offset, but the header still
+  belonged to the scroll view's layout flow. Real scrolling can clip or cull
+  that original layout frame, so Prepare and sibling detail pages could still
+  lose their title.
 - Sweep: checked the shared workbench chrome metrics, fixed owner-mode toolbar
   path, sidebar navigation, `DetailPageHost` sticky-header behavior, and every
   top-level/merged section route. Control Room remains a custom page, but it
@@ -75,6 +80,9 @@ Recent issues checked:
 - Result: Connect, Move, and Verify/Repair owner toolbars are fixed outside
   the page body scroll; sidebar navigation scrolls independently; page-top
   spacing now uses a dedicated top inset while retaining bottom breathing room.
+  `DetailPageHost` now uses native pinned section headers, so Prepare, Task
+  Dispatch, Settings, and other shared detail hosts keep their page header
+  anchored during body scroll.
 - Boundary: this is layout-stability evidence only. It does not replace a
   future full visual QA pass across real window sizes.
 - Key refs:
@@ -96,6 +104,9 @@ Recent issues checked:
 - `bash "$BAGAKIT_FEATURE_TRACKER_SKILL_DIR/scripts/feature-tracker.sh" validate-tracker --root .`
   passed.
 - `git diff --check` passed.
+- `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
+  passed with 31 tests after replacing the old offset shim with a native pinned
+  `DetailPageHost` header.
 
 ## Closeout Boundary
 

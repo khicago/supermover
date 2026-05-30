@@ -99,12 +99,6 @@ enum WorkbenchLayoutMetrics {
     )
   }
 
-  static func detailPageStickyHeaderOffset(for headerMinY: CGFloat) -> CGFloat {
-    let paneTop = mainContentTopPadding
-    let resolvedHeaderMinY = headerMinY.isFinite ? headerMinY : paneTop
-    return max(0, paneTop - resolvedHeaderMinY)
-  }
-
   static func wrappedRowMetrics(
     for sizes: [CGSize],
     maxWidth: CGFloat,
@@ -717,7 +711,6 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
   let asideWidth: CGFloat?
   let asideLeading: Bool
   let spacing: CGFloat
-  @State private var headerMinY: CGFloat = WorkbenchLayoutMetrics.mainContentTopPadding
   @ViewBuilder let headerAccessory: HeaderAccessory
   @ViewBuilder let primary: Primary
   @ViewBuilder let aside: Aside
@@ -746,28 +739,17 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: spacing) {
-      headerBar
-        .background(headerPositionReader)
-        .offset(y: stickyHeaderOffset)
-        .zIndex(1)
-
-      bodyContent
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .onPreferenceChange(DetailPageHeaderMinYPreferenceKey.self) { value in
-      let resolvedHeaderMinY =
-        value.isFinite ? value : WorkbenchLayoutMetrics.mainContentTopPadding
-      MainActor.assumeIsolated {
-        if headerMinY != resolvedHeaderMinY {
-          headerMinY = resolvedHeaderMinY
-        }
+    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+      Section {
+        bodyContent
+          .padding(.top, spacing)
+      } header: {
+        headerBar
+          .background(SMColor.appBackground)
+          .zIndex(1)
       }
     }
-  }
-
-  private var stickyHeaderOffset: CGFloat {
-    WorkbenchLayoutMetrics.detailPageStickyHeaderOffset(for: headerMinY)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var headerBar: some View {
@@ -776,15 +758,6 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
       accessoryPlacement: headerAccessoryPlacement
     ) {
       headerAccessory
-    }
-  }
-
-  private var headerPositionReader: some View {
-    GeometryReader { proxy in
-      Color.clear.preference(
-        key: DetailPageHeaderMinYPreferenceKey.self,
-        value: proxy.frame(in: .named(WorkbenchLayoutMetrics.mainContentScrollSpace)).minY
-      )
     }
   }
 
@@ -840,14 +813,6 @@ struct DetailPageHost<HeaderAccessory: View, Primary: View, Aside: View, Footer:
     } else {
       primary
     }
-  }
-}
-
-private struct DetailPageHeaderMinYPreferenceKey: PreferenceKey {
-  static let defaultValue: CGFloat = WorkbenchLayoutMetrics.mainContentTopPadding
-
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    value = nextValue()
   }
 }
 
