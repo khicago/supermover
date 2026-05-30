@@ -242,7 +242,7 @@ enum SuperMoverTaskKind: String, CaseIterable, Identifiable {
         case .version:
             return "Read the selected supermover binary version for provenance checks."
         case .profileInit:
-            return "Create a migration config file through the CLI after the source folder is readable and the Target Mac destination path is set."
+            return "Create a source-side migration config file through the CLI after this Mac's source folder is readable."
         case .lintProfile:
             return "Validate migration config SSOT and fail fast on policy errors."
         case .profileSetTarget:
@@ -433,7 +433,7 @@ enum SuperMoverTaskKind: String, CaseIterable, Identifiable {
         case .version:
             return ["version"]
         case .profileInit:
-            return ["profile", "init", "--profile", input.profilePath, "--source", input.sourceRootPath, "--target", input.targetRootPath, "--id", input.requiredProfileID, "--name", input.requiredProfileName] + input.optionalTargetIDArgs
+            return ["profile", "init", "--profile", input.profilePath, "--source", input.sourceRootPath, "--source-only", "--id", input.requiredProfileID, "--name", input.requiredProfileName] + input.optionalTargetIDArgs
         case .lintProfile:
             return ["profile", "lint", "--profile", input.profilePath]
         case .profileSetTarget:
@@ -849,7 +849,7 @@ enum WorkbenchRole: String, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .source:
-            return "Prepare the source folder, Target Mac destination path, config identity, pairing inputs, and bounded transfer inputs."
+            return "Prepare this Mac's source folder, config identity, pairing inputs, and bounded transfer inputs."
         case .target:
             return "Prepare target root, config evidence, listen inputs, and read-only evidence access."
         case .observer:
@@ -860,7 +860,7 @@ enum WorkbenchRole: String, CaseIterable, Identifiable {
     var allowedSetup: String {
         switch self {
         case .source:
-            return "create config, lint config, target destination entry, dry-run preparation"
+            return "create source config, lint config, dry-run preparation"
         case .target:
             return "target root selection, config lint, listen readiness preparation"
         case .observer:
@@ -2949,7 +2949,7 @@ final class AppStore: ObservableObject {
         guard path != nil else {
             let emptyDetail =
                 selectedRole == .source
-                ? "No file picking needed. Choose the source folder and Target Mac destination, then create the setup."
+                ? "No file picking needed. Choose this Mac's source folder, then create the setup."
                 : "Open an existing migration config file to load roots, pairing, network pins, and evidence links."
             return ProfileSelectionContext(
                 title: selectedRole == .source ? "Recommended setup" : "No migration config selected",
@@ -2987,7 +2987,7 @@ final class AppStore: ObservableObject {
             return ProfileSelectionContext(
                 title: explicitProfileName
                     ?? (isRecommendedDestination ? "Recommended setup ready" : "Custom setup location"),
-                detail: explicitProfileID.map { "ID: \($0)" } ?? "Choose the source folder and Target Mac destination, then create the setup.",
+                detail: explicitProfileID.map { "ID: \($0)" } ?? "Choose this Mac's source folder, then create the setup.",
                 metadata: isRecommendedDestination
                     ? "Recommended location selected."
                     : "Ready to create through the selected file.",
@@ -3115,7 +3115,7 @@ final class AppStore: ObservableObject {
         case .newDestination:
             switch profileDestinationPlan(for: path) {
             case .initialize:
-                return "New migration config destination selected. Review the source folder and Target Mac destination, then click Create Config File."
+                return "New migration config destination selected. Review this Mac's source folder, then click Create Config File."
             case let .selectedOnly(note):
                 return note
             }
@@ -3138,7 +3138,7 @@ final class AppStore: ObservableObject {
             state = .pending
             detail =
                 selectedRole == .source
-                ? "Choose the source folder and Target Mac destination, then create the recommended setup. Existing and custom config files live in Advanced."
+                ? "Choose this Mac's source folder, then create the recommended setup. Existing and custom config files live in Advanced."
                 : "Open an existing migration config file before reading evidence or running role tasks."
             primaryTitle = selectedRole == .source ? "Create Migration Setup" : "Open Existing Config"
             primaryTask = selectedRole == .source ? .profileInit : nil
@@ -3199,11 +3199,10 @@ final class AppStore: ObservableObject {
         switch selectedRole {
         case .source:
             title = "Choose folders"
-            detail = "Choose this Mac's folder to move, then enter the destination path that the target Mac will own."
-            if creatingConfig || hasSourceRootInput || hasTargetRootInput {
-                let targetPathStatus = hasTargetRootInput ? "target path set" : "target path missing"
-                statusLabel = "source \(sourceReadiness) / \(targetPathStatus)"
-                state = (sourceReadiness == "readable" && hasTargetRootInput) ? .pass : .pending
+            detail = "Choose only this Mac's folder to move. The Target Mac chooses its own save folder in Target mode."
+            if creatingConfig || hasSourceRootInput {
+                statusLabel = "source \(sourceReadiness)"
+                state = sourceReadiness == "readable" ? .pass : .pending
             } else {
                 statusLabel = "optional unless creating/updating"
                 state = .neutral
@@ -3261,7 +3260,7 @@ final class AppStore: ObservableObject {
             isValidated = lintPassed || statusRead
             statusLabel = lintPassed ? "lint passed" : (statusRead ? "status read" : "not validated")
         case .source:
-            detail = "Create or open the config, then run Lint Config before treating setup as ready."
+            detail = "Create or open the source-side config, then run Lint Config. Target must still choose its save folder before migration commands."
             primaryTitle = selectedProfilePathState == .existingFile ? "Lint Existing Config" : "Lint Config"
             primaryTask = .lintProfile
             isValidated = lintPassed
@@ -3364,15 +3363,9 @@ final class AppStore: ObservableObject {
         case .source:
             title = localization.text(.setupFoldersTitleSource)
             detail = localization.text(.setupFoldersDetailSource)
-            if creatingConfig || hasSourceRootInput || hasTargetRootInput {
-                let targetPathStatus = hasTargetRootInput
-                    ? localization.text(.setupStatusTargetPathSet)
-                    : localization.text(.setupStatusTargetPathMissing)
-                statusLabel = [
-                    localizedRootStatus(prefix: "source", readiness: sourceReadiness, using: localization),
-                    targetPathStatus,
-                ].joined(separator: " / ")
-                state = (sourceReadiness == "readable" && hasTargetRootInput) ? .pass : .pending
+            if creatingConfig || hasSourceRootInput {
+                statusLabel = localizedRootStatus(prefix: "source", readiness: sourceReadiness, using: localization)
+                state = sourceReadiness == "readable" ? .pass : .pending
             } else {
                 statusLabel = localization.text(.setupStatusOptionalCreatingUpdating)
                 state = .neutral
@@ -3644,12 +3637,6 @@ final class AppStore: ObservableObject {
                 note: "New migration config destination selected. Choose a readable source root before writing the config file."
             )
         }
-        let targetRoot = input.targetRootPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !targetRoot.isEmpty else {
-            return .selectedOnly(
-                note: "New migration config destination selected. Enter the destination path from the target Mac before writing the config file."
-            )
-        }
         guard isReadableDirectory(sourceRoot) else {
             return .selectedOnly(
                 note:
@@ -3659,7 +3646,7 @@ final class AppStore: ObservableObject {
 
         return .initialize(
             arguments: SuperMoverTaskKind.profileInit.buildArguments(using: input),
-            note: "Writing migration config through CLI. Run Lint Config before treating setup as ready."
+            note: "Writing source-side migration config through CLI. Run Lint Config; Target must run Update Config Target before migration commands."
         )
     }
 
@@ -3730,9 +3717,6 @@ final class AppStore: ObservableObject {
             return .blocked("Select a readable source root first.")
         }
         if task.requiresTargetRootInput && input.targetRootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            if task == .profileInit {
-                return .blocked("Enter the destination path from the target Mac first.")
-            }
             return .blocked("Select a target root first.")
         }
         if task.requiresSourceRoot, !isReadableDirectory(input.sourceRootPath) {
@@ -5689,7 +5673,7 @@ private extension SuperMoverTaskKind {
 
     var requiresTargetRootInput: Bool {
         switch self {
-        case .profileInit, .profileSetTarget:
+        case .profileSetTarget:
             return true
         default:
             return false

@@ -1189,6 +1189,19 @@ Expected smoke evidence:
    go run ./cmd/supermover profile lint --profile ./supermover.profile.json
    ```
 
+   For two-Mac/native-app preparation, Source creates only its local side and
+   Target writes its own save folder later:
+
+   ```bash
+   go run ./cmd/supermover profile init --profile ./supermover.profile.json --source <source-dir> --source-only
+   go run ./cmd/supermover profile set-target --profile ./supermover.profile.json --target <target-dir>
+   go run ./cmd/supermover profile lint --profile ./supermover.profile.json
+   ```
+
+   Do not ask Source operators to browse or validate a Target-local directory.
+   A source-only profile is not publish-ready until `target.local_path` is
+   persisted by `profile set-target`.
+
    If the profile already exists, do not overwrite it with `profile init`.
    Review and edit the existing profile instead.
    If only the trusted local target path changed, use:

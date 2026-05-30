@@ -7,7 +7,7 @@ import (
 	"github.com/khicago/supermover/internal/agentkb"
 )
 
-func NewDefault(profileID, name, sourceRoot, targetRoot string) Profile {
+func NewSourceOnly(profileID, name, sourceRoot string) Profile {
 	if strings.TrimSpace(name) == "" {
 		name = profileID
 	}
@@ -32,12 +32,18 @@ func NewDefault(profileID, name, sourceRoot, targetRoot string) Profile {
 		},
 		PrivacyPolicy: DefaultPrivacyPolicy(),
 		Target: TargetIdentity{
-			TargetID:  "local:" + profileID,
-			Name:      filepath.Base(filepath.Clean(targetRoot)),
-			LocalPath: filepath.Clean(targetRoot),
+			TargetID: "local:" + profileID,
 		},
 		AgentKnowledge: DefaultAgentKnowledge(),
 	}
+}
+
+func NewDefault(profileID, name, sourceRoot, targetRoot string) Profile {
+	p := NewSourceOnly(profileID, name, sourceRoot)
+	cleanTarget := filepath.Clean(targetRoot)
+	p.Target.Name = filepath.Base(cleanTarget)
+	p.Target.LocalPath = cleanTarget
+	return p
 }
 
 func DefaultPrivacyPolicy() PrivacyPolicy {

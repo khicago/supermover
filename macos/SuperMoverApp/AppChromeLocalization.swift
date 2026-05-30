@@ -328,9 +328,9 @@ struct AppChromeLocalization {
         case .setupSourceRootPlaceholder:
             return "Choose the folder to move from this Mac"
         case .setupTargetRootFieldTitle:
-            return "Destination on Target Mac"
+            return "Folder to Save On This Mac"
         case .setupTargetRootPlaceholder:
-            return "Enter the folder path on the target Mac"
+            return "Choose where this Mac saves incoming files"
         case .setupObserverRootInputsNotice:
             return "Observer mode reads existing config and target evidence. Folder authoring is disabled for this role."
         case .setupActionOpenExistingConfig:
@@ -366,7 +366,7 @@ struct AppChromeLocalization {
         case .setupProfileNoConfigTitle:
             return "Recommended setup"
         case .setupProfileNoConfigDetailSource:
-            return "No file picking needed. Choose the source folder and Target Mac destination, then create the setup."
+            return "No file picking needed. Choose this Mac's source folder, then create the setup."
         case .setupProfileNoConfigDetailExistingOnly:
             return "Open an existing migration config file to load roots, pairing, network pins, and evidence links."
         case .setupProfileRecommendedSourceConfigTitle:
@@ -376,7 +376,7 @@ struct AppChromeLocalization {
         case .setupProfileNewSourceConfigTitle:
             return "Custom setup location"
         case .setupProfileNewSourceConfigDetail:
-            return "Choose the source folder and Target Mac destination, then create the setup."
+            return "Choose this Mac's source folder, then create the setup."
         case .setupProfileNewConfigReadyMetadata:
             return "Ready to create through the selected file."
         case .setupProfileSelectedConfigFileTitle:
@@ -408,7 +408,7 @@ struct AppChromeLocalization {
         case .setupConfigStepTitle:
             return "Migration config file"
         case .setupConfigDetailNoneSource:
-            return "Choose the source folder and Target Mac destination, then create the recommended setup. Existing and custom config files live in Advanced."
+            return "Choose this Mac's source folder, then create the recommended setup. Existing and custom config files live in Advanced."
         case .setupConfigDetailNoneExistingOnly:
             return "Open an existing migration config file before reading evidence or running role tasks."
         case .setupConfigDetailExistingFile:
@@ -430,7 +430,7 @@ struct AppChromeLocalization {
         case .setupFoldersTitleObserver:
             return "Evidence target"
         case .setupFoldersDetailSource:
-            return "Choose this Mac's folder to move, then enter the destination path that the target Mac will own."
+            return "Choose only this Mac's folder to move. The Target Mac chooses its own save folder in Target mode."
         case .setupFoldersDetailTarget:
             return "Use this folder only when explicitly updating the selected setup target. Lint and Status read the saved setup."
         case .setupFoldersDetailObserver:
@@ -438,7 +438,7 @@ struct AppChromeLocalization {
         case .setupValidationTitle:
             return "Validate before moving"
         case .setupValidationDetailSource:
-            return "Create or open the config, then run Lint Config before treating setup as ready."
+            return "Create or open the source-side config, then run Lint Config. Target must still choose its save folder before migration commands."
         case .setupValidationDetailTarget:
             return "Run Lint Config or Read Status to confirm the selected config still matches durable evidence."
         case .setupValidationDetailObserver:
@@ -490,13 +490,13 @@ struct AppChromeLocalization {
         case .workbenchRoleObserverTitle:
             return "Observer"
         case .workbenchRoleSourceSummary:
-            return "Prepare the source folder, Target Mac destination path, config identity, pairing inputs, and bounded transfer inputs."
+            return "Prepare this Mac's source folder, config identity, pairing inputs, and bounded transfer inputs."
         case .workbenchRoleTargetSummary:
             return "Prepare target root, config evidence, listen inputs, and read-only evidence access."
         case .workbenchRoleObserverSummary:
             return "Inspect selected target evidence without mutation or long-running services."
         case .workbenchRoleSourceAllowedSetup:
-            return "create config, lint config, target destination entry, dry-run preparation"
+            return "create source config, lint config, dry-run preparation"
         case .workbenchRoleTargetAllowedSetup:
             return "target root selection, config lint, listen readiness preparation"
         case .workbenchRoleObserverAllowedSetup:

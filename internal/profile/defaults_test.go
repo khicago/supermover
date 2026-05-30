@@ -49,6 +49,35 @@ func TestNewDefaultBuildsValidProfile(t *testing.T) {
 	}
 }
 
+func TestNewSourceOnlyBuildsValidProfileWithoutTargetLocalPath(t *testing.T) {
+	source := filepath.Join("tmp", "source")
+
+	got := NewSourceOnly("profile-local", "", source)
+
+	if err := got.Validate(); err != nil {
+		t.Fatalf("NewSourceOnly(%q, %q, %q).Validate() error = %v, want nil", "profile-local", "", source, err)
+	}
+	if got.Name != "profile-local" {
+		t.Errorf("NewSourceOnly() name = %q, want %q", got.Name, "profile-local")
+	}
+	if got.Roots[0].Path != filepath.Clean(source) {
+		t.Errorf("NewSourceOnly() root path = %q, want %q", got.Roots[0].Path, filepath.Clean(source))
+	}
+	if got.Target.TargetID != "local:profile-local" {
+		t.Errorf("NewSourceOnly() target id = %q, want local:profile-local", got.Target.TargetID)
+	}
+	if got.Target.LocalPath != "" {
+		t.Errorf("NewSourceOnly() target local path = %q, want empty until profile set-target", got.Target.LocalPath)
+	}
+	var encoded bytes.Buffer
+	if err := Write(&encoded, got); err != nil {
+		t.Fatalf("Write(NewSourceOnly()) error = %v, want nil", err)
+	}
+	if strings.Contains(encoded.String(), `"local_path"`) {
+		t.Fatalf("Write(NewSourceOnly()) = %s, want no target local_path before target-side setup", encoded.String())
+	}
+}
+
 func TestDefaultPrivacyPolicyIsLevel2Compatible(t *testing.T) {
 	got := DefaultPrivacyPolicy()
 

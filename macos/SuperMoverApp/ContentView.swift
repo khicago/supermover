@@ -548,21 +548,14 @@ struct ContentView: View {
   private var setupRootFields: some View {
     switch store.selectedRole {
     case .source:
-      HStack(spacing: 14) {
-        pathField(
-          appChromeLocalization.text(.setupSourceRootFieldTitle),
-          text: $store.sourceRootPath,
-          placeholder: appChromeLocalization.text(.setupSourceRootPlaceholder),
-          readiness: sourceRootReadiness,
-          browseTitle: appChromeLocalization.text(.setupActionBrowseSourceRoot)
-        ) {
-          store.browseSourceRoot()
-        }
-        field(
-          appChromeLocalization.text(.setupTargetRootFieldTitle),
-          text: $store.targetRootPath,
-          placeholder: appChromeLocalization.text(.setupTargetRootPlaceholder)
-        )
+      pathField(
+        appChromeLocalization.text(.setupSourceRootFieldTitle),
+        text: $store.sourceRootPath,
+        placeholder: appChromeLocalization.text(.setupSourceRootPlaceholder),
+        readiness: sourceRootReadiness,
+        browseTitle: appChromeLocalization.text(.setupActionBrowseSourceRoot)
+      ) {
+        store.browseSourceRoot()
       }
     case .target:
       pathField(
@@ -615,10 +608,7 @@ struct ContentView: View {
   @ViewBuilder
   private func setupConfigCreationAction(for step: SetupGuide.Step) -> some View {
     if step.primaryTask == .profileInit, let title = step.primaryActionTitle {
-      let hasTargetDestination = !store.targetRootPath
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-        .isEmpty
-      let canCreate = sourceRootReadiness == "readable" && hasTargetDestination
+      let canCreate = sourceRootReadiness == "readable"
       PrimaryActionButton(title, systemImage: "doc.badge.plus", isEnabled: canCreate) {
         if store.selectedRole == .source && (profileSelectionState == .none || profileSelectionState == .missingFile) {
           store.useRecommendedProfileDestination()
@@ -3483,7 +3473,6 @@ struct ContentView: View {
     switch task {
     case .profileInit:
       inputs.append("source folder")
-      inputs.append("Target Mac destination path")
       inputs.append("config identity")
     case .profileSetTarget:
       inputs.append("target destination root")

@@ -1758,6 +1758,41 @@
     close real two-Mac installed-app execution, Local Network/firewall prompt
     evidence, Developer ID notarization/staple/Gatekeeper proof, or final
     T-011 release closure.
+- Step: T-011 Source-only profile creation correction.
+  - Outcome: Source Prepare no longer collects, displays, gates on, or passes a
+    Target-local save path. The CLI now has an explicit
+    `profile init --source-only` mode that creates a valid source-side profile
+    with `target.local_path` omitted; `profile lint` prints a pending
+    `target.local_path` action for that state, and Target completes the same
+    profile through `profile set-target` after choosing its own local save
+    folder. The app profile-init command preview now uses `--source-only` and
+    ignores stale `targetRootPath` state, while Target role remains the only
+    setup surface that browses or validates a writable destination folder.
+  - Green evidence:
+    - `go test -count=1 ./internal/profile ./internal/cli -run 'Test(NewDefault|NewSourceOnly|ProfileInit|ProfileSetTarget)'`
+      (pass)
+    - `go test -count=1 ./internal/profile ./internal/cli`
+      (pass)
+    - `swift test --package-path macos --filter 'AppStoreTests/test(ProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReady|ProfileDestinationPlanStaysSelectionOnlyUntilRootsAreReady|SetupGuideExplainsEmptySourcePreparationInUserOrder|LocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|SetupGuideShowsNewConfigDestinationAsCreationStep|LocalizedProfileSelectionDisplayDoesNotChangeRawConfigValues|ApplyProfileDestinationSelectionDoesNotAutoLaunchProfileCreation|ProfileInitDispatchCopyIsSourceOnly|TaskRunGateAllowsProfileInitWithReadableSourceOnly|ProfileInitCommandPreviewUsesSourceOnlyAndIgnoresTargetPathInput|TaskRunGateBlocksProfileInitForExistingProfileFile)|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
+      (12 tests, 0 failures)
+    - `swift test --package-path macos --filter 'AppStoreTests/test(SetupGuideExplainsEmptySourcePreparationInUserOrder|LocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|ProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReady|ProfileInitCommandPreviewUsesSourceOnlyAndIgnoresTargetPathInput|ProfileInitDispatchCopyIsSourceOnly)|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
+      (6 tests, 0 failures)
+    - `swift test --package-path macos --filter 'AppStoreTests|UIPreferencesTests'`
+      (130 tests, 0 failures)
+    - `swift build --package-path macos --product SuperMoverApp`: pass.
+    - `git diff --check`: pass.
+    - `feature-tracker validate-tracker --root .`: pass.
+    - Resource-key audit: English and Simplified Chinese
+      `Localizable.strings` both have 142 keys and no duplicate keys.
+    - CLI smoke: `profile init --source-only`, `profile lint`, `profile
+      set-target`, and final `profile lint` all pass; lint reports pending
+      `target.local_path` before `set-target` and no pending target path after
+      `set-target`.
+  - Boundary:
+    This corrects Prepare/profile ownership only. It does not claim real
+    two-Mac installed-app transfer success, pairing trust completion, Local
+    Network/firewall prompt evidence, Developer ID notarization/staple, or
+    final T-011 release closure.
 
 ## Residual Risks
 

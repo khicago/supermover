@@ -32,6 +32,7 @@ they are not required for the local workflow.
 ```bash
 go run ./cmd/supermover help
 go run ./cmd/supermover profile init --profile ./supermover.profile.json --source /path/to/source --target /path/to/target
+go run ./cmd/supermover profile init --profile ./supermover.profile.json --source <source-dir> --source-only
 go run ./cmd/supermover profile lint --profile ./supermover.profile.json
 go run ./cmd/supermover profile set-target --profile ./supermover.profile.json --target /path/to/target
 go run ./cmd/supermover scan --profile ./supermover.profile.json
@@ -363,14 +364,29 @@ json` output when used, and
    plan. In the native macOS app, the basic Source flow creates the profile at
    the recommended `~/.supermover/profile-local.json` path; selecting a custom
    destination is an Advanced action.
-2. Initialize the profile:
+2. Initialize the profile.
+
+   For local or mounted-target migration, create the complete profile in one
+   step:
 
    ```bash
    go run ./cmd/supermover profile init --profile ./supermover.profile.json --source /path/to/source --target /path/to/target
    ```
 
-   `--target` sets `target.local_path`. The default `target.target_id` is a
-   separate local identity; pass `--target-id` only when the intended target
+   For a two-Mac/app preparation flow, Source should not choose the Target
+   Mac's local save folder. Create the source-side profile first, then complete
+   the same profile from Target after the Target Mac chooses its own local
+   destination:
+
+   ```bash
+   go run ./cmd/supermover profile init --profile ./supermover.profile.json --source <source-dir> --source-only
+   go run ./cmd/supermover profile set-target --profile ./supermover.profile.json --target <target-dir>
+   ```
+
+   `--target` sets `target.local_path`. A source-only profile is valid profile
+   evidence, but migration, verification, report, health, prune, and repair
+   commands still require `target.local_path`. The default `target.target_id` is
+   a separate local identity; pass `--target-id` only when the intended target
    identity should change.
 
 3. Review the profile before running migration:

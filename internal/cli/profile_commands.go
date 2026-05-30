@@ -48,6 +48,7 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 	profilePath := fs.String("profile", "", "profile path to create")
 	sourceRoot := fs.String("source", "", "source root to persist in the profile")
 	targetRoot := fs.String("target", "", "trusted local target directory to persist")
+	sourceOnly := fs.Bool("source-only", false, "create a source-side profile without target.local_path; complete later with profile set-target")
 	targetID := fs.String("target-id", "", "stable target identity to persist")
 	profileID := fs.String("id", "profile-local", "profile id to persist")
 	name := fs.String("name", "Local profile", "human-readable profile name")
@@ -68,8 +69,16 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 		fmt.Fprintf(stderr, "profile init: unexpected arguments: %s\n", strings.Join(fs.Args(), " "))
 		return 2
 	}
-	if *profilePath == "" || *sourceRoot == "" || *targetRoot == "" {
-		fmt.Fprintln(stderr, "profile init: --profile, --source, and --target are required")
+	if *profilePath == "" || *sourceRoot == "" {
+		fmt.Fprintln(stderr, "profile init: --profile and --source are required")
+		return 2
+	}
+	if *sourceOnly && strings.TrimSpace(*targetRoot) != "" {
+		fmt.Fprintln(stderr, "profile init: --source-only cannot be combined with --target")
+		return 2
+	}
+	if !*sourceOnly && strings.TrimSpace(*targetRoot) == "" {
+		fmt.Fprintln(stderr, "profile init: --target is required unless --source-only is set")
 		return 2
 	}
 	if _, err := os.Stat(*profilePath); err == nil {
@@ -79,7 +88,12 @@ func (r Runner) runProfileInit(args []string, stdout io.Writer, stderr io.Writer
 		fmt.Fprintf(stderr, "profile init: stat %s: %v\n", *profilePath, err)
 		return 1
 	}
-	p := profile.NewDefault(*profileID, *name, *sourceRoot, *targetRoot)
+	var p profile.Profile
+	if *sourceOnly {
+		p = profile.NewSourceOnly(*profileID, *name, *sourceRoot)
+	} else {
+		p = profile.NewDefault(*profileID, *name, *sourceRoot, *targetRoot)
+	}
 	if strings.TrimSpace(*targetID) != "" {
 		p.Target.TargetID = *targetID
 	}
@@ -122,6 +136,9 @@ func (r Runner) runProfileLint(args []string, stdout io.Writer, stderr io.Writer
 	}
 	privacyState := report.PrivacyForProfile(&p)
 	fmt.Fprintf(stdout, "profile ok: %s (%d roots)\n", p.ProfileID, len(p.Roots))
+	if strings.TrimSpace(p.Target.LocalPath) == "" {
+		fmt.Fprintln(stdout, "target local_path=pending action=run profile set-target on the target Mac before migration commands")
+	}
 	fmt.Fprintf(stdout, "privacy policy=status=%s mode=%s traffic_level=%d claim=%s configured_reductions=%s overhead_status=%s overhead_source=%s overhead_padding_bucket_bytes=%d overhead_batch_max_bytes=%d overhead_batch_max_count=%d overhead_jitter_budget_millis=%d residual_leakage=%s local_push=%s network_transfer=%s\n",
 		privacyState.Status,
 		privacyState.Mode,
@@ -409,6 +426,7 @@ func readPairingReceiptForAdoption(p profile.Profile, receiptID string, receiptF
 func printProfileUsage(w io.Writer) {
 	fmt.Fprintln(w, `Usage:
   supermover profile init --profile <path> --source <path> --target <path> [--target-id <id>]
+  supermover profile init --profile <path> --source <path> --source-only [--target-id <id>]
   supermover profile lint --profile <path>
   supermover profile set-target --profile <path> --target <path> [--target-id <id>]
   supermover profile set-network --profile <path> [--receiver-url <url>] [--tls-cert <path> --tls-key <path>] [--clear-receiver-url] [--clear-tls-identity]

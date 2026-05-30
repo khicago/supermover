@@ -475,6 +475,7 @@ Implemented local slice:
 
 ```bash
 go run ./cmd/supermover profile init --profile <path> --source <path> --target <path>
+go run ./cmd/supermover profile init --profile <path> --source <path> --source-only
 go run ./cmd/supermover profile lint --profile <path>
 go run ./cmd/supermover profile set-target --profile <path> --target <path>
 go run ./cmd/supermover scan --profile <path>

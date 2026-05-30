@@ -75,6 +75,79 @@ func TestProfileInitAndLint(t *testing.T) {
 	}
 }
 
+func TestProfileInitSourceOnlyDefersTargetLocalPath(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{
+		"profile", "init",
+		"--profile", profilePath,
+		"--source", source,
+		"--source-only",
+		"--target-id", "target-1",
+	}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile init --source-only exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	p, err := profile.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
+	}
+	if p.Roots[0].Path != source {
+		t.Errorf("profile root path = %q, want %q", p.Roots[0].Path, source)
+	}
+	if p.Target.TargetID != "target-1" {
+		t.Errorf("profile target id = %q, want target-1", p.Target.TargetID)
+	}
+	if p.Target.LocalPath != "" {
+		t.Errorf("profile target local path = %q, want empty until target-side setup", p.Target.LocalPath)
+	}
+	if _, err := targetDirFromProfile(p); err == nil || !strings.Contains(err.Error(), "profile set-target") {
+		t.Fatalf("targetDirFromProfile(source-only profile) error = %v, want profile set-target guidance", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"profile", "lint", "--profile", profilePath}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile lint source-only exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "target local_path=pending action=run profile set-target on the target Mac before migration commands") {
+		t.Fatalf("profile lint source-only stdout = %q, want pending target local_path guidance", stdout.String())
+	}
+}
+
+func TestProfileInitRequiresTargetUnlessSourceOnly(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"profile", "init", "--profile", profilePath, "--source", source}, &stdout, &stderr)
+	if got != 2 {
+		t.Fatalf("profile init without target exit = %d, stderr = %q, want 2", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--target is required unless --source-only is set") {
+		t.Fatalf("profile init without target stderr = %q, want source-only guidance", stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	got = Run([]string{"profile", "init", "--profile", profilePath, "--source", source, "--source-only", "--target", filepath.Join(dir, "target")}, &stdout, &stderr)
+	if got != 2 {
+		t.Fatalf("profile init source-only with target exit = %d, stderr = %q, want 2", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--source-only cannot be combined with --target") {
+		t.Fatalf("profile init source-only with target stderr = %q, want conflict guidance", stderr.String())
+	}
+}
+
 func TestProfileSetTargetUpdatesProfileSSOT(t *testing.T) {
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source")
@@ -106,6 +179,37 @@ func TestProfileSetTargetUpdatesProfileSSOT(t *testing.T) {
 	}
 	if p.Target.TargetID != before.Target.TargetID {
 		t.Errorf("profile target id = %q, want unchanged %q without --target-id", p.Target.TargetID, before.Target.TargetID)
+	}
+}
+
+func TestProfileSetTargetCompletesSourceOnlyProfile(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	target := filepath.Join(dir, "target")
+	profilePath := filepath.Join(dir, "profile.json")
+	mustMkdir(t, source)
+	if err := profile.WriteFile(profilePath, profile.NewSourceOnly("profile-local", "Profile", source)); err != nil {
+		t.Fatalf("profile.WriteFile(%q) source-only error = %v, want nil", profilePath, err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	got := Run([]string{"profile", "set-target", "--profile", profilePath, "--target", target, "--name", "Target Mac"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("profile set-target source-only exit = %d, stderr = %q, want 0", got, stderr.String())
+	}
+	p, err := profile.ReadFile(profilePath)
+	if err != nil {
+		t.Fatalf("profile.ReadFile(%q) error = %v, want nil", profilePath, err)
+	}
+	if p.Roots[0].Path != source {
+		t.Errorf("profile root path = %q, want source-side root preserved %q", p.Roots[0].Path, source)
+	}
+	if p.Target.LocalPath != filepath.Clean(target) {
+		t.Errorf("profile target local path = %q, want %q", p.Target.LocalPath, filepath.Clean(target))
+	}
+	if p.Target.Name != "Target Mac" {
+		t.Errorf("profile target name = %q, want Target Mac", p.Target.Name)
 	}
 }
 

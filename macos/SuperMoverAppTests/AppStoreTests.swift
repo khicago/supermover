@@ -1692,7 +1692,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedProfileDisplayTitle, "Custom setup location")
         XCTAssertEqual(
             store.selectedProfileDisplayDetail,
-            "Choose the source folder and Target Mac destination, then create the setup."
+            "Choose this Mac's source folder, then create the setup."
         )
         XCTAssertEqual(store.selectedProfileDisplayMetadata, "Ready to create through the selected file.")
         XCTAssertEqual(store.selectedProfileRawPath, "/tmp/source.profile.json")
@@ -1757,7 +1757,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(store.selectedProfileDisplayTitle, "Custom setup location")
         XCTAssertEqual(
             store.selectedProfileDisplayDetail,
-            "Choose the source folder and Target Mac destination, then create the setup."
+            "Choose this Mac's source folder, then create the setup."
         )
         XCTAssertEqual(store.selectedProfileDisplayMetadata, "Ready to create through the selected file.")
         XCTAssertEqual(store.selectedProfileRawPath, "/tmp/other-profile.json")
@@ -1791,7 +1791,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(store.profilePath, defaultsRootURL.appendingPathComponent("profile-local.json").path)
         XCTAssertEqual(store.recommendedProfileDestinationPath, store.profilePath)
         XCTAssertEqual(store.selectedProfilePathState, .newDestination)
-        XCTAssertEqual(store.selectedProfileDisplayTitle, "Recommended source migration config")
+        XCTAssertEqual(store.selectedProfileDisplayTitle, "Recommended setup ready")
         XCTAssertEqual(store.selectedProfileDisplayMetadata, "Recommended location selected.")
         XCTAssertEqual(store.selectedTask, .status)
         XCTAssertTrue(store.recentRuns.isEmpty)
@@ -1830,7 +1830,7 @@ final class AppStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReadyAndTargetPathIsSet() throws {
+    func testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReady() throws {
         let store = AppStore()
         let sourceRoot = try makeTemporaryDirectory()
         let profileDirectory = try makeTemporaryDirectory()
@@ -1842,7 +1842,6 @@ final class AppStoreTests: XCTestCase {
 
         store.selectedRole = .source
         store.sourceRootPath = sourceRoot.path
-        store.targetRootPath = "TargetMac/Migration"
         store.profileName = "Studio Migration"
         store.profileID = "profile-studio"
         store.targetID = "target-1"
@@ -1854,12 +1853,12 @@ final class AppStoreTests: XCTestCase {
                     "profile", "init",
                     "--profile", profileURL.path,
                     "--source", sourceRoot.path,
-                    "--target", "TargetMac/Migration",
+                    "--source-only",
                     "--id", "profile-studio",
                     "--name", "Studio Migration",
                     "--target-id", "target-1",
                 ],
-                note: "Writing migration config through CLI. Run Lint Config before treating setup as ready."
+                note: "Writing source-side migration config through CLI. Run Lint Config; Target must run Update Config Target before migration commands."
             )
         )
     }
@@ -1912,10 +1911,10 @@ final class AppStoreTests: XCTestCase {
         XCTAssertNil(guide.steps[0].secondaryActionTitle)
         XCTAssertEqual(
             guide.steps[0].detail,
-            "Choose the source folder and Target Mac destination, then create the recommended setup. Existing and custom config files live in Advanced."
+            "Choose this Mac's source folder, then create the recommended setup. Existing and custom config files live in Advanced."
         )
-        XCTAssertEqual(guide.steps[1].detail, "Choose this Mac's folder to move, then enter the destination path that the target Mac will own.")
-        XCTAssertEqual(guide.steps[2].detail, "Create or open the config, then run Lint Config before treating setup as ready.")
+        XCTAssertEqual(guide.steps[1].detail, "Choose only this Mac's folder to move. The Target Mac chooses its own save folder in Target mode.")
+        XCTAssertEqual(guide.steps[2].detail, "Create or open the source-side config, then run Lint Config. Target must still choose its save folder before migration commands.")
     }
 
     @MainActor
@@ -1937,7 +1936,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(localizedGuide.steps[0].primaryActionTitle, "创建迁移设置")
         XCTAssertEqual(localizedGuide.steps[0].primaryTask, .profileInit)
         XCTAssertNil(localizedGuide.steps[0].secondaryActionTitle)
-        XCTAssertEqual(localizedGuide.steps[0].detail, "选择源端目录和目标 Mac 保存路径后创建推荐设置；已有配置和自定义位置在高级选项里。")
+        XCTAssertEqual(localizedGuide.steps[0].detail, "选择这台 Mac 的源端目录后创建推荐设置；已有配置和自定义位置在高级选项里。")
         XCTAssertEqual(localizedGuide.steps[1].statusLabel, "创建或更新时可选")
         XCTAssertEqual(localizedGuide.steps[2].statusLabel, "未验证")
 
@@ -1958,7 +1957,6 @@ final class AppStoreTests: XCTestCase {
         }
         store.selectedRole = .source
         store.sourceRootPath = sourceRoot.path
-        store.targetRootPath = "TargetMac/Migration"
         store.applyProfileDestinationSelection(profileURL.path)
 
         let guide = store.setupGuide
@@ -1967,7 +1965,7 @@ final class AppStoreTests: XCTestCase {
         XCTAssertEqual(guide.steps[0].primaryActionTitle, "Create New Config File")
         XCTAssertEqual(guide.steps[0].detail, "New destination selected. Write the migration config through the CLI before other tasks use it.")
         XCTAssertEqual(guide.steps[1].state, .pass)
-        XCTAssertEqual(guide.steps[1].statusLabel, "source readable / target path set")
+        XCTAssertEqual(guide.steps[1].statusLabel, "source readable")
         XCTAssertEqual(guide.steps[2].state, .pending)
         XCTAssertEqual(guide.steps[2].primaryActionTitle, "Lint Config")
     }
@@ -2033,7 +2031,7 @@ final class AppStoreTests: XCTestCase {
 
         var display = store.localizedProfileSelectionContext(using: localization)
         XCTAssertEqual(display.title, "推荐设置")
-        XCTAssertEqual(display.detail, "不用手动选择配置文件。选好源端目录和目标 Mac 保存路径后创建迁移设置。")
+        XCTAssertEqual(display.detail, "不用手动选择配置文件。选好这台 Mac 的源端目录后创建迁移设置。")
         XCTAssertEqual(display.rawPathLabel, "文件位置")
         XCTAssertNil(display.rawPath)
         XCTAssertNil(display.metadata)
@@ -2044,7 +2042,7 @@ final class AppStoreTests: XCTestCase {
 
         display = store.localizedProfileSelectionContext(using: localization)
         XCTAssertEqual(display.title, "自定义设置位置")
-        XCTAssertEqual(display.detail, "选择源端目录和目标 Mac 保存路径，然后创建迁移设置。")
+        XCTAssertEqual(display.detail, "选择这台 Mac 的源端目录，然后创建迁移设置。")
         XCTAssertEqual(display.metadata, "将通过所选文件创建。")
         XCTAssertEqual(display.rawPathLabel, "文件位置")
         XCTAssertEqual(display.rawPath, "/tmp/studio.profile.json")
@@ -2067,7 +2065,7 @@ final class AppStoreTests: XCTestCase {
             ["source", "target", "observer"]
         )
         XCTAssertEqual(WorkbenchRole.source.title, "Source")
-        XCTAssertEqual(WorkbenchRole.source.allowedSetup, "create config, lint config, target destination entry, dry-run preparation")
+        XCTAssertEqual(WorkbenchRole.source.allowedSetup, "create source config, lint config, dry-run preparation")
     }
 
     @MainActor
@@ -2164,15 +2162,12 @@ final class AppStoreTests: XCTestCase {
     func testApplyProfileDestinationSelectionDoesNotAutoLaunchProfileCreation() throws {
         let store = AppStore()
         let sourceRoot = try makeTemporaryDirectory()
-        let targetRoot = try makeTemporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: sourceRoot)
-            try? FileManager.default.removeItem(at: targetRoot)
         }
 
         store.selectedRole = .source
         store.sourceRootPath = sourceRoot.path
-        store.targetRootPath = targetRoot.path
         store.selectedTask = .status
 
         store.applyProfileDestinationSelection("/tmp/studio.profile.json")
@@ -2184,11 +2179,11 @@ final class AppStoreTests: XCTestCase {
         XCTAssertTrue(store.activeRuns.isEmpty)
         XCTAssertEqual(
             store.note,
-            "New migration config destination selected. Review the source folder and Target Mac destination, then click Create Config File."
+            "New migration config destination selected. Review this Mac's source folder, then click Create Config File."
         )
     }
 
-    func testProfileInitDispatchCopyNamesTargetOwnedDestinationPath() throws {
+    func testProfileInitDispatchCopyIsSourceOnly() throws {
         let repoRoot = AcceptanceScriptHarness.repoRootURL()
         let contentViewURL = repoRoot
             .appendingPathComponent("macos")
@@ -2196,10 +2191,10 @@ final class AppStoreTests: XCTestCase {
             .appendingPathComponent("ContentView.swift")
         let source = try String(contentsOf: contentViewURL, encoding: .utf8)
 
-        XCTAssertTrue(source.contains("inputs.append(\"Target Mac destination path\")"))
+        XCTAssertTrue(source.contains("case .profileInit:\n      inputs.append(\"source folder\")"))
         XCTAssertFalse(
-            source.contains("case .profileInit:\n      inputs.append(\"source root\")\n      inputs.append(\"target root\")"),
-            "Profile init dispatch copy should not describe the Target Mac destination as a Source-local target root."
+            source.contains("Target Mac destination path"),
+            "Profile init dispatch copy should not ask Source to provide a Target-local destination path."
         )
     }
 
@@ -2285,7 +2280,7 @@ final class AppStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTaskRunGateAllowsProfileInitWithTargetOwnedDestinationPath() throws {
+    func testTaskRunGateAllowsProfileInitWithReadableSourceOnly() throws {
         let store = AppStore()
         let sourceRoot = try makeTemporaryDirectory()
         let profileDirectory = try makeTemporaryDirectory()
@@ -2298,7 +2293,6 @@ final class AppStoreTests: XCTestCase {
         store.selectedRole = .source
         store.selectedTask = .profileInit
         store.sourceRootPath = sourceRoot.path
-        store.targetRootPath = "TargetMac/Migration"
         store.applyProfileDestinationSelection(profileURL.path)
 
         let gate = store.taskRunGate()
@@ -2308,7 +2302,7 @@ final class AppStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testTaskRunGateExplainsMissingProfileInitTargetAsTargetMacDestinationPath() throws {
+    func testProfileInitCommandPreviewUsesSourceOnlyAndIgnoresTargetPathInput() throws {
         let store = AppStore()
         let sourceRoot = try makeTemporaryDirectory()
         let profileDirectory = try makeTemporaryDirectory()
@@ -2321,12 +2315,22 @@ final class AppStoreTests: XCTestCase {
         store.selectedRole = .source
         store.selectedTask = .profileInit
         store.sourceRootPath = sourceRoot.path
+        store.targetRootPath = "TargetPathMustNotBeUsedBySourceInit"
+        store.profileID = "profile-studio"
+        store.profileName = "Studio Migration"
         store.applyProfileDestinationSelection(profileURL.path)
 
-        let gate = store.taskRunGate()
-
-        XCTAssertFalse(gate.isRunnable)
-        XCTAssertEqual(gate.note, "Enter the destination path from the target Mac first.")
+        XCTAssertEqual(
+            store.commandPreviewArguments(for: .profileInit),
+            [
+                "profile", "init",
+                "--profile", "<Selected Config: studio.profile.json>",
+                "--source", sourceRoot.path,
+                "--source-only",
+                "--id", "profile-studio",
+                "--name", "Studio Migration",
+            ]
+        )
     }
 
     @MainActor

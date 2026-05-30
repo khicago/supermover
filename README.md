@@ -400,6 +400,19 @@ go run ./cmd/supermover status --profile ./supermover.profile.json
 go run ./cmd/supermover recover --profile ./supermover.profile.json --dry-run
 ```
 
+For local or mounted-target migrations, `profile init --target` creates a
+complete profile in one step. For the native app's two-Mac preparation flow,
+Source creates only its local side first:
+
+```bash
+go run ./cmd/supermover profile init --profile ./supermover.profile.json --source <source-dir> --source-only
+go run ./cmd/supermover profile set-target --profile ./supermover.profile.json --target <target-dir>
+```
+
+Run `profile set-target` from the Target Mac after it chooses its own local save
+folder. Migration and evidence commands still require `target.local_path`; a
+source-only profile is a preparation artifact, not a publish-ready profile.
+
 When you want a bounded local changed-file queue pass after source changes:
 
 ```bash

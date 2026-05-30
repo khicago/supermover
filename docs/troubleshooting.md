@@ -125,7 +125,9 @@ untrusted address hints only.
 | Symptom | Likely cause | Evidence to collect | Safe action |
 | --- | --- | --- | --- |
 | `profile init: ... already exists` | A profile already exists at the chosen path. | Existing profile path and desired source/target. | Edit the existing profile deliberately, then run `profile lint`. Do not overwrite it to change policy silently. |
-| `profile init: --profile, --source, and --target are required` | Missing required initialization flag. | Exact command line. | Rerun with all three flags. |
+| `profile init: --profile and --source are required` | Missing the profile destination or source root. | Exact command line. | Rerun with both flags. |
+| `profile init: --target is required unless --source-only is set` | Local/mounted complete-profile init omitted the target path, or Source is using the wrong mode. | Exact command line and intended role. | For local/mounted migration, rerun with `--target`. For two-Mac Source preparation, rerun with `--source-only` and let Target later run `profile set-target`. |
+| `profile init: --source-only cannot be combined with --target` | The command mixed Source-only preparation with complete target-path initialization. | Exact command line and intended role. | Choose one mode: Source uses `--source-only`; local/mounted setup uses `--target`. |
 | `profile set-target: --profile and --target are required` | Missing target update flag. | Exact command line. | Rerun with both flags, then lint the profile. |
 | `profile lint` fails with validation errors | Profile violates schema or safety policy. | Full profile file and stderr. | Fix the profile. Do not bypass with runtime flags; the profile is the SSOT. |
 | `delete_policy.require_review must be true when mode is prune` | Physical prune was enabled without review. | Profile delete policy section. | Set `require_review: true`, review retention and prune policy, then lint again. |
