@@ -50,6 +50,13 @@ operator-entered text remain unlocalized.
   page title.
 - English and Simplified Chinese resource files now cover the newly localized
   page chrome, panel chrome, action labels, placeholders, and empty states.
+- Follow-up coverage gap: resource coverage alone was not sufficient because
+  some visible display-model values never called `AppChromeLocalization`.
+  Control Room/homepage strings, transfer state labels, task input summaries,
+  evidence artifact family/stage titles, evidence detail labels, JSON status
+  labels, and count/empty-state messages now route through localization. Shared
+  `GateState` and `EvidenceArtifactFamily` helpers replace scattered
+  `.title.capitalized` and duplicate evidence-stage switches.
 
 ## Sweep Results
 
@@ -62,6 +69,10 @@ operator-entered text remain unlocalized.
   four audited panels.
 - Resource scans found no missing `AppChromeLocalization.text("...")` keys and
   no duplicate resource keys.
+- Follow-up source guards now explicitly reject the sibling bypasses that were
+  found later: raw Control Room model chrome, `GateState.title.capitalized`,
+  direct evidence `artifact.family.title`, and interpolated English evidence
+  count messages.
 
 ## Validation
 
@@ -70,6 +81,11 @@ operator-entered text remain unlocalized.
 - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`
   passed.
 - Missing-key and duplicate-key resource scans passed.
+- Follow-up validation:
+  `swift test --package-path macos --filter 'UIPreferencesTests|WorkbenchNavigationTests|WorkbenchChromeTests'`
+  passed with 38 selected tests; `swift build --package-path macos --product
+  SuperMoverApp` passed; `plutil -lint` passed; literal localization key scan
+  found 0 missing keys and 0 duplicate resource keys for `en` and `zh-Hans`.
 
 ## Boundary
 

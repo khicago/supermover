@@ -110,19 +110,42 @@ final class WorkbenchNavigationTests: XCTestCase {
         )
     }
 
+    func testContentViewVisibleModelChromeDoesNotBypassLocalization() throws {
+        let source = try contentViewSource()
+        let pattern = #"\b(eyebrow|title|subtitle|label|value|roleLabel): \"[A-Z][^\"]+\""#
+
+        XCTAssertNil(
+            source.range(of: pattern, options: .regularExpression),
+            "Visible ContentView model chrome should use AppChromeLocalization instead of raw English literals."
+        )
+        XCTAssertTrue(source.contains("title: appChromeLocalization.text(\"Migration workbench\")"))
+        XCTAssertTrue(source.contains("label: appChromeLocalization.text(\"Focus\")"))
+        XCTAssertTrue(source.contains("roleLabel: WorkbenchRole.source.localizedTitle(using: appChromeLocalization)"))
+        XCTAssertFalse(source.contains("transferRunwayState.title.capitalized"))
+        XCTAssertFalse(source.contains("stateLabel: store.activeRun?.kind == .networkPush ? \"Foreground\""))
+        XCTAssertTrue(source.contains("transferRunwayState.localizedTitle(using: appChromeLocalization)"))
+    }
+
     func testEvidencePageUsesSidebarIdentityAsPageTitle() throws {
-        let repoRoot = AcceptanceScriptHarness.repoRootURL()
-        let evidenceViewURL = repoRoot
-            .appendingPathComponent("macos")
-            .appendingPathComponent("SuperMoverApp")
-            .appendingPathComponent("EvidenceSectionView.swift")
-        let source = try String(contentsOf: evidenceViewURL, encoding: .utf8)
+        let source = try evidenceSectionSource()
 
         XCTAssertTrue(source.contains("AppSection.evidence.localizedTitle(using: localization)"))
         XCTAssertFalse(
             source.contains("title: \"Evidence\""),
             "Evidence page title should share the sidebar identity instead of introducing a parallel page name."
         )
+    }
+
+    func testEvidencePageVisibleChromeDoesNotBypassLocalization() throws {
+        let source = try evidenceSectionSource()
+
+        XCTAssertFalse(source.contains("artifact.family.title"))
+        XCTAssertFalse(source.contains("Text(\"\\(hidden) more facts retained in raw evidence.\")"))
+        XCTAssertFalse(source.contains("Text(\"\\(problems.count - 5) more catalog problems retained in the filterable artifact list.\")"))
+        XCTAssertTrue(source.contains("artifact.family.localizedTitle(using: localization)"))
+        XCTAssertTrue(source.contains("artifact.family.localizedStageLabel(using: localization)"))
+        XCTAssertTrue(source.contains("Text(hiddenRawFactCountMessage(hidden))"))
+        XCTAssertTrue(source.contains("Text(hiddenCatalogProblemCountMessage(problems.count - 5))"))
     }
 
     func testSidebarNavigationLocalizedLabelsDoNotChangeNavigationIdentity() {
@@ -172,11 +195,19 @@ final class WorkbenchNavigationTests: XCTestCase {
     }
 
     private func contentViewSource() throws -> String {
+        try appSource(named: "ContentView.swift")
+    }
+
+    private func evidenceSectionSource() throws -> String {
+        try appSource(named: "EvidenceSectionView.swift")
+    }
+
+    private func appSource(named fileName: String) throws -> String {
         let repoRoot = AcceptanceScriptHarness.repoRootURL()
-        let contentViewURL = repoRoot
+        let sourceURL = repoRoot
             .appendingPathComponent("macos")
             .appendingPathComponent("SuperMoverApp")
-            .appendingPathComponent("ContentView.swift")
-        return try String(contentsOf: contentViewURL, encoding: .utf8)
+            .appendingPathComponent(fileName)
+        return try String(contentsOf: sourceURL, encoding: .utf8)
     }
 }

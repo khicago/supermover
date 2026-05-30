@@ -1117,13 +1117,13 @@ struct EvidenceScreen: View {
       selectionSummary: selectionSummary,
       pagination: .init(pageLabel: "1", canGoBackward: false, canGoForward: false),
       safetyPosture: EvidenceSafetyPosture(
-        title: localization.text(aggregateEvidenceGateState.title.capitalized),
+        title: aggregateEvidenceGateState.localizedTitle(using: localization),
         state: evidenceSemanticState(for: aggregateEvidenceGateState),
         summary: hasLoadedEvidence
           ? localization.text("Loaded evidence surfaces are available for this context.")
           : localization.text("Read status, report, health, or verify to populate evidence-backed review surfaces."),
         details: [
-          "\(localization.text("Aggregate evidence gate")): \(aggregateEvidenceGateState.title)",
+          "\(localization.text("Aggregate evidence gate")): \(aggregateEvidenceGateState.localizedTitle(using: localization))",
           "\(localization.text("Warnings")): \(warningMetricValue)",
           "\(localization.text("Artifact problems")): \(artifactProblemMetricValue)",
         ],
@@ -1208,11 +1208,11 @@ struct EvidenceScreen: View {
         let recordID = artifact.artifactID ?? artifact.relativePath
         return EvidenceRecord(
           id: recordID,
-          type: artifact.family.title,
-          stage: evidenceStageLabel(for: artifact.family),
+          type: artifact.family.localizedTitle(using: localization),
+          stage: artifact.family.localizedStageLabel(using: localization),
           source: sourceTitle,
           target: artifact.relativePath,
-          created: artifact.modifiedAt.map(dateTimeString) ?? "unknown",
+          created: artifact.modifiedAt.map(dateTimeString) ?? localization.text("unknown"),
           status: EvidenceBadge(
             text: artifactJSONSeverityLabel(artifact.issueSeverity),
             state: evidenceSemanticState(for: artifact.issueSeverity)
@@ -1236,16 +1236,16 @@ struct EvidenceScreen: View {
       return EvidenceRecord(
         id: recordID,
         type: envelope.artifactKind.title,
-        stage: "Envelope",
+        stage: localization.text("Envelope"),
         source: store.selectedRole.localizedTitle(using: localization),
         target: envelope.task.rawValue,
         created: dateTimeString(envelope.loadedAt),
         status: EvidenceBadge(
-          text: envelope.freshness.rawValue,
+          text: localization.text(envelope.freshness.rawValue),
           state: envelope.freshness == .current ? .trusted : .pending
         ),
         signature: EvidenceBadge(
-          text: "exit \(envelope.exitCode)",
+          text: exitStatusLabel(envelope.exitCode),
           state: envelope.exitCode == 0 ? .valid : .warning
         ),
         size: "\(envelope.rawStdout.lengthOfBytes(using: .utf8)) B",
@@ -1264,7 +1264,7 @@ struct EvidenceScreen: View {
         id: artifact.artifactID ?? artifact.relativePath,
         title: artifact.fileName,
         titleBadge: EvidenceBadge(
-          text: artifact.family.title,
+          text: artifact.family.localizedTitle(using: localization),
           state: evidenceSemanticState(for: artifact.issueSeverity)
         ),
         signatureBadge: EvidenceBadge(
@@ -1273,54 +1273,54 @@ struct EvidenceScreen: View {
         ),
         iconSystemName: evidenceIconName(for: artifact.family),
         facts: [
-          .init(id: "path", label: "Path", value: artifact.relativePath),
-          .init(id: "id", label: "Artifact ID", value: artifact.artifactID ?? "none"),
-          .init(id: "family", label: "Family", value: artifact.family.title),
+          .init(id: "path", label: localization.text("Path"), value: artifact.relativePath),
+          .init(id: "id", label: localization.text("Artifact ID"), value: artifact.artifactID ?? localization.text("none")),
+          .init(id: "family", label: localization.text("Family"), value: artifact.family.localizedTitle(using: localization)),
           .init(
             id: "modified",
-            label: "Modified",
-            value: artifact.modifiedAt.map(dateTimeString) ?? "unknown"
+            label: localization.text("Modified"),
+            value: artifact.modifiedAt.map(dateTimeString) ?? localization.text("unknown")
           ),
           .init(
             id: "size",
-            label: "Size",
-            value: artifact.size.map(formattedArtifactSize) ?? "unknown"
+            label: localization.text("Size"),
+            value: artifact.size.map(formattedArtifactSize) ?? localization.text("unknown")
           ),
         ],
         tags: [artifact.family.rawValue, artifactJSONStatusLabel(artifact.jsonStatus)],
         summaryMetrics: [
           .init(
             id: "severity",
-            label: "Issue severity",
+            label: localization.text("Issue severity"),
             value: artifactJSONSeverityLabel(artifact.issueSeverity)
           ),
           .init(
             id: "json",
-            label: "JSON status",
+            label: localization.text("JSON status"),
             value: artifactJSONStatusLabel(artifact.jsonStatus)
           ),
-          .init(id: "problems", label: "Catalog problems", value: "\(problems.count)"),
+          .init(id: "problems", label: localization.text("Catalog problems"), value: "\(problems.count)"),
         ],
         signatureDetails: [
-          .init(id: "json", label: "JSON", value: artifactJSONStatusLabel(artifact.jsonStatus)),
-          .init(id: "search", label: "Search text", value: artifact.searchText),
+          .init(id: "json", label: localization.text("JSON"), value: artifactJSONStatusLabel(artifact.jsonStatus)),
+          .init(id: "search", label: localization.text("Search text"), value: artifact.searchText),
         ],
         verificationChecks: [
           .init(
             id: "catalog",
-            label: "Catalog review",
-            value: problems.isEmpty ? "Clean" : "\(problems.count) issue(s)",
+            label: localization.text("Catalog review"),
+            value: catalogReviewValue(problemCount: problems.count),
             state: problems.isEmpty ? .passed : .warning
           ),
           .init(
             id: "json",
-            label: "JSON parse",
+            label: localization.text("JSON parse"),
             value: artifactJSONStatusLabel(artifact.jsonStatus),
             state: evidenceSemanticState(for: artifact.jsonStatus)
           ),
         ],
         timeline: [],
-        notes: artifact.previewText.isEmpty ? "No preview retained for this artifact." : artifact.previewText
+        notes: artifact.previewText.isEmpty ? localization.text("No preview retained for this artifact.") : artifact.previewText
       )
     }
 
@@ -1333,41 +1333,41 @@ struct EvidenceScreen: View {
       id: envelope.artifactKind.rawValue,
       title: envelope.task.rawValue,
       titleBadge: EvidenceBadge(
-        text: envelope.freshness.rawValue,
+        text: localization.text(envelope.freshness.rawValue),
         state: envelope.freshness == .current ? .trusted : .pending
       ),
       signatureBadge: EvidenceBadge(
-        text: "exit \(envelope.exitCode)",
+        text: exitStatusLabel(envelope.exitCode),
         state: envelope.exitCode == 0 ? .valid : .warning
       ),
       iconSystemName: "curlybraces",
       facts: [
-        .init(id: "artifact", label: "Artifact", value: envelope.artifactKind.title),
-        .init(id: "task", label: "Task", value: envelope.task.rawValue),
-        .init(id: "loaded", label: "Loaded", value: dateTimeString(envelope.loadedAt)),
-        .init(id: "context", label: "Context", value: envelope.contextSignature),
+        .init(id: "artifact", label: localization.text("Artifact"), value: envelope.artifactKind.title),
+        .init(id: "task", label: localization.text("Task"), value: envelope.task.rawValue),
+        .init(id: "loaded", label: localization.text("Loaded"), value: dateTimeString(envelope.loadedAt)),
+        .init(id: "context", label: localization.text("Context"), value: envelope.contextSignature),
       ],
       tags: [envelope.artifactKind.rawValue, envelope.freshness.rawValue],
       summaryMetrics: [
-        .init(id: "exit", label: "Exit", value: "\(envelope.exitCode)"),
+        .init(id: "exit", label: localization.text("Exit"), value: "\(envelope.exitCode)"),
         .init(
           id: "bytes",
-          label: "Stdout size",
+          label: localization.text("Stdout size"),
           value: "\(envelope.rawStdout.lengthOfBytes(using: .utf8)) B"
         ),
       ],
       signatureDetails: [
         .init(
           id: "stderr",
-          label: "stderr sample",
-          value: envelope.stderrSample.isEmpty ? "none" : envelope.stderrSample
+          label: localization.text("stderr sample"),
+          value: envelope.stderrSample.isEmpty ? localization.text("none") : envelope.stderrSample
         )
       ],
       verificationChecks: [
         .init(
           id: "freshness",
-          label: "Freshness",
-          value: envelope.freshness.rawValue,
+          label: localization.text("Freshness"),
+          value: localization.text(envelope.freshness.rawValue),
           state: envelope.freshness == .current ? .passed : .pending
         )
       ],
@@ -1389,11 +1389,11 @@ struct EvidenceScreen: View {
           VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
               EvidenceChip(
-                label: "artifact",
+                label: localization.text("artifact"),
                 value: problem.artifactKind.title,
                 tint: SMColor.amber
               )
-              EvidenceChip(label: "task", value: problem.task.rawValue, tint: SMColor.blue)
+              EvidenceChip(label: localization.text("task"), value: problem.task.rawValue, tint: SMColor.blue)
               Text(problem.occurredAt, style: .time)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(SMColor.secondaryText)
@@ -1487,29 +1487,29 @@ struct EvidenceScreen: View {
           value: availability.label,
           tint: availability.label == "available" ? SMColor.green : SMColor.amber
         )
-        evidenceMetricTile("Merkle/root proof", value: "unavailable", tint: SMColor.amber)
+        evidenceMetricTile(localization.text("Merkle/root proof"), value: localization.text("unavailable"), tint: SMColor.amber)
       }
       VStack(alignment: .leading, spacing: 6) {
         if let verify = store.verifySnapshot {
           evidenceLine(
             "manifest",
-            verify.summary.manifest_count == 0 ? "none" : verify.manifest.manifestID
+            verify.summary.manifest_count == 0 ? localization.text("none") : verify.manifest.manifestID
           )
           let sessionID = verify.session_id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-          evidenceLine("session", sessionID.isEmpty ? "none" : sessionID)
+          evidenceLine("session", sessionID.isEmpty ? localization.text("none") : sessionID)
           evidenceLine("target root", verify.target_root)
           evidenceLine(
             "file check",
-            "\(verify.summary.files_verified) verified / \(verify.summary.files_expected) expected"
+            "\(verify.summary.files_verified) \(localization.text("verified")) / \(verify.summary.files_expected) \(localization.text("expected"))"
           )
           evidenceLine("source compare", availability.detail)
           evidenceLine("root proof", verify.merkleRootProof.detail)
         } else {
-          evidenceLine("verify evidence", "not checked")
+          evidenceLine("verify evidence", localization.text("not checked"))
           evidenceLine("source compare", availability.detail)
           evidenceLine(
             "root proof",
-            "Merkle/root proof is unavailable because no Merkle tree or content-root artifact is wired."
+            localization.text("Merkle/root proof is unavailable because no Merkle tree or content-root artifact is wired.")
           )
         }
       }
@@ -1523,7 +1523,7 @@ struct EvidenceScreen: View {
   private var currentSourceAvailability: EvidenceAvailability {
     guard let consistency = store.effectiveSourceConsistencySnapshot else {
       return .unavailable(
-        "Current source proof has not been captured for the current app-first acceptance transfer context."
+        localization.text("Current source proof has not been captured for the current app-first acceptance transfer context.")
       )
     }
     let status = consistency.status.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1531,7 +1531,7 @@ struct EvidenceScreen: View {
     let detail =
       consistency.detail?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       ? consistency.detail!.trimmingCharacters(in: .whitespacesAndNewlines)
-      : "Current source proof is present, but no detail string was emitted."
+      : localization.text("Current source proof is present, but no detail string was emitted.")
     if status == "pass" && mode == "current_source_verified" {
       return .available(detail)
     }
@@ -1547,7 +1547,7 @@ struct EvidenceScreen: View {
           .foregroundStyle(SMColor.primaryText)
         Spacer()
         EvidenceChip(
-          label: "state",
+          label: localization.text("state"),
           value: card.status,
           tint: evidenceSeverityTint(card.severity)
         )
@@ -1570,12 +1570,12 @@ struct EvidenceScreen: View {
       }
       let hidden = card.hiddenFactCount(maxCount: 7)
       if hidden > 0 {
-        Text("\(hidden) more facts retained in raw evidence.")
+        Text(hiddenRawFactCountMessage(hidden))
           .font(.caption2)
           .foregroundStyle(SMColor.secondaryText)
       }
       if let action = card.nextAction {
-        EvidenceChip(label: "vault action", value: action.label, tint: SMColor.blue)
+        EvidenceChip(label: localization.text("vault action"), value: action.label, tint: SMColor.blue)
       }
     }
     .padding(13)
@@ -1609,7 +1609,7 @@ struct EvidenceScreen: View {
         Picker(localization.text("Family"), selection: $viewState.artifactFamilyFilterID) {
           Text(localization.text("All families")).tag("all")
           ForEach(evidenceArtifactFamilyOptions) { family in
-            Text(family.title).tag(family.rawValue)
+            Text(family.localizedTitle(using: localization)).tag(family.rawValue)
           }
         }
         .labelsHidden()
@@ -1618,17 +1618,17 @@ struct EvidenceScreen: View {
       if let catalog = store.evidenceArtifactCatalog {
         LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], spacing: 10) {
           evidenceMetricTile(
-            "cataloged artifacts",
+            localization.text("cataloged artifacts"),
             value: "\(catalog.artifacts.count)",
             tint: SMColor.blue
           )
           evidenceMetricTile(
-            "catalog problems",
+            localization.text("catalog problems"),
             value: "\(catalog.problems.count)",
             tint: catalog.hasProblems ? SMColor.amber : SMColor.green
           )
           evidenceMetricTile(
-            "visible families",
+            localization.text("visible families"),
             value: "\(catalog.familiesWithArtifacts.count)",
             tint: SMColor.cyan
           )
@@ -1700,7 +1700,7 @@ struct EvidenceScreen: View {
         }
       }
       if problems.count > 5 {
-        Text("\(problems.count - 5) more catalog problems retained in the filterable artifact list.")
+        Text(hiddenCatalogProblemCountMessage(problems.count - 5))
           .font(.caption2)
           .foregroundStyle(SMColor.secondaryText)
       }
@@ -1718,18 +1718,18 @@ struct EvidenceScreen: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         EvidenceChip(
-          label: "family",
-          value: artifact.family.title,
+          label: localization.text("family"),
+          value: artifact.family.localizedTitle(using: localization),
           tint: artifactSeverityTint(artifact.issueSeverity)
         )
         EvidenceChip(
-          label: "json",
+          label: localization.text("json"),
           value: artifactJSONStatusLabel(artifact.jsonStatus),
           tint: artifactJSONStatusTint(artifact.jsonStatus)
         )
         if let size = artifact.size {
           EvidenceChip(
-            label: "size",
+            label: localization.text("size"),
             value: formattedArtifactSize(size),
             tint: SMColor.secondaryText
           )
@@ -1771,7 +1771,7 @@ struct EvidenceScreen: View {
       evidenceSectionLabel(localization.text("Raw JSON Envelopes"))
       if rawEvidenceEnvelopes.isEmpty {
         Text(
-          "No structured command stdout has been retained yet. Run a JSON-backed task to populate raw evidence."
+          localization.text("No structured command stdout has been retained yet. Run a JSON-backed task to populate raw evidence.")
         )
         .font(.caption)
         .foregroundStyle(SMColor.secondaryText)
@@ -1797,23 +1797,23 @@ struct EvidenceScreen: View {
     return VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         EvidenceChip(
-          label: "artifact",
+          label: localization.text("artifact"),
           value: envelope.artifactKind.title,
           tint: envelope.freshness == .current ? SMColor.blue : SMColor.amber
         )
-        EvidenceChip(label: "task", value: envelope.task.rawValue, tint: SMColor.secondaryText)
+        EvidenceChip(label: localization.text("task"), value: envelope.task.rawValue, tint: SMColor.secondaryText)
         EvidenceChip(
-          label: "exit",
+          label: localization.text("exit"),
           value: "\(envelope.exitCode)",
           tint: envelope.exitCode == 0 ? SMColor.green : SMColor.amber
         )
         EvidenceChip(
-          label: "freshness",
-          value: envelope.freshness.rawValue,
+          label: localization.text("freshness"),
+          value: localization.text(envelope.freshness.rawValue),
           tint: envelope.freshness == .current ? SMColor.green : SMColor.amber
         )
         EvidenceChip(
-          label: "raw",
+          label: localization.text("raw"),
           value: preview.summary,
           tint: preview.truncated ? SMColor.amber : SMColor.secondaryText
         )
@@ -1849,7 +1849,7 @@ struct EvidenceScreen: View {
     VStack(alignment: .leading, spacing: 10) {
       evidenceSectionLabel(localization.text("Evidence-Bound Next Actions"))
       Text(
-        "The vault can run only review-metadata commands whose IDs resolve from loaded evidence. Target-content mutation, transfer, pairing, publish, prune apply, and reconcile apply remain excluded here."
+        localization.text("The vault can run only review-metadata commands whose IDs resolve from loaded evidence. Target-content mutation, transfer, pairing, publish, prune apply, and reconcile apply remain excluded here.")
       )
       .font(.caption)
       .foregroundStyle(SMColor.secondaryText)
@@ -1885,7 +1885,7 @@ struct EvidenceScreen: View {
           .foregroundStyle(SMColor.primaryText)
         Spacer()
         EvidenceChip(
-          label: "safety",
+          label: localization.text("safety"),
           value: nextActionSafetyLabel(action),
           tint: nextActionTint(action)
         )
@@ -2005,7 +2005,7 @@ struct EvidenceScreen: View {
     if let profileID = store.reportSnapshot?.profile_id {
       return profileID
     }
-    return "Source Config"
+    return localization.text("Source Config")
   }
 
   private var targetSubtitle: String {
@@ -2015,7 +2015,7 @@ struct EvidenceScreen: View {
     if let report = store.reportSnapshot {
       return report.overall.status
     }
-    return "Target evidence not loaded"
+    return localization.text("Target evidence not loaded")
   }
 
   private var sourceSubtitle: String {
@@ -2029,7 +2029,7 @@ struct EvidenceScreen: View {
     if let targetID = store.reportSnapshot?.target_id {
       return targetID
     }
-    return "Target Evidence"
+    return localization.text("Target Evidence")
   }
 
   private var verificationStatus: String {
@@ -2037,7 +2037,7 @@ struct EvidenceScreen: View {
       return verify.statusLabel
     }
     return store.statusSnapshot?.overall.status ?? store.reportSnapshot?.overall.status
-      ?? "not checked"
+      ?? localization.text("not checked")
   }
 
   private var warningMetricValue: String {
@@ -2088,7 +2088,7 @@ struct EvidenceScreen: View {
 
   private func countMetricValue(_ count: Int?) -> String {
     guard let count else {
-      return "not checked"
+      return localization.text("not checked")
     }
     return "\(count)"
   }
@@ -2287,54 +2287,50 @@ struct EvidenceScreen: View {
     }
   }
 
+  private func exitStatusLabel(_ code: Int32) -> String {
+    "\(localization.text("exit")) \(code)"
+  }
+
+  private func catalogReviewValue(problemCount: Int) -> String {
+    if problemCount == 0 {
+      return localization.text("Clean")
+    }
+    return String(format: localization.text("%d issue(s)"), problemCount)
+  }
+
+  private func hiddenRawFactCountMessage(_ count: Int) -> String {
+    String(format: localization.text("%d more facts retained in raw evidence."), count)
+  }
+
+  private func hiddenCatalogProblemCountMessage(_ count: Int) -> String {
+    String(format: localization.text("%d more catalog problems retained in the filterable artifact list."), count)
+  }
+
   private func artifactJSONStatusLabel(_ status: EvidenceArtifactJSONStatus) -> String {
     switch status {
     case .valid:
-      return "valid"
+      return localization.text("valid")
     case .malformed:
-      return "malformed"
+      return localization.text("malformed")
     case .notJSON:
-      return "not JSON"
+      return localization.text("not JSON")
     case .notCheckedLargeArtifact:
-      return "large, not checked"
+      return localization.text("large, not checked")
     case .unreadable:
-      return "unreadable"
+      return localization.text("unreadable")
     case .symlink:
-      return "symlink refused"
+      return localization.text("symlink refused")
     }
   }
 
   private func artifactJSONSeverityLabel(_ severity: EvidenceArtifactIssueSeverity) -> String {
     switch severity {
     case .ok:
-      return "clean"
+      return localization.text("clean")
     case .warning:
-      return "review"
+      return localization.text("review")
     case .critical:
-      return "critical"
-    }
-  }
-
-  private func evidenceStageLabel(for family: EvidenceArtifactFamily) -> String {
-    switch family {
-    case .profile:
-      return "Config"
-    case .pairing:
-      return "Pairing"
-    case .session, .networkTransfer:
-      return "Transfer"
-    case .warning:
-      return "Warning"
-    case .deleted, .pruneApproval, .pruneReceipt:
-      return "Prune"
-    case .drift, .reconcileReceipt:
-      return "Review"
-    case .daemon, .daemonEvent:
-      return "Daemon"
-    case .incrementalSyncQueue, .incrementalSyncRun:
-      return "Sync"
-    case .agentInfluence, .historyIndex, .recoveryState, .unknownControl:
-      return "Control"
+      return localization.text("critical")
     }
   }
 
@@ -2472,18 +2468,20 @@ struct EvidenceScreen: View {
   ) -> EvidenceRawPreview {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else {
-      return EvidenceRawPreview(text: "No stdout retained.", summary: "0 bytes", truncated: false)
+      return EvidenceRawPreview(text: localization.text("No stdout retained."), summary: "0 \(localization.text("bytes"))", truncated: false)
     }
     let pretty = prettyPrintedJSON(trimmed) ?? trimmed
     let truncated = pretty.count > maxCharacters
     let text =
       truncated
       ? String(pretty.prefix(maxCharacters))
-        + "\n... truncated; inspect the CLI run output or target artifact for the full JSON."
+        + "\n\(localization.text("... truncated; inspect the CLI run output or target artifact for the full JSON."))"
       : pretty
     let bytes = raw.lengthOfBytes(using: .utf8)
     let lines = max(1, pretty.components(separatedBy: .newlines).count)
-    let summary = "\(bytes) bytes / \(lines) lines" + (truncated ? " / truncated" : "")
+    let summary =
+      "\(bytes) \(localization.text("bytes")) / \(lines) \(localization.text("lines"))"
+      + (truncated ? " / \(localization.text("truncated"))" : "")
     return EvidenceRawPreview(text: text, summary: summary, truncated: truncated)
   }
 

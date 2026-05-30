@@ -25,6 +25,23 @@ enum GateState: String, CaseIterable {
     }
   }
 
+  func localizedTitle(using localization: AppChromeLocalization) -> String {
+    switch self {
+    case .pass:
+      return localization.text("Pass")
+    case .pending:
+      return localization.text("Pending")
+    case .review:
+      return localization.text("Review")
+    case .blocked:
+      return localization.text("Blocked")
+    case .planned:
+      return localization.text("Planned")
+    case .neutral:
+      return localization.text("Not checked")
+    }
+  }
+
   var color: Color {
     switch self {
     case .pass:

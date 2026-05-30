@@ -69,6 +69,10 @@ private enum NetworkEvidenceSurfaceState: Equatable {
     }
   }
 
+  func localizedLabel(using localization: AppChromeLocalization) -> String {
+    localization.text(label)
+  }
+
   var pairingVisualState: PairingVisualState {
     switch self {
     case .notChecked, .noEvidence:
@@ -719,12 +723,12 @@ struct ContentView: View {
     VStack(alignment: .leading, spacing: 18) {
       WorkbenchHeaderBar(
         pageHeader: .init(
-          eyebrow: "Control Room",
-          title: "Migration workbench",
-          subtitle: "Foreground transfer, durable evidence, and operator checkpoints presented as one native desk.",
+          eyebrow: appChromeLocalization.text("Control Room"),
+          title: appChromeLocalization.text("Migration workbench"),
+          subtitle: appChromeLocalization.text("Foreground transfer, durable evidence, and operator checkpoints presented as one native desk."),
           prominence: .hero,
           badge: .init(
-            title: store.activeRun == nil ? "Ready" : "Live",
+            title: store.activeRun == nil ? appChromeLocalization.text("Ready") : appChromeLocalization.text("Live"),
             tint: store.activeRun == nil ? SMColor.green : SMColor.blue
           )
         ),
@@ -736,7 +740,7 @@ struct ContentView: View {
               model: .init(
                 id: "focus",
                 icon: "circle.fill",
-                label: "Focus",
+                label: appChromeLocalization.text("Focus"),
                 value: controlRoomFocus.label,
                 tint: controlRoomFocus.tint
               ))
@@ -744,8 +748,8 @@ struct ContentView: View {
               model: .init(
                 id: "evidence",
                 icon: "doc.badge.gearshape",
-                label: "Evidence",
-                value: hasLoadedEvidence ? "Loaded" : "Pending",
+                label: appChromeLocalization.text("Evidence"),
+                value: hasLoadedEvidence ? appChromeLocalization.text("Loaded") : appChromeLocalization.text("Pending"),
                 tint: hasLoadedEvidence ? SMColor.green : SMColor.amber
               ))
           }
@@ -759,7 +763,7 @@ struct ContentView: View {
 
       HStack(alignment: .top, spacing: 18) {
         endpointStatusPane(
-          roleLabel: "source",
+          roleLabel: WorkbenchRole.source.localizedTitle(using: appChromeLocalization),
           title: sourceTitle,
           subtitle: sourceSubtitle,
           detail: sourceEndpointDetail,
@@ -793,21 +797,21 @@ struct ContentView: View {
 
           HStack(spacing: 18) {
             ControlRoomInlineStat(
-              title: "Files", value: filesVerifiedValue, tint: SMColor.primaryText)
+              title: appChromeLocalization.text("Files"), value: filesVerifiedValue, tint: SMColor.primaryText)
             ControlRoomInlineStat(
-              title: "Warnings",
+              title: appChromeLocalization.text("Warnings"),
               value: warningMetricValue,
               tint: countMetricTint(warningCountEvidence)
             )
             ControlRoomInlineStat(
-              title: "Transfers", value: networkTransferValue, tint: SMColor.cyan)
+              title: appChromeLocalization.text("Transfers"), value: networkTransferValue, tint: SMColor.cyan)
           }
         }
         .frame(width: 260, alignment: .leading)
         .padding(.top, 4)
 
         endpointStatusPane(
-          roleLabel: "target",
+          roleLabel: WorkbenchRole.target.localizedTitle(using: appChromeLocalization),
           title: targetTitle,
           subtitle: targetSubtitle,
           detail: targetEndpointDetail,
@@ -972,8 +976,8 @@ struct ContentView: View {
 
   private var controlRoomCLIPanel: some View {
     WorkbenchPanel(
-      title: "Task Dispatch",
-      subtitle: "Open the dedicated command dispatcher for the full wired CLI surface."
+      title: AppSection.taskDispatch.localizedTitle(using: appChromeLocalization),
+      subtitle: appChromeLocalization.text("Open the dedicated command dispatcher for the full wired CLI surface.")
     ) {
       VStack(alignment: .leading, spacing: 12) {
         let taskAllowed = store.selectedRole.allows(task: store.selectedTask)
@@ -1017,7 +1021,7 @@ struct ContentView: View {
             label: appChromeLocalization.text("slot"), value: run.slot.localizedTitle(using: appChromeLocalization),
             tint: run.slot.isLongRunning ? SMColor.cyan : SMColor.blue)
           EvidenceChip(label: appChromeLocalization.text("task"), value: run.kind.localizedDisplayTitle(using: appChromeLocalization), tint: SMColor.blue)
-          EvidenceChip(label: "state", value: runState, tint: tint(for: runState))
+          EvidenceChip(label: appChromeLocalization.text("state"), value: runState, tint: tint(for: runState))
           if let pid = run.processIdentifier {
             EvidenceChip(label: "pid", value: "\(pid)", tint: SMColor.secondaryText)
           }
@@ -1440,9 +1444,9 @@ struct ContentView: View {
         checks: [
           .init(id: "profile", title: appChromeLocalization.text("Config sealed"), value: profilePathIsSet ? appChromeLocalization.text("Sealed") : appChromeLocalization.text("Missing"), state: profilePathIsSet ? .pass : .warning),
           .init(id: "dry-run", title: appChromeLocalization.text("Dry-run passed"), value: hasSuccessfulRecent(.dryRun) || hasSuccessfulRecent(.networkDryRun) ? appChromeLocalization.text("Passed") : appChromeLocalization.text("Pending"), state: hasSuccessfulRecent(.dryRun) || hasSuccessfulRecent(.networkDryRun) ? .pass : .warning),
-          .init(id: "preflight", title: appChromeLocalization.text("Target preflight clean"), value: appChromeLocalization.text(targetPreflightGateState.title.capitalized), state: targetPreflightGateState == .pass ? .pass : (targetPreflightGateState == .review ? .warning : .neutral)),
-          .init(id: "warnings", title: appChromeLocalization.text("Warnings durable"), value: appChromeLocalization.text(warningGateState.title.capitalized), state: warningGateState == .pass ? .pass : (warningGateState == .review ? .warning : .neutral)),
-          .init(id: "integrity", title: appChromeLocalization.text("Root comparison"), value: appChromeLocalization.text(verificationRunwayState.title.capitalized), state: verificationRunwayState == .pass ? .pass : (verificationRunwayState == .review ? .warning : .neutral)),
+          .init(id: "preflight", title: appChromeLocalization.text("Target preflight clean"), value: targetPreflightGateState.localizedTitle(using: appChromeLocalization), state: targetPreflightGateState == .pass ? .pass : (targetPreflightGateState == .review ? .warning : .neutral)),
+          .init(id: "warnings", title: appChromeLocalization.text("Warnings durable"), value: warningGateState.localizedTitle(using: appChromeLocalization), state: warningGateState == .pass ? .pass : (warningGateState == .review ? .warning : .neutral)),
+          .init(id: "integrity", title: appChromeLocalization.text("Root comparison"), value: verificationRunwayState.localizedTitle(using: appChromeLocalization), state: verificationRunwayState == .pass ? .pass : (verificationRunwayState == .review ? .warning : .neutral)),
         ],
         overviewRows: trustRows,
         networkRows: networkRows,
@@ -1629,7 +1633,7 @@ struct ContentView: View {
         draft: $store.profileNetwork,
         role: store.selectedRole,
         networkStatus: networkStatus,
-        networkTint: tint(for: networkStatus),
+        networkTint: networkStatusTint,
         runTask: run,
         localization: appChromeLocalization
       )
@@ -1699,7 +1703,7 @@ struct ContentView: View {
         draft: $store.profileNetwork,
         role: store.selectedRole,
         networkStatus: networkStatus,
-        networkTint: tint(for: networkStatus),
+        networkTint: networkStatusTint,
         runTask: run,
         localization: appChromeLocalization
       )
@@ -1721,7 +1725,7 @@ struct ContentView: View {
   private var targetPairingStatusColumn: some View {
     VStack(alignment: .leading, spacing: 10) {
       EvidenceChip(label: "pairing", value: pairingStatus, tint: tint(for: pairingStatus))
-      EvidenceChip(label: "receiver", value: networkStatus, tint: tint(for: networkStatus))
+      EvidenceChip(label: appChromeLocalization.text("receiver"), value: networkStatus, tint: networkStatusTint)
       if let summary = ServeInfoParser.firstSummary(
         in: store.run(in: .targetServe)?.stderr ?? ""
       ) {
@@ -2445,16 +2449,16 @@ struct ContentView: View {
           if store.selectedRole == .source {
             HStack(spacing: 16) {
               actionCard(
-                title: "Record drift",
-                subtitle: "Persist current live drift findings as review records.", task: .driftRecord,
+                title: appChromeLocalization.text("Record drift"),
+                subtitle: appChromeLocalization.text("Persist current live drift findings as review records."), task: .driftRecord,
                 primary: false)
               actionCard(
-                title: "Reconcile plan",
-                subtitle: "Build a narrow persisted-drift repair plan without mutation.",
+                title: appChromeLocalization.text("Reconcile plan"),
+                subtitle: appChromeLocalization.text("Build a narrow persisted-drift repair plan without mutation."),
                 task: .reconcilePlan, primary: false)
               actionCard(
-                title: "Reconcile apply",
-                subtitle: "Apply selected persisted-drift repair with reason and optional reviewer.",
+                title: appChromeLocalization.text("Reconcile apply"),
+                subtitle: appChromeLocalization.text("Apply selected persisted-drift repair with reason and optional reviewer."),
                 task: .reconcileApply, primary: true)
             }
             reviewInputs
@@ -2742,7 +2746,7 @@ struct ContentView: View {
             icon: "dot.radiowaves.left.and.right",
             label: appChromeLocalization.text("network"),
             value: networkStatus,
-            tint: tint(for: networkStatus)
+            tint: networkStatusTint
           )
         }
         WorkbenchPageHeaderValuePill(
@@ -3515,43 +3519,47 @@ struct ContentView: View {
     }
     switch task {
     case .profileInit:
-      inputs.append("source folder")
-      inputs.append("config identity")
+      inputs.append(appChromeLocalization.text("source folder"))
+      inputs.append(appChromeLocalization.text("config identity"))
     case .profileSetTarget:
-      inputs.append("target destination root")
+      inputs.append(appChromeLocalization.text("target destination root"))
     case .publish, .networkPush, .syncRun, .syncNetworkRun, .syncNetworkDiscoverRun:
-      inputs.append("session id")
+      inputs.append(appChromeLocalization.text("session id"))
     case .syncLoop, .syncWatch, .syncNetworkLoop:
-      inputs.append("session prefix")
+      inputs.append(appChromeLocalization.text("session prefix"))
     case .syncQueueCancel, .syncQueueFail:
-      inputs.append("queue entry id")
-      inputs.append("reason")
+      inputs.append(appChromeLocalization.text("queue entry id"))
+      inputs.append(appChromeLocalization.text("reason"))
     case .discoverAddress:
-      inputs.append("target address hint")
+      inputs.append(appChromeLocalization.text("target address hint"))
     case .pair:
-      inputs.append("target address")
-      inputs.append("verification code")
+      inputs.append(appChromeLocalization.text("target address"))
+      inputs.append(appChromeLocalization.text("verification code"))
     case .profileAdoptPairing:
-      inputs.append("pairing receipt file")
+      inputs.append(appChromeLocalization.text("pairing receipt file"))
     case .driftAcknowledge, .driftResolve, .driftExpire:
-      inputs.append("one persisted drift id")
-      inputs.append("reason")
+      inputs.append(appChromeLocalization.text("one persisted drift id"))
+      inputs.append(appChromeLocalization.text("reason"))
     case .driftRecord, .reconcileApply:
-      inputs.append("reason")
+      inputs.append(appChromeLocalization.text("reason"))
     case .pruneApprove:
-      inputs.append("approval id")
-      inputs.append("soft-delete ids")
-      inputs.append("reviewer")
+      inputs.append(appChromeLocalization.text("approval id"))
+      inputs.append(appChromeLocalization.text("soft-delete ids"))
+      inputs.append(appChromeLocalization.text("reviewer"))
     case .pruneSupersede:
-      inputs.append("approval id")
-      inputs.append("reason")
+      inputs.append(appChromeLocalization.text("approval id"))
+      inputs.append(appChromeLocalization.text("reason"))
     case .daemonRestart, .daemonStop:
-      inputs.append("reason")
+      inputs.append(appChromeLocalization.text("reason"))
     default:
       break
     }
-    let inputText = inputs.isEmpty ? "No additional app inputs are required for this task." : "Inputs: \(inputs.joined(separator: ", "))."
-    return "\(inputText) Execution still runs through the existing command preflight and role gate."
+    let inputText =
+      inputs.isEmpty
+      ? appChromeLocalization.text("No additional app inputs are required for this task.")
+      : "\(appChromeLocalization.text("Inputs")): \(inputs.joined(separator: ", "))."
+    let executionText = appChromeLocalization.text("Execution still runs through the existing command preflight and role gate.")
+    return "\(inputText) \(executionText)"
   }
 
   private func profileRequirementSatisfied(for task: SuperMoverTaskKind) -> Bool {
@@ -3566,9 +3574,9 @@ struct ContentView: View {
 
   private func profileRequirementLabel(for task: SuperMoverTaskKind) -> String {
     if task == .profileInit {
-      return profileSelectionState == .newDestination ? "new config destination" : "config destination required"
+      return profileSelectionState == .newDestination ? appChromeLocalization.text("new config destination") : appChromeLocalization.text("config destination required")
     }
-    return profilePathIsSet ? "existing config" : "existing config required"
+    return profilePathIsSet ? appChromeLocalization.text("existing config") : appChromeLocalization.text("existing config required")
   }
 
   private func shellPreview(_ parts: [String]) -> String {
@@ -3589,7 +3597,7 @@ struct ContentView: View {
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(SMColor.secondaryText)
       ScrollView {
-        Text(text.isEmpty ? "No output yet." : text)
+        Text(text.isEmpty ? appChromeLocalization.text("No output yet.") : text)
           .font(.system(size: 12, design: .monospaced))
           .foregroundStyle(SMColor.primaryText)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -3628,6 +3636,7 @@ struct ContentView: View {
 
   private func tint(for value: String) -> Color {
     let normalized = value.lowercased()
+    let localizedNotChecked = appChromeLocalization.text("not checked").lowercased()
     if normalized.contains("error") || normalized.contains("failed")
       || normalized.contains("review") || normalized.contains("drift")
       || normalized.contains("warning") || normalized.contains("attention")
@@ -3638,7 +3647,7 @@ struct ContentView: View {
       || normalized.contains("recovery") || normalized.contains("not selected")
       || normalized.contains("not writable") || normalized.contains("not readable")
       || normalized.contains("blocked") || normalized.contains("stale")
-      || normalized.contains("not checked")
+      || normalized.contains("not checked") || normalized.contains(localizedNotChecked)
     {
       return SMColor.amber
     }
@@ -3838,7 +3847,16 @@ struct ContentView: View {
   }
 
   private var networkStatus: String {
-    networkEvidenceState.label
+    networkEvidenceState.localizedLabel(using: appChromeLocalization)
+  }
+
+  private var networkStatusTint: Color {
+    switch networkEvidenceState {
+    case .reviewRequired:
+      return SMColor.amber
+    case .notChecked, .noEvidence:
+      return SMColor.secondaryText
+    }
   }
 
   private var latestPairSummary: String? {
@@ -3854,12 +3872,12 @@ struct ContentView: View {
   }
 
   private var activeRunTitle: String {
-    store.activeRun == nil ? "Run Console" : "Active Run"
+    store.activeRun == nil ? appChromeLocalization.text("Run Console") : appChromeLocalization.text("Active Run")
   }
 
   private var transferPercent: String {
     if store.activeRun?.kind == .networkPush {
-      return "Task"
+      return appChromeLocalization.text("Task")
     }
     if let status = store.statusSnapshot {
       return status.latest_session.completeness_status
@@ -3867,11 +3885,11 @@ struct ContentView: View {
     if let report = store.reportSnapshot {
       return report.latest_session.completeness.status
     }
-    return "Idle"
+    return appChromeLocalization.text("Idle")
   }
 
   private var transferCaption: String {
-    store.activeRun?.kind == .networkPush ? "foreground process running" : "evidence-backed state"
+    store.activeRun?.kind == .networkPush ? appChromeLocalization.text("foreground process running") : appChromeLocalization.text("evidence-backed state")
   }
 
   private var filesVerifiedValue: String {
@@ -3885,7 +3903,7 @@ struct ContentView: View {
       return
         "\(report.latest_session.completeness.files_verified) / \(report.latest_session.completeness.files_expected)"
     }
-    return "not checked"
+    return appChromeLocalization.text("not checked")
   }
 
   private var networkTransferValue: String {
@@ -3895,7 +3913,11 @@ struct ContentView: View {
     if let report = store.reportSnapshot {
       return "\(report.summary.network_transfers)"
     }
-    return store.activeRun?.kind == .networkPush ? "foreground" : "not checked"
+    return store.activeRun?.kind == .networkPush ? appChromeLocalization.text("foreground") : appChromeLocalization.text("not checked")
+  }
+
+  private var hasNetworkTransferValue: Bool {
+    store.statusSnapshot != nil || store.reportSnapshot != nil || store.activeRun?.kind == .networkPush
   }
 
   private var integrityValue: String {
@@ -3908,7 +3930,7 @@ struct ContentView: View {
     if let report = store.reportSnapshot {
       return report.overall.status
     }
-    return "not checked"
+    return appChromeLocalization.text("not checked")
   }
 
   private var warningMetricValue: String {
@@ -3921,7 +3943,7 @@ struct ContentView: View {
 
   private var verifiedFilesMetricValue: String {
     guard let verify = store.verifySnapshot else {
-      return "not checked"
+      return appChromeLocalization.text("not checked")
     }
     return "\(verify.summary.files_verified)/\(verify.summary.files_expected)"
   }
@@ -3965,7 +3987,7 @@ struct ContentView: View {
     if let report = store.reportSnapshot {
       return report.overall.status
     }
-    return "Target evidence not loaded"
+    return appChromeLocalization.text("Target evidence not loaded")
   }
 
   private var sourceTitle: String {
@@ -3975,7 +3997,7 @@ struct ContentView: View {
     if let profileID = store.reportSnapshot?.profile_id {
       return profileID
     }
-    return "Source Config"
+    return appChromeLocalization.text("Source Config")
   }
 
   private var sourceSubtitle: String {
@@ -3989,16 +4011,16 @@ struct ContentView: View {
     if let targetID = store.reportSnapshot?.target_id {
       return targetID
     }
-    return "Target Evidence"
+    return appChromeLocalization.text("Target Evidence")
   }
 
   private var sourceEndpointDetail: String {
-    "pairing \(pairingStatus) • network \(networkStatus)"
+    "\(appChromeLocalization.text("pairing")) \(pairingStatus) • \(appChromeLocalization.text("network")) \(networkStatus)"
   }
 
   private var targetEndpointDetail: String {
-    let root = statusTargetRoot == "-" ? "target root unknown" : statusTargetRoot
-    return "\(root) • integrity \(integrityValue)"
+    let root = statusTargetRoot == "-" ? appChromeLocalization.text("target root unknown") : statusTargetRoot
+    return "\(root) • \(appChromeLocalization.text("integrity")) \(integrityValue)"
   }
 
   private var statusTargetRoot: String {
@@ -4206,7 +4228,7 @@ struct ContentView: View {
       subtitle:
         appChromeLocalization.text("Run bounded config-backed network transfer. Dry-run first keeps target mutation explicit."),
       headerBadge: TransferStatusBadge(
-        label: transferRunwayState.title.capitalized,
+        label: transferRunwayState.localizedTitle(using: appChromeLocalization),
         systemImage: transferStatusSymbol(for: transferRunwayState),
         tint: transferRunwayState.color
       ),
@@ -4243,12 +4265,12 @@ struct ContentView: View {
       overview: TransferOverviewModel(
         progress: transferOverviewProgress,
         progressLabel: transferOverviewLabel,
-        stateLabel: store.activeRun?.kind == .networkPush ? "Foreground" : transferRunwayState.title.capitalized,
+        stateLabel: store.activeRun?.kind == .networkPush ? appChromeLocalization.text("Foreground") : transferRunwayState.localizedTitle(using: appChromeLocalization),
         detail: transferCaption,
         tint: transferOverviewTint,
         highlights: [
           .init(id: "pairing", label: appChromeLocalization.text("pairing"), value: pairingStatus, tint: pairingEvidenceState.color),
-          .init(id: "network", label: appChromeLocalization.text("network"), value: networkStatus, tint: tint(for: networkStatus)),
+          .init(id: "network", label: appChromeLocalization.text("network"), value: networkStatus, tint: networkStatusTint),
           .init(id: "warnings", label: appChromeLocalization.text("warnings"), value: warningMetricValue, tint: countMetricTint(warningCountEvidence))
         ]
       ),
@@ -4316,7 +4338,7 @@ struct ContentView: View {
         summaryRows: [
           .init(id: "profile", label: appChromeLocalization.text(.sidebarConfigLabel), value: profileStatus, tint: profilePathIsSet ? SMColor.green : SMColor.amber),
           .init(id: "pairing", label: appChromeLocalization.text("Pairing"), value: pairingStatus, tint: pairingEvidenceState.color),
-          .init(id: "preflight", label: appChromeLocalization.text("Preflight"), value: targetPreflightGateState.title, tint: targetPreflightGateState.color),
+          .init(id: "preflight", label: appChromeLocalization.text("Preflight"), value: targetPreflightGateState.localizedTitle(using: appChromeLocalization), tint: targetPreflightGateState.color),
           .init(id: "integrity", label: appChromeLocalization.text("Integrity"), value: integrityValue, tint: tint(for: integrityValue))
         ],
         notes: [
@@ -4390,7 +4412,7 @@ struct ContentView: View {
             draft: $store.profileNetwork,
             role: store.selectedRole,
             networkStatus: networkStatus,
-            networkTint: tint(for: networkStatus),
+            networkTint: networkStatusTint,
             runTask: run,
             localization: appChromeLocalization
           )
@@ -4420,7 +4442,7 @@ struct ContentView: View {
 
   private var transferOverviewLabel: String {
     if store.activeRun?.kind == .networkPush {
-      return "LIVE"
+      return appChromeLocalization.text("LIVE")
     }
     if verificationProgress > 0 {
       return "\(Int((verificationProgress * 100).rounded()))%"
@@ -4434,12 +4456,12 @@ struct ContentView: View {
 
   private var transferLastUpdatedLabel: String? {
     if let run = store.activeRun {
-      return "Updated \(timeString(run.launchedAt))"
+      return "\(appChromeLocalization.text("Updated")) \(timeString(run.launchedAt))"
     }
     if let run = store.recentRuns.first(where: { store.isCurrentContext($0) }) {
-      return "Updated \(timeString(run.launchedAt))"
+      return "\(appChromeLocalization.text("Updated")) \(timeString(run.launchedAt))"
     }
-    return hasLoadedEvidence ? "Evidence loaded" : nil
+    return hasLoadedEvidence ? appChromeLocalization.text("Evidence loaded") : nil
   }
 
   private var transferCurrentPath: String {
@@ -4449,11 +4471,11 @@ struct ContentView: View {
     if !store.targetRootPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       return store.targetRootPath
     }
-    return "No transfer artifact path loaded."
+    return appChromeLocalization.text("No transfer artifact path loaded.")
   }
 
   private var transferCurrentProgressLabel: String {
-    verificationProgress > 0 ? "\(filesVerifiedValue) verified" : transferPercent
+    verificationProgress > 0 ? "\(filesVerifiedValue) \(appChromeLocalization.text("verified"))" : transferPercent
   }
 
   private var transferReceiptID: String {
@@ -4462,11 +4484,17 @@ struct ContentView: View {
       return verifySession
     }
     let inputSession = store.sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
-    return inputSession.isEmpty ? "none" : inputSession
+    return inputSession.isEmpty ? appChromeLocalization.text("none") : inputSession
   }
 
   private var transferStages: [TransferStageModel] {
-    let stages = ["Prepare", "Connect", "Move", "Verify & Repair", "Evidence"]
+    let stages = [
+      AppSection.setup.localizedTitle(using: appChromeLocalization),
+      AppSection.devices.localizedTitle(using: appChromeLocalization),
+      AppSection.transfer.localizedTitle(using: appChromeLocalization),
+      AppSection.verification.localizedTitle(using: appChromeLocalization),
+      AppSection.evidence.localizedTitle(using: appChromeLocalization),
+    ]
     return stages.enumerated().map { index, title in
       let state: TransferStageModel.State
       if index < activeStageIndex {
@@ -4605,29 +4633,6 @@ struct ContentView: View {
     }
   }
 
-  private func evidenceStageLabel(for family: EvidenceArtifactFamily) -> String {
-    switch family {
-    case .profile:
-      return "Config"
-    case .pairing:
-      return "Pairing"
-    case .session, .networkTransfer:
-      return "Transfer"
-    case .warning:
-      return "Warning"
-    case .deleted, .pruneApproval, .pruneReceipt:
-      return "Prune"
-    case .drift, .reconcileReceipt:
-      return "Review"
-    case .daemon, .daemonEvent:
-      return "Daemon"
-    case .incrementalSyncQueue, .incrementalSyncRun:
-      return "Sync"
-    case .agentInfluence, .historyIndex, .recoveryState, .unknownControl:
-      return "Control"
-    }
-  }
-
   private func evidenceIconName(for family: EvidenceArtifactFamily) -> String {
     switch family {
     case .profile:
@@ -4672,15 +4677,15 @@ struct ContentView: View {
   private func stateLabel(_ state: TaskRun.State) -> String {
     switch state {
     case .idle:
-      return "idle"
+      return appChromeLocalization.text("idle")
     case .running:
-      return "running"
+      return appChromeLocalization.text("running")
     case let .finished(code):
-      return "exit \(code)"
+      return "\(appChromeLocalization.text("exit")) \(code)"
     case let .failedToLaunch(message):
-      return "launch failed: \(message)"
+      return "\(appChromeLocalization.text("launch failed")): \(message)"
     case .cancelled:
-      return "cancelled"
+      return appChromeLocalization.text("cancelled")
     }
   }
 
@@ -4710,7 +4715,7 @@ struct ContentView: View {
   private var controlRoomFocus: ControlRoomFocusModel {
     if let run = store.activeRun {
       return ControlRoomFocusModel(
-        value: "LIVE",
+        value: appChromeLocalization.text("LIVE"),
         label: appChromeLocalization.text("FOREGROUND SLOT"),
         detail: "\(run.kind.localizedDisplayTitle(using: appChromeLocalization)) • \(store.supervisionStateLabel(for: run.slot))",
         tint: SMColor.blue,
@@ -4729,7 +4734,7 @@ struct ContentView: View {
         progress: verificationProgress
       )
     }
-    if networkTransferValue != "not checked" {
+    if hasNetworkTransferValue {
       return ControlRoomFocusModel(
         value: networkTransferValue,
         label: appChromeLocalization.text("NETWORK TRANSFERS"),

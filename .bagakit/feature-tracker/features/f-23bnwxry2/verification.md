@@ -1946,6 +1946,37 @@
     installed-app transfer success, Local Network/firewall prompt evidence,
     signed/notarized distribution readiness, Merkle/current-source proof, or
     final T-011 release closure.
+- Step: T-011 Control Room and Evidence i18n coverage follow-up.
+  - Outcome: the reported i18n gap was traced to visible model strings that
+    bypassed localization even though literal `AppChromeLocalization.text(...)`
+    resource coverage was already complete. Control Room/homepage chrome,
+    transfer status labels, task input summaries, evidence artifact family
+    titles, evidence detail labels, JSON status labels, and count/empty-state
+    messages now route through shared localization helpers.
+  - Outcome: `GateState` and `EvidenceArtifactFamily` now expose shared
+    localized helpers, so sibling pages no longer need to hand-roll
+    `.title.capitalized` or duplicate evidence-stage title switches.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'UIPreferencesTests|WorkbenchNavigationTests|WorkbenchChromeTests'`:
+      pass with 38 selected tests.
+    - `swift build --package-path macos --product SuperMoverApp`: pass.
+    - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`:
+      pass.
+    - Literal localization key scan across Swift app sources:
+      0 missing keys and 0 duplicate resource keys for `en` and `zh-Hans`.
+    - `git diff --check`: pass.
+  - Detail:
+    Updated notes are recorded in
+    `artifacts/app-chrome-i18n-dry-T-011.md` and
+    `artifacts/recent-issue-root-cause-sweep-T-011.md`.
+  - Boundary:
+    This is app chrome and visible interpretation-layer localization. Raw CLI
+    output, stdout/stderr payloads, JSON/protocol field values, file paths,
+    artifact raw identifiers, receipt IDs, task raw values, and operator-entered
+    text remain literal audit material. This does not claim real two-Mac
+    installed-app transfer success, Local Network/firewall prompt evidence,
+    signed/notarized distribution readiness, Merkle/current-source proof, or
+    final T-011 release closure.
 
 ## Residual Risks
 

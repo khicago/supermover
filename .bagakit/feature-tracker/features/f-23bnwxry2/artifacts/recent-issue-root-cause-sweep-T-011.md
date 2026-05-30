@@ -12,6 +12,8 @@ Recent issues checked:
    button styling.
 3. Workbench pages drifted under scroll/resize, with headers too far from the
    window top or capable of moving out of view.
+4. i18n appeared complete by resource-key scan but still left visible English
+   in Control Room, transfer state, and Evidence interpretation panels.
 
 ## Findings
 
@@ -114,6 +116,37 @@ Recent issues checked:
   - `macos/SuperMoverAppTests/WorkbenchChromeTests.swift`
   - `macos/SuperMoverAppTests/WorkbenchNavigationTests.swift`
 
+### Visible I18n Coverage
+
+- Root cause: the previous localization guard proved literal
+  `AppChromeLocalization.text("...")` calls had packaged `en` and `zh-Hans`
+  resources, but it did not prove every visible display-model string used the
+  localization owner. Control Room and Evidence still had strings built from
+  raw `title/subtitle/label/value` literals, `.title.capitalized`, direct
+  `artifact.family.title`, and interpolated English count messages.
+- Sweep: checked Control Room/homepage model chrome, transfer status models,
+  task input summaries, Evidence record/detail models, artifact catalog cards,
+  raw-evidence empty states, JSON status/severity labels, localized resources,
+  and source-guard tests. Raw evidence values and identifiers were separated
+  from interpretation-layer labels.
+- Result: visible interpretation-layer chrome now uses
+  `AppChromeLocalization`, `GateState.localizedTitle(using:)`, and
+  `EvidenceArtifactFamily` localized helpers. Resource scans report 0 missing
+  keys and 0 duplicate keys in both language packs. Source guards now pin the
+  specific bypass patterns that caused this defect class.
+- Boundary: raw CLI output, stdout/stderr payloads, JSON/protocol field values,
+  file paths, artifact raw identifiers, receipt IDs, task raw values, and
+  operator-entered text remain literal audit material.
+- Key refs:
+  - `macos/SuperMoverApp/ContentView.swift`
+  - `macos/SuperMoverApp/EvidenceSectionView.swift`
+  - `macos/SuperMoverApp/EvidenceArtifactLocalization.swift`
+  - `macos/SuperMoverApp/WorkbenchSupport.swift`
+  - `macos/SuperMoverApp/Resources/en.lproj/Localizable.strings`
+  - `macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`
+  - `macos/SuperMoverAppTests/UIPreferencesTests.swift`
+  - `macos/SuperMoverAppTests/WorkbenchNavigationTests.swift`
+
 ## Validation
 
 - `swift test --package-path macos --filter 'AppStoreTests/test(ProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReady|ProfileInitCommandPreviewUsesSourceOnlyAndIgnoresTargetPathInput|TaskRunGateAllowsProfileInitWithReadableSourceOnly|SetupGuideExplainsEmptySourcePreparationInUserOrder|LocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide)|WorkbenchChromeTests|WorkbenchNavigationTests'`
@@ -134,11 +167,16 @@ Recent issues checked:
   ownership.
 - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`
   passed.
+- `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
+  passed with 38 selected tests after the Control Room/Evidence i18n coverage
+  follow-up.
+- `swift build --package-path macos --product SuperMoverApp` passed.
+- Literal localization key/resource scan passed with 0 missing keys and 0
+  duplicate keys for `en` and `zh-Hans`.
 
 ## Closeout Boundary
 
-No new code defect was found by this sweep beyond the already-corrected source
-ownership and layout issues. The current pass adds process rules and durable
-evidence; it does not claim real two-Mac installed-app transfer evidence,
+The current pass adds process rules, durable evidence, and app-chrome/i18n
+guardrails; it does not claim real two-Mac installed-app transfer evidence,
 signed/notarized distribution readiness, Local Network/firewall prompt
 evidence, or Merkle/current-source proof.

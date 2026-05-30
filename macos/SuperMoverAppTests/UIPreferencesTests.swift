@@ -85,6 +85,29 @@ final class UIPreferencesTests: XCTestCase {
     func testCoreWorkbenchPageChromeRawKeysHaveSimplifiedChineseTranslations() {
         let simplifiedChinese = AppChromeLocalization(language: .simplifiedChinese)
 
+        XCTAssertEqual(simplifiedChinese.text("Migration workbench"), "迁移工作台")
+        XCTAssertEqual(
+            simplifiedChinese.text("Foreground transfer, durable evidence, and operator checkpoints presented as one native desk."),
+            "前台迁移、持久证据和操作员检查点汇聚在一个原生工作台中。"
+        )
+        XCTAssertEqual(simplifiedChinese.text("Focus"), "焦点")
+        XCTAssertEqual(simplifiedChinese.text("Files"), "文件")
+        XCTAssertEqual(simplifiedChinese.text("Transfers"), "传输")
+        XCTAssertEqual(simplifiedChinese.text("LIVE"), "运行中")
+        XCTAssertEqual(simplifiedChinese.text("Not checked"), "未检查")
+        XCTAssertEqual(simplifiedChinese.text("not checked"), "未检查")
+        XCTAssertEqual(simplifiedChinese.text("Source Config"), "源端配置")
+        XCTAssertEqual(simplifiedChinese.text("Target Evidence"), "目标端证据")
+        XCTAssertEqual(simplifiedChinese.text("Target evidence not loaded"), "未加载目标端证据")
+        XCTAssertEqual(simplifiedChinese.text("Pass"), "通过")
+        XCTAssertEqual(simplifiedChinese.text("Blocked"), "已阻塞")
+        XCTAssertEqual(simplifiedChinese.text("Artifact"), "工件")
+        XCTAssertEqual(simplifiedChinese.text("Network transfer"), "网络迁移")
+        XCTAssertEqual(simplifiedChinese.text("No output yet."), "暂无输出。")
+        XCTAssertEqual(
+            String(format: simplifiedChinese.text("%d more facts retained in raw evidence."), 3),
+            "还有 3 条事实保留在原始证据中。"
+        )
         XCTAssertEqual(simplifiedChinese.text("Device State"), "设备状态")
         XCTAssertEqual(simplifiedChinese.text("Trust Ceremony"), "信任确认")
         XCTAssertEqual(simplifiedChinese.text("Transfer Route"), "迁移路径")
@@ -96,6 +119,31 @@ final class UIPreferencesTests: XCTestCase {
         XCTAssertEqual(simplifiedChinese.text("Acceptance Bundle"), "验收证据包")
         XCTAssertEqual(simplifiedChinese.text("Artifact Catalog"), "工件目录")
         XCTAssertEqual(simplifiedChinese.text("CLI Preview"), "CLI 预览")
+    }
+
+    func testLiteralAppChromeLocalizationKeysHavePackagedResources() throws {
+        let repoRoot = AcceptanceScriptHarness.repoRootURL()
+        let appRoot = repoRoot
+            .appendingPathComponent("macos")
+            .appendingPathComponent("SuperMoverApp")
+        let resourceRoot = appRoot.appendingPathComponent("Resources")
+
+        let literalKeys = try Self.literalLocalizationKeys(in: appRoot)
+        XCTAssertFalse(literalKeys.isEmpty)
+
+        let englishKeys = try Self.localizedResourceKeys(
+            at: resourceRoot
+                .appendingPathComponent("en.lproj")
+                .appendingPathComponent("Localizable.strings")
+        )
+        let simplifiedChineseKeys = try Self.localizedResourceKeys(
+            at: resourceRoot
+                .appendingPathComponent("zh-Hans.lproj")
+                .appendingPathComponent("Localizable.strings")
+        )
+
+        XCTAssertTrue(literalKeys.subtracting(englishKeys).isEmpty)
+        XCTAssertTrue(literalKeys.subtracting(simplifiedChineseKeys).isEmpty)
     }
 
     func testTaskDispatchDisplayModelUsesLocalization() {
@@ -270,5 +318,52 @@ final class UIPreferencesTests: XCTestCase {
         )
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private static func literalLocalizationKeys(in appRoot: URL) throws -> Set<String> {
+        let enumerator = FileManager.default.enumerator(
+            at: appRoot,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        )
+        let pattern = #"(?:appChromeLocalization|localization)\.text\(\"((?:[^\"\\]|\\.)*)\"\)"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        var keys = Set<String>()
+
+        while let fileURL = enumerator?.nextObject() as? URL {
+            guard fileURL.pathExtension == "swift" else {
+                continue
+            }
+            let source = try String(contentsOf: fileURL, encoding: .utf8)
+            let range = NSRange(source.startIndex..<source.endIndex, in: source)
+            regex.enumerateMatches(in: source, range: range) { match, _, _ in
+                guard
+                    let match,
+                    let keyRange = Range(match.range(at: 1), in: source)
+                else {
+                    return
+                }
+                keys.insert(String(source[keyRange]))
+            }
+        }
+
+        return keys
+    }
+
+    private static func localizedResourceKeys(at url: URL) throws -> Set<String> {
+        let source = try String(contentsOf: url, encoding: .utf8)
+        let regex = try NSRegularExpression(pattern: #"^\s*\"((?:[^\"\\]|\\.)*)\"\s*="#, options: [.anchorsMatchLines])
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        var keys = Set<String>()
+        regex.enumerateMatches(in: source, range: range) { match, _, _ in
+            guard
+                let match,
+                let keyRange = Range(match.range(at: 1), in: source)
+            else {
+                return
+            }
+            keys.insert(String(source[keyRange]))
+        }
+        return keys
     }
 }
