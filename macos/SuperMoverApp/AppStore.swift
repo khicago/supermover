@@ -242,7 +242,7 @@ enum SuperMoverTaskKind: String, CaseIterable, Identifiable {
         case .version:
             return "Read the selected supermover binary version for provenance checks."
         case .profileInit:
-            return "Create a migration config file through the CLI after app-side source and target path readiness checks."
+            return "Create a migration config file through the CLI after the source folder is readable and the Target Mac destination path is set."
         case .lintProfile:
             return "Validate migration config SSOT and fail fast on policy errors."
         case .profileSetTarget:
@@ -849,7 +849,7 @@ enum WorkbenchRole: String, CaseIterable, Identifiable {
     var summary: String {
         switch self {
         case .source:
-            return "Prepare source roots, config identity, pairing inputs, and bounded transfer inputs."
+            return "Prepare the source folder, Target Mac destination path, config identity, pairing inputs, and bounded transfer inputs."
         case .target:
             return "Prepare target root, config evidence, listen inputs, and read-only evidence access."
         case .observer:
@@ -860,7 +860,7 @@ enum WorkbenchRole: String, CaseIterable, Identifiable {
     var allowedSetup: String {
         switch self {
         case .source:
-            return "create config, lint config, update target, dry-run preparation"
+            return "create config, lint config, target destination entry, dry-run preparation"
         case .target:
             return "target root selection, config lint, listen readiness preparation"
         case .observer:
@@ -2781,7 +2781,7 @@ final class AppStore: ObservableObject {
         let validationStep = setupGuideValidationStep()
         return SetupGuide(
             title: "Prepare this \(selectedRole.title)",
-            subtitle: "Pick the role, choose the migration config file, then validate the folders that the CLI will use.",
+            subtitle: "Pick the role, choose migration setup paths, then validate the CLI-backed config.",
             steps: [configStep, foldersStep, validationStep]
         )
     }
@@ -2949,7 +2949,7 @@ final class AppStore: ObservableObject {
         guard path != nil else {
             let emptyDetail =
                 selectedRole == .source
-                ? "No file picking needed. Choose folders, then create the setup."
+                ? "No file picking needed. Choose the source folder and Target Mac destination, then create the setup."
                 : "Open an existing migration config file to load roots, pairing, network pins, and evidence links."
             return ProfileSelectionContext(
                 title: selectedRole == .source ? "Recommended setup" : "No migration config selected",
@@ -2987,7 +2987,7 @@ final class AppStore: ObservableObject {
             return ProfileSelectionContext(
                 title: explicitProfileName
                     ?? (isRecommendedDestination ? "Recommended setup ready" : "Custom setup location"),
-                detail: explicitProfileID.map { "ID: \($0)" } ?? "Choose folders, then create the setup.",
+                detail: explicitProfileID.map { "ID: \($0)" } ?? "Choose the source folder and Target Mac destination, then create the setup.",
                 metadata: isRecommendedDestination
                     ? "Recommended location selected."
                     : "Ready to create through the selected file.",
@@ -3115,7 +3115,7 @@ final class AppStore: ObservableObject {
         case .newDestination:
             switch profileDestinationPlan(for: path) {
             case .initialize:
-                return "New migration config destination selected. Review the current roots, then click Create Config File."
+                return "New migration config destination selected. Review the source folder and Target Mac destination, then click Create Config File."
             case let .selectedOnly(note):
                 return note
             }
@@ -3138,7 +3138,7 @@ final class AppStore: ObservableObject {
             state = .pending
             detail =
                 selectedRole == .source
-                ? "Choose folders, then create the recommended setup. Existing and custom config files live in Advanced."
+                ? "Choose the source folder and Target Mac destination, then create the recommended setup. Existing and custom config files live in Advanced."
                 : "Open an existing migration config file before reading evidence or running role tasks."
             primaryTitle = selectedRole == .source ? "Create Migration Setup" : "Open Existing Config"
             primaryTask = selectedRole == .source ? .profileInit : nil

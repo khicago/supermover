@@ -916,11 +916,15 @@ Still not complete:
     The primary create action is enabled when the Source directory is readable
     and the target-owned destination path is present. Target-local writeability
     remains a Target-role / `profile set-target` concern.
+  - Follow-up copy audit removed `target root` / `current roots` wording from
+    Source profile-init summaries, profile selection guidance, role setup copy,
+    and Task Dispatch input summaries while preserving real target-root
+    terminology in Target/Evidence/acceptance surfaces.
   - Green evidence:
     `swift test --package-path macos --filter 'AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testSetupGuideShowsExistingTargetConfigWithoutCreationCTA|AppStoreTests/testLocalizedSetupGuideShowsTargetValidationActions|AppStoreTests/testLocalizedProfileSelectionDisplayDoesNotChangeRawConfigValues|AppStoreTests/testSetupGuideClarifiesExistingConfigRootInputsAreNotLoadedRoots|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
     - 8 tests, 0 failures.
-    `swift test --package-path macos --filter 'AppStoreTests/testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReadyAndTargetPathIsSet|AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testSetupGuideShowsNewConfigDestinationAsCreationStep|AppStoreTests/testTaskRunGateAllowsProfileInitWithTargetOwnedDestinationPath|AppStoreTests/testTaskRunGateExplainsMissingProfileInitTargetAsTargetMacDestinationPath|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
-    - 7 tests, 0 failures.
+    `swift test --package-path macos --filter 'AppStoreTests/testProfileDestinationPlanInitializesNewSourceProfileWhenSourceIsReadyAndTargetPathIsSet|AppStoreTests/testSetupGuideExplainsEmptySourcePreparationInUserOrder|AppStoreTests/testLocalizedSetupGuideExplainsEmptySourcePreparationWithoutChangingRawGuide|AppStoreTests/testLocalizedProfileSelectionDisplayDoesNotChangeRawConfigValues|AppStoreTests/testWorkbenchRoleLocalizedLabelsDoNotChangeRoleIdentity|AppStoreTests/testApplyProfileDestinationSelectionDoesNotAutoLaunchProfileCreation|AppStoreTests/testProfileInitDispatchCopyNamesTargetOwnedDestinationPath|UIPreferencesTests/testAppChromeLocalizationLoadsPrepareChromeResources'`
+    - 8 tests, 0 failures.
     `swift build --package-path macos --product SuperMoverApp`
     - passed.
     Python resource-key audit: English and Simplified Chinese

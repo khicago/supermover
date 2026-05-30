@@ -366,7 +366,7 @@ struct AppChromeLocalization {
         case .setupProfileNoConfigTitle:
             return "Recommended setup"
         case .setupProfileNoConfigDetailSource:
-            return "No file picking needed. Choose folders, then create the setup."
+            return "No file picking needed. Choose the source folder and Target Mac destination, then create the setup."
         case .setupProfileNoConfigDetailExistingOnly:
             return "Open an existing migration config file to load roots, pairing, network pins, and evidence links."
         case .setupProfileRecommendedSourceConfigTitle:
@@ -376,7 +376,7 @@ struct AppChromeLocalization {
         case .setupProfileNewSourceConfigTitle:
             return "Custom setup location"
         case .setupProfileNewSourceConfigDetail:
-            return "Choose folders, then create the setup."
+            return "Choose the source folder and Target Mac destination, then create the setup."
         case .setupProfileNewConfigReadyMetadata:
             return "Ready to create through the selected file."
         case .setupProfileSelectedConfigFileTitle:
@@ -398,7 +398,7 @@ struct AppChromeLocalization {
         case .setupChecklistDetail:
             return "These checks only cover config-file and path preparation. Live transfer state, evidence health, and supervised process status belong in Control Room and Evidence."
         case .setupGuideSubtitle:
-            return "Pick a role, choose folders, then create or validate the setup."
+            return "Pick a role, choose migration setup paths, then create or validate the setup."
         case .setupGuideSourceTitle:
             return "Prepare this Source"
         case .setupGuideTargetTitle:
@@ -408,7 +408,7 @@ struct AppChromeLocalization {
         case .setupConfigStepTitle:
             return "Migration config file"
         case .setupConfigDetailNoneSource:
-            return "Choose folders, then create the recommended setup. Existing and custom config files live in Advanced."
+            return "Choose the source folder and Target Mac destination, then create the recommended setup. Existing and custom config files live in Advanced."
         case .setupConfigDetailNoneExistingOnly:
             return "Open an existing migration config file before reading evidence or running role tasks."
         case .setupConfigDetailExistingFile:
@@ -490,13 +490,13 @@ struct AppChromeLocalization {
         case .workbenchRoleObserverTitle:
             return "Observer"
         case .workbenchRoleSourceSummary:
-            return "Prepare source roots, config identity, pairing inputs, and bounded transfer inputs."
+            return "Prepare the source folder, Target Mac destination path, config identity, pairing inputs, and bounded transfer inputs."
         case .workbenchRoleTargetSummary:
             return "Prepare target root, config evidence, listen inputs, and read-only evidence access."
         case .workbenchRoleObserverSummary:
             return "Inspect selected target evidence without mutation or long-running services."
         case .workbenchRoleSourceAllowedSetup:
-            return "create config, lint config, update target, dry-run preparation"
+            return "create config, lint config, target destination entry, dry-run preparation"
         case .workbenchRoleTargetAllowedSetup:
             return "target root selection, config lint, listen readiness preparation"
         case .workbenchRoleObserverAllowedSetup:

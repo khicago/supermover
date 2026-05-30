@@ -3482,11 +3482,11 @@ struct ContentView: View {
     }
     switch task {
     case .profileInit:
-      inputs.append("source root")
-      inputs.append("target root")
+      inputs.append("source folder")
+      inputs.append("Target Mac destination path")
       inputs.append("config identity")
     case .profileSetTarget:
-      inputs.append("target root")
+      inputs.append("target destination root")
     case .publish, .networkPush, .syncRun, .syncNetworkRun, .syncNetworkDiscoverRun:
       inputs.append("session id")
     case .syncLoop, .syncWatch, .syncNetworkLoop:
