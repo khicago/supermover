@@ -78,6 +78,11 @@ Recent issues checked:
   banner forever instead of collapsing into top chrome. Owner pages also kept a
   fixed owner title above a child detail page title, creating a two-title stack
   on Connect, Move, and Verify/Repair.
+- Follow-up root cause: the first compact-header pass changed typography and
+  padding, but the compact state still read like an in-page strip rather than a
+  fused top chrome surface. Separately, `UIPreferencesStore.language` was global
+  state, but its only visible control lived in the Settings aside, making i18n
+  feel page-owned.
 - Sweep: checked the shared workbench chrome metrics, fixed owner-mode toolbar
   path, sidebar navigation, `DetailPageHost` sticky-header behavior, and every
   top-level/merged section route. Control Room remains a custom page, but it
@@ -92,6 +97,11 @@ Recent issues checked:
   `DetailPageHost` switches from expanded banner to compact integrated header
   chrome after scroll threshold hysteresis. The Sync page's first card title is
   also distinct from its page title.
+- Result: compact detail headers now use a shared full-bleed material treatment
+  with edge divider, shadow, and top-in transition so the scroll state visibly
+  merges into top chrome. Interface language switching moved to a persistent
+  global sidebar-header menu, leaving Settings with appearance-only display
+  preferences.
 - Boundary: this is layout-stability evidence only. It does not replace a
   future full visual QA pass across real window sizes.
 - Key refs:
@@ -119,6 +129,9 @@ Recent issues checked:
 - `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
   passed with 33 tests after owner-title deduplication and compact-header
   guards.
+- `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`
+  passed after pinning full-bleed compact header chrome and global language-menu
+  ownership.
 - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`
   passed.
 

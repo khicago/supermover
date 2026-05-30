@@ -1922,6 +1922,30 @@
     installed-app transfer success, Local Network/firewall prompt evidence,
     signed/notarized distribution readiness, Merkle/current-source proof, or
     final T-011 release closure.
+- Step: T-011 visible header fusion and global language control.
+  - Outcome: compact detail headers now render as a full-bleed top-chrome
+    treatment with material, edge divider, shadow, and top-in transition. The
+    scroll collapse is visually distinct from the expanded banner instead of
+    being only a small typography change.
+  - Outcome: interface language switching is now owned by the persistent global
+    sidebar-header menu. Settings no longer renders a page-local language
+    picker and now keeps appearance-only display preferences.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`:
+      pass after adding compact-header top-chrome and global-language owner
+      guards.
+    - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`:
+      pass.
+    - `swift build --package-path macos --product SuperMoverApp`: pass.
+  - Detail:
+    Updated notes are recorded in
+    `artifacts/app-layout-stability-T-011.md` and
+    `artifacts/recent-issue-root-cause-sweep-T-011.md`.
+  - Boundary:
+    This remains macOS app chrome/layout work. It does not claim real two-Mac
+    installed-app transfer success, Local Network/firewall prompt evidence,
+    signed/notarized distribution readiness, Merkle/current-source proof, or
+    final T-011 release closure.
 
 ## Residual Risks
 

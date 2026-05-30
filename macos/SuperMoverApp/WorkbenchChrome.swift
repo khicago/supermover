@@ -743,16 +743,47 @@ struct WorkbenchHeaderBar<Leading: View, Accessory: View>: View {
       content
         .panelSurface(.toolbarStrip)
     case .compact:
-      content
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(SMColor.appBackground)
-        .overlay(alignment: .bottom) {
-          Rectangle()
-            .fill(SMColor.hairline)
-            .frame(height: 1)
-        }
+      compactContent
     }
+  }
+
+  private var compactContent: some View {
+    content
+      .padding(.horizontal, WorkbenchLayoutMetrics.mainContentHorizontalPadding)
+      .padding(.vertical, 8)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background {
+        ZStack {
+          Rectangle()
+            .fill(SMColor.appBackground.opacity(0.94))
+          Rectangle()
+            .fill(.ultraThinMaterial)
+            .opacity(0.74)
+          LinearGradient(
+            colors: [SMColor.blue.opacity(0.10), Color.clear],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+          )
+        }
+      }
+      .overlay(alignment: .top) {
+        Rectangle()
+          .fill(SMColor.blue.opacity(0.22))
+          .frame(height: 1)
+      }
+      .overlay(alignment: .bottom) {
+        Rectangle()
+          .fill(SMColor.hairline)
+          .frame(height: 1)
+      }
+      .shadow(color: SMColor.shadow.opacity(0.55), radius: 10, x: 0, y: 4)
+      .padding(.horizontal, -WorkbenchLayoutMetrics.mainContentHorizontalPadding)
+      .transition(
+        .asymmetric(
+          insertion: .move(edge: .top).combined(with: .opacity),
+          removal: .opacity
+        )
+      )
   }
 
   private var content: some View {

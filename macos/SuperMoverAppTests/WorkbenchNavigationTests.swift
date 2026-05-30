@@ -93,6 +93,23 @@ final class WorkbenchNavigationTests: XCTestCase {
         XCTAssertTrue(stripSource.contains("Spacer(minLength: 0)"))
     }
 
+    func testLanguageSwitchingLivesInGlobalSidebarChrome() throws {
+        let source = try contentViewSource()
+
+        XCTAssertTrue(source.contains("private var globalLanguageMenu: some View"))
+        XCTAssertTrue(source.contains("globalLanguageMenu"))
+        XCTAssertFalse(
+            source.contains("private var languagePreferencePicker"),
+            "Language switching is global app chrome, not a Settings-page control."
+        )
+        XCTAssertTrue(source.contains("appChromeLocalization.text(.globalLanguageMenuTitle)"))
+        XCTAssertEqual(
+            source.components(separatedBy: "$uiPreferences.language").count - 1,
+            1,
+            "ContentView should bind language selection only from the global app chrome menu."
+        )
+    }
+
     func testEvidencePageUsesSidebarIdentityAsPageTitle() throws {
         let repoRoot = AcceptanceScriptHarness.repoRootURL()
         let evidenceViewURL = repoRoot

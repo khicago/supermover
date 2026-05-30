@@ -28,6 +28,16 @@ final class UIPreferencesTests: XCTestCase {
         XCTAssertEqual(simplifiedChinese.text(.settingsTitle), "设置")
         XCTAssertEqual(english.text(.displayPreferencesTitle), "Display Preferences")
         XCTAssertEqual(simplifiedChinese.text(.displayPreferencesTitle), "显示偏好")
+        XCTAssertEqual(
+            english.text(.displayPreferencesSubtitle),
+            "Local appearance for this app window. Language lives in the global app chrome."
+        )
+        XCTAssertEqual(
+            simplifiedChinese.text(.displayPreferencesSubtitle),
+            "仅作用于这个应用窗口的外观。语言切换在全局应用栏里。"
+        )
+        XCTAssertEqual(english.text(.globalLanguageMenuTitle), "Interface Language")
+        XCTAssertEqual(simplifiedChinese.text(.globalLanguageMenuTitle), "界面语言")
         XCTAssertEqual(english.text(.displayOnlyNoticeDetail), "Does not change command previews, migration config files, evidence bundles, or CLI output.")
         XCTAssertEqual(simplifiedChinese.text(.displayOnlyNoticeDetail), "不会更改命令预览、迁移配置文件、证据包或 CLI 输出。")
     }

@@ -261,10 +261,40 @@ struct ContentView: View {
           .font(.system(size: 11, weight: .medium))
           .foregroundStyle(SMColor.secondaryText)
       }
+
+      Spacer(minLength: 8)
+
+      globalLanguageMenu
+        .padding(.top, 1)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.top, 34)
     .padding(.horizontal, 20)
+  }
+
+  private var globalLanguageMenu: some View {
+    Menu {
+      Picker(appChromeLocalization.text(.globalLanguageMenuTitle), selection: $uiPreferences.language) {
+        ForEach(UILanguagePreference.allCases) { preference in
+          Text(preference.localizedTitle(using: appChromeLocalization)).tag(preference)
+        }
+      }
+    } label: {
+      Image(systemName: "globe")
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(SMColor.secondaryText)
+        .frame(width: 30, height: 30)
+        .background(SMColor.card.opacity(0.88))
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .stroke(SMColor.hairline, lineWidth: 1)
+        )
+    }
+    .menuStyle(.borderlessButton)
+    .fixedSize()
+    .help(appChromeLocalization.text(.globalLanguageMenuTitle))
+    .accessibilityLabel(Text(appChromeLocalization.text(.globalLanguageMenuTitle)))
   }
 
   private var sidebarStatusStrip: some View {
@@ -2506,7 +2536,6 @@ struct ContentView: View {
           state: .neutral
         )
         appearancePreferencePicker
-        languagePreferencePicker
       }
     }
   }
@@ -2523,23 +2552,6 @@ struct ContentView: View {
       }
       .labelsHidden()
       .pickerStyle(.segmented)
-      .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private var languagePreferencePicker: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(appChromeLocalization.text(.languagePickerTitle))
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(SMColor.secondaryText)
-      Picker(appChromeLocalization.text(.languagePickerTitle), selection: $uiPreferences.language) {
-        ForEach(UILanguagePreference.allCases) { preference in
-          Text(preference.localizedTitle(using: appChromeLocalization)).tag(preference)
-        }
-      }
-      .labelsHidden()
-      .pickerStyle(.menu)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .frame(maxWidth: .infinity, alignment: .leading)

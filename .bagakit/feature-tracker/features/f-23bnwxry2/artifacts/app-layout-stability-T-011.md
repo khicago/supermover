@@ -35,6 +35,13 @@ vertical scrolling or window resizing.
 - Sweep direct page/card label duplicates: Sync's primary card no longer
   repeats the page title, and Prepare's role field label no longer repeats the
   role card title.
+- Make the collapsed detail header visibly merge into top chrome by using a
+  shared full-bleed compact presentation with material, edge divider, shadow,
+  and a top-in transition. This remains a shared `WorkbenchHeaderBar`
+  responsibility, not page-specific animation code.
+- Keep interface language switching in persistent global app chrome. Settings
+  keeps local appearance only; language selection is owned by the shared sidebar
+  header menu so pages cannot drift into separate i18n controls.
 
 ## Non-goals
 
@@ -66,3 +73,7 @@ vertical scrolling or window resizing.
   the compact-header threshold hysteresis.
 - `WorkbenchNavigationTests/testOwnerModeStripDoesNotDuplicateOwnerPageTitles`
   prevents owner mode controls from reintroducing a title/subtitle header.
+- `WorkbenchChromeTests/testCompactDetailHeaderUsesIntegratedTopChromeTreatment`
+  pins compact detail headers to the full-bleed material top-chrome treatment.
+- `WorkbenchNavigationTests/testLanguageSwitchingLivesInGlobalSidebarChrome`
+  prevents language selection from returning as a Settings-page-only control.

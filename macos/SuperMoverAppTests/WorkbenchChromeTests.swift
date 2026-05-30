@@ -125,6 +125,30 @@ final class WorkbenchChromeTests: XCTestCase {
         )
     }
 
+    func testCompactDetailHeaderUsesIntegratedTopChromeTreatment() throws {
+        let source = try workbenchChromeSource()
+        guard
+            let barStart = source.range(of: "struct WorkbenchHeaderBar<"),
+            let nextComponent = source.range(
+                of: "\nextension WorkbenchHeaderBar",
+                range: barStart.upperBound..<source.endIndex
+            )
+        else {
+            return XCTFail("Expected WorkbenchHeaderBar source section")
+        }
+        let barSource = String(source[barStart.lowerBound..<nextComponent.lowerBound])
+
+        XCTAssertTrue(barSource.contains("private var compactContent: some View"))
+        XCTAssertTrue(barSource.contains(".fill(.ultraThinMaterial)"))
+        XCTAssertTrue(barSource.contains(".padding(.horizontal, -WorkbenchLayoutMetrics.mainContentHorizontalPadding)"))
+        XCTAssertTrue(barSource.contains(".move(edge: .top).combined(with: .opacity)"))
+        XCTAssertTrue(barSource.contains(".overlay(alignment: .bottom)"))
+        XCTAssertFalse(
+            barSource.contains("case .compact:\n      content\n        .panelSurface(.toolbarStrip)"),
+            "Collapsed headers should merge into top chrome, not stay as ordinary toolbar cards."
+        )
+    }
+
     func testFixedOwnerModeStripLeavesDedicatedBodyGap() {
         XCTAssertLessThan(
             WorkbenchLayoutMetrics.mainContentTopPadding,
