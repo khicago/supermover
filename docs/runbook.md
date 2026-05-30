@@ -1728,18 +1728,20 @@ source-side encrypted transfer is available through non-dry-run
 `push --network`. The foreground `daemon` command can persist
 install/status/log/restart/stop lifecycle evidence and run the same serve
 behavior under `daemon run --foreground`; it is not an OS service manager,
-crash supervision, a detached background process, or continuous sync.
-The
+crash supervision, a detached background process, or continuous sync. The
 `serve` command validates the target profile/root and, for valid pairing-only
 profiles, binds a low-information pairing listener: it
-exposes discovery, returns pairing bootstrap only after the target-console
-verification code is presented, and keeps pairing output untrusted. When the
-profile is already paired and has complete `network.receiver_url` plus
-`network.local_tls_identity`, `serve` also binds the receiver URL from the
-profile and mounts receiver upload routes over pinned mutual TLS. Paired partial
-receiver material fails closed before any listener reports ready. `pair`
-requires that verification code before writing a local
-pairing receipt, profile pins, and profile snapshot. `discover` can emit
+exposes discovery, accepts pairing requests only after the target-console
+verification code is presented, and returns bootstrap material only after the
+target operator approves the pending request. Pairing output remains untrusted
+until receipt/profile pins are written. When the profile is already paired and
+has complete `network.receiver_url` plus `network.local_tls_identity`, `serve`
+also binds the receiver URL from the profile and mounts receiver upload routes
+over pinned mutual TLS. Paired partial receiver material fails closed before any
+listener reports ready. `pair`
+requires that verification code, creates the pending target request, waits for
+approval, and only then writes a local pairing receipt, profile pins, and
+profile snapshot. `discover` can emit
 untrusted explicit address hints with `--address`; with no source configured it
 waits for the requested timeout and returns no hints. `discover browse` listens
 for sparse LAN datagram advertisements and reports candidates without trust.

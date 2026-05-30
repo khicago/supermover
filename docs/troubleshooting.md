@@ -118,9 +118,10 @@ installation, detached process supervision, crash restart, LAN browsing,
 daemon-integrated file watching, automatic discovery-selected sync, or per-entry
 network transport.
 Treat `serve` as low-information discovery plus verification-code-gated pairing
-bootstrap, with authenticated receiver routes only when a paired profile has
-complete profile-selected network material; treat `discover` output as
-untrusted address hints only.
+requests. Bootstrap is returned only after the target operator approves the
+pending request. Authenticated receiver routes are mounted only when a paired
+profile has complete profile-selected network material; treat `discover` output
+as untrusted address hints only.
 
 | Symptom | Likely cause | Evidence to collect | Safe action |
 | --- | --- | --- | --- |
@@ -325,11 +326,13 @@ go run ./cmd/supermover pair --profile ./supermover.profile.json --target <addre
 listens for sparse LAN datagrams, and `discover advertise --profile <path>`
 sends sparse profile-backed LAN advertisements. Discovery output still leaks
 peer address metadata and is not trust. `serve` exposes low-information
-discovery and gates pairing bootstrap behind the target-console verification
-code; when the profile is already paired and has complete receiver URL plus
+discovery and gates pairing requests behind the target-console verification
+code; the target operator must approve the pending request before bootstrap is
+returned. When the profile is already paired and has complete receiver URL plus
 local TLS identity material, it also mounts receiver upload routes over pinned
-mutual TLS. `pair` requires the target-console verification code before writing
-pairing receipt/profile pins. Non-dry-run `push --network` is the separate
+mutual TLS. `pair` requires the target-console verification code plus target
+approval before writing pairing receipt/profile pins. Non-dry-run
+`push --network` is the separate
 source transfer command, while `push --network --dry-run` is preflight-only.
 
 Current reviewed prune command surface:

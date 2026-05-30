@@ -131,6 +131,54 @@ final class AcceptanceBundleArtifactWriterTests: XCTestCase {
     }
 
     @MainActor
+    func testAppStoreManualServePhaseRecordingOmitsRuntimePairingApprovalFields() throws {
+        let dir = try makeBundleDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try writeMeta(to: dir)
+
+        let profileURL = dir.appendingPathComponent("target.profile.json")
+        try "{}\n".write(to: profileURL, atomically: true, encoding: .utf8)
+
+        let store = AppStore()
+        store.acceptanceBundlePath = dir.path
+        store.profilePath = profileURL.path
+        store.acceptanceServePhase = "1"
+        store.serveReadinessSnapshot = ServeReadinessSnapshot(
+            address: "127.0.0.1:39395",
+            verification_code: "123456",
+            mode: "pairing",
+            receiver_address: nil,
+            receiver_routes: nil,
+            push_network: nil,
+            trusted: false,
+            transfer: false,
+            expires_at: nil,
+            operator_token: "local-operator-token",
+            pairing_request: PairingRequestSnapshot(
+                protocol_version: "v1",
+                id: "pair-request-1",
+                status: "pending",
+                source_profile_id: "profile-local",
+                source_profile_name: "Source profile",
+                source_device_id: "sha256:abcdef0123456789",
+                requested_at: "2026-06-01T10:00:00Z",
+                expires_at: "2026-06-01T10:02:00Z",
+                decided_at: nil
+            )
+        )
+
+        store.recordAcceptanceServePhaseArtifact()
+
+        for artifact in ["target.ready.json", "target.ready.phase-1.json"] {
+            let data = try Data(contentsOf: dir.appendingPathComponent(artifact))
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertNil(object["operator_token"], "\(artifact) must not persist local operator token")
+            XCTAssertNil(object["pairing_request"], "\(artifact) must not persist runtime pairing request state")
+            XCTAssertEqual(object["verification_code"] as? String, "123456")
+        }
+    }
+
+    @MainActor
     func testAppStoreManualSourceTransferRecordingExportsStructuredArtifacts() throws {
         let dir = try makeBundleDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }

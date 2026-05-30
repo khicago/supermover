@@ -443,16 +443,17 @@ the operational gates for the selected slice, such as `push --dry-run`, `verify`
 ### Discovery Is Not Trust
 
 Current `serve` validates the target profile/root and, for valid pairing-only
-profiles, binds a low-information pairing listener. It returns low-information discovery
-responses, prints a verification code on the target console, and returns pairing
-bootstrap only after that code is presented. When the profile is already paired
-and includes complete profile-selected receiver URL plus local TLS identity
-material, `serve` also binds that receiver URL and mounts authenticated receiver
+profiles, binds a low-information pairing listener. It returns low-information
+discovery responses, prints a verification code on the target console, accepts
+pairing requests only with that code, and returns pairing bootstrap only after
+the target operator approves the pending request. When the profile is already
+paired and includes complete profile-selected receiver URL plus local TLS
+identity material, `serve` also binds that receiver URL and mounts authenticated receiver
 routes over pinned mutual TLS. Paired partial receiver material fails closed
 before any listener reports ready. Long-running LAN advertisement is owned by
 `discover advertise` or a future managed daemon slice, not by `serve` itself.
-Current `pair` requires the verification code before writing a local
-receipt/profile pins.
+Current `pair` requires the verification code to create a target-side pairing
+request, waits for target approval, then writes local receipt/profile pins.
 `discover --address` has a low-information explicit-address adapter; with no
 configured source it waits for the requested timeout and returns no untrusted
 hints. `discover browse` adds bounded LAN datagram browsing and candidate
@@ -521,9 +522,10 @@ go run ./cmd/supermover push --network --profile <path> --dry-run
 go run ./cmd/supermover push --network --profile <path> --session <session-id>
 ```
 
-`serve` exposes low-information discovery, gates pairing bootstrap behind the
-operator verification code, and mounts receiver upload routes only on a paired
-profile's profile-selected mTLS receiver listener. `discover browse` and
+`serve` exposes low-information discovery, gates pairing requests behind the
+operator verification code, returns bootstrap only after target approval, and
+mounts receiver upload routes only on a paired profile's profile-selected mTLS
+receiver listener. `discover browse` and
 `discover advertise` exchange sparse LAN candidate hints without selecting or
 trusting a target. `push --network --dry-run` validates
 profile/pairing/network-material evidence, local TLS identity files and pins,

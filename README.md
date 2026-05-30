@@ -250,7 +250,9 @@ forwarding rather than binding it to a LAN interface.
 
 `serve` validates a target profile and, for valid pairing-only profiles, binds a
 low-information pairing listener that prints an operator verification code and
-returns pairing bootstrap material only after that code is presented.
+accepts pairing requests only when that code is presented. The target operator
+must approve the pending request before bootstrap material is returned to the
+source.
 
 When the profile is already paired and has complete `network.receiver_url` plus
 `network.local_tls_identity` material, `serve` also binds the receiver endpoint
@@ -259,9 +261,10 @@ receiver material, `serve` stays pairing-only. Once a paired profile has any
 receiver material, `serve` refuses to start until the receiver material is
 complete and auditable.
 
-`pair` requires the verification code before it writes a durable pairing
-receipt under the target control plane and pins target device identity in the
-profile. `discover --address` emits untrusted explicit address hints;
+`pair` requires the verification code, creates a pending target-side request,
+waits for target approval, and only then writes a durable pairing receipt under
+the target control plane and pins target device identity in the profile.
+`discover --address` emits untrusted explicit address hints;
 `discover browse` listens for sparse LAN datagram advertisements; and
 `discover advertise --profile <path>` sends sparse low-information
 advertisements derived from the profile privacy policy. Browse/advertise output

@@ -17,7 +17,7 @@ but the table below is the checked-in execution summary:
 | `f-223nw49qj` | Migration audit report UX. `report` is implemented; compact `status` is tracked separately. |
 | `f-224nw98v7` | Reviewed physical prune flow. |
 | `f-225nwsa3h` | Changed-file incremental local sync. Local regular-file updates are implemented and the feature is archived; drift review UX remains separate. |
-| `f-226nwy2vy` | LAN agent discovery and pairing. `serve` is wired as a low-information pairing listener and mounts authenticated receiver upload routes only for paired profiles with complete profile-selected network material; `pair` writes local receipt/profile pins after operator verification, and `discover` has low-information explicit address hints plus bounded sparse UDP LAN browse/advertise; discovery remains untrusted. Non-dry-run `push --network` now uses profile-backed pinned TLS 1.3 mTLS transfer; dry-run remains preflight-only. |
+| `f-226nwy2vy` | LAN agent discovery and pairing. `serve` is wired as a low-information pairing listener and mounts authenticated receiver upload routes only for paired profiles with complete profile-selected network material; `pair` creates a target-side request with the verification code, waits for target approval, then writes local receipt/profile pins; and `discover` has low-information explicit address hints plus bounded sparse UDP LAN browse/advertise. Discovery remains untrusted. Non-dry-run `push --network` now uses profile-backed pinned TLS 1.3 mTLS transfer; dry-run remains preflight-only. |
 | `f-227nw2p2n` | Secure resumable transport integration. |
 | `f-228nws66k` | Traffic privacy level 2 implementation. |
 | `f-229nwwybc` | Failure injection and release hardening. |

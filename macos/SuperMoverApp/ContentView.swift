@@ -1282,6 +1282,12 @@ struct ContentView: View {
       onRegenerateCode: store.selectedRole == .target ? {
         run(.serve)
       } : nil,
+      onApproveRequest: store.selectedRole == .target ? {
+        store.approvePendingPairingRequest()
+      } : nil,
+      onRejectRequest: store.selectedRole == .target ? {
+        store.rejectPendingPairingRequest()
+      } : nil,
       onCancel: { selectedSection = .controlRoom },
       onBack: { showConnect(.deviceState) },
       onContinue: {
@@ -1436,6 +1442,20 @@ struct ContentView: View {
     let pairingCode = store.serveReadinessSnapshot?.verification_code?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
       ? store.serveReadinessSnapshot!.verification_code!
       : (store.pairingVerificationCode.isEmpty ? appChromeLocalization.text("not generated") : store.pairingVerificationCode)
+    let pairingRequest = store.serveReadinessSnapshot?.pairing_request
+    let pendingRequestModel = pairingRequest.map { request in
+      PairingPendingRequestModel(
+        title: appChromeLocalization.text("Pairing request received"),
+        detail: appChromeLocalization.text("Approve only after the source identity and verification pin match what the other operator sees."),
+        sourceLabel: request.sourceLabel,
+        requestID: request.id,
+        statusLabel: localizedPairingRequestStatus(request.status),
+        approveTitle: appChromeLocalization.text("Approve Pairing"),
+        rejectTitle: appChromeLocalization.text("Reject"),
+        state: pairingRequestVisualState(request.status),
+        isActionable: store.selectedRole == .target && request.status == "pending"
+      )
+    }
     let inspectorEvents = [
       PairingInspectorEvent(
         id: "pairing",
@@ -1458,7 +1478,17 @@ struct ContentView: View {
         trailingLabel: profileStatus,
         state: profilePathIsSet ? .success : .warning
       ),
-    ]
+    ] + (pairingRequest.map { request in
+      [
+        PairingInspectorEvent(
+          id: "request",
+          title: appChromeLocalization.text("Pairing request"),
+          detail: request.sourceLabel,
+          trailingLabel: localizedPairingRequestStatus(request.status),
+          state: pairingRequestVisualState(request.status)
+        )
+      ]
+    } ?? [])
 
     return PairingSectionModel(
       title: AppSection.pairing.localizedHeading(using: appChromeLocalization),
@@ -1542,6 +1572,7 @@ struct ContentView: View {
         caption: appChromeLocalization.text("Enter this pin on the target to establish trust."),
         helperText: store.selectedRole == .target ? appChromeLocalization.text("Refreshing the pin restarts the live serve ceremony on this Mac.") : appChromeLocalization.text("Source operators should match this code against the target serve surface.")
       ),
+      pendingRequest: store.selectedRole == .target ? pendingRequestModel : nil,
       inspector: PairingInspectorModel(
         title: store.selectedRole == .target ? appChromeLocalization.text("On target: accept pairing") : appChromeLocalization.text("Pairing status"),
         subtitle: appChromeLocalization.text("Use the target device to confirm the request and verify the current pin."),
@@ -1552,9 +1583,9 @@ struct ContentView: View {
         ],
         events: inspectorEvents,
         notice: PairingInspectorNotice(
-          title: pairingEvidenceState == .pass ? appChromeLocalization.text("Trusted connection") : appChromeLocalization.text("Trust not complete"),
-          detail: pairingEvidenceState == .pass ? appChromeLocalization.text("You can continue to transfer when the target operator is ready.") : appChromeLocalization.text("Do not treat discovery or serve readiness alone as trust proof."),
-          state: pairingEvidenceState == .pass ? .info : .warning
+          title: pairingNoticeTitle(request: pairingRequest),
+          detail: pairingNoticeDetail(request: pairingRequest),
+          state: pairingNoticeState(request: pairingRequest)
         )
       ),
       cancelTitle: appChromeLocalization.text("Control Room"),
@@ -3729,6 +3760,79 @@ struct ContentView: View {
       return .pass
     }
     return .review
+  }
+
+  private func localizedPairingRequestStatus(_ status: String) -> String {
+    switch status {
+    case "pending":
+      return appChromeLocalization.text("Pending approval")
+    case "approved":
+      return appChromeLocalization.text("Approved")
+    case "rejected":
+      return appChromeLocalization.text("Rejected")
+    case "expired":
+      return appChromeLocalization.text("Expired")
+    default:
+      return status
+    }
+  }
+
+  private func pairingRequestVisualState(_ status: String) -> PairingVisualState {
+    switch status {
+    case "approved":
+      return .success
+    case "rejected", "expired":
+      return .warning
+    case "pending":
+      return .info
+    default:
+      return .neutral
+    }
+  }
+
+  private func pairingNoticeTitle(request: PairingRequestSnapshot?) -> String {
+    guard let request else {
+      return pairingEvidenceState == .pass ? appChromeLocalization.text("Trusted connection") : appChromeLocalization.text("Trust not complete")
+    }
+    switch request.status {
+    case "pending":
+      return appChromeLocalization.text("Pairing request awaiting approval")
+    case "approved":
+      return appChromeLocalization.text("Pairing request approved")
+    case "rejected":
+      return appChromeLocalization.text("Pairing request rejected")
+    case "expired":
+      return appChromeLocalization.text("Pairing request expired")
+    default:
+      return appChromeLocalization.text("Pairing request")
+    }
+  }
+
+  private func pairingNoticeDetail(request: PairingRequestSnapshot?) -> String {
+    guard let request else {
+      return pairingEvidenceState == .pass
+        ? appChromeLocalization.text("You can continue to transfer when the target operator is ready.")
+        : appChromeLocalization.text("Do not treat discovery or serve readiness alone as trust proof.")
+    }
+    switch request.status {
+    case "pending":
+      return appChromeLocalization.text("Target operator must approve or reject before the source can write pairing evidence.")
+    case "approved":
+      return appChromeLocalization.text("Source can finish writing pairing pins and receipt evidence.")
+    case "rejected":
+      return appChromeLocalization.text("Source must not write pairing evidence for this request.")
+    case "expired":
+      return appChromeLocalization.text("Restart target serve or send a fresh request before pairing.")
+    default:
+      return request.sourceLabel
+    }
+  }
+
+  private func pairingNoticeState(request: PairingRequestSnapshot?) -> PairingVisualState {
+    guard let request else {
+      return pairingEvidenceState == .pass ? .info : .warning
+    }
+    return pairingRequestVisualState(request.status)
   }
 
   private var transferRunwayState: GateState {

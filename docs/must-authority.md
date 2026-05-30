@@ -16,11 +16,12 @@ managed local regular-file updates from previous Supermover evidence.
 `serve` is wired as a target listener with two profile-governed surfaces: a
 low-information pairing listener for help, usage validation, target
 profile/root validation, discovery, target-console verification code, and
-verified pairing bootstrap; plus an authenticated receiver listener only when
-the profile is already paired and has complete profile-selected network
-material. `pair` is wired to require that verification code, write a durable
-local pairing receipt, update profile target pins, and record a profile
-snapshot. `discover` is wired for low-information explicit address hints plus
+target-approved pairing bootstrap; plus an authenticated receiver listener only
+when the profile is already paired and has complete profile-selected network
+material. `pair` is wired to require that verification code, create a
+target-side pairing request, wait for target approval, write a durable local
+pairing receipt, update profile target pins, and record a profile snapshot.
+`discover` is wired for low-information explicit address hints plus
 bounded sparse UDP LAN browse/advertise; `--address` and LAN candidates are
 operator hint material and still leak peer address metadata. It does not
 establish trust by itself.

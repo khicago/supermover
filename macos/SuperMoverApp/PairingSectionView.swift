@@ -4,6 +4,8 @@ struct PairingSectionView: View {
   let model: PairingSectionModel
   let localization: AppChromeLocalization
   var onRegenerateCode: (() -> Void)?
+  var onApproveRequest: (() -> Void)?
+  var onRejectRequest: (() -> Void)?
   var onCancel: () -> Void
   var onBack: () -> Void
   var onContinue: () -> Void
@@ -12,6 +14,8 @@ struct PairingSectionView: View {
     model: PairingSectionModel,
     localization: AppChromeLocalization = AppChromeLocalization(language: .english),
     onRegenerateCode: (() -> Void)? = nil,
+    onApproveRequest: (() -> Void)? = nil,
+    onRejectRequest: (() -> Void)? = nil,
     onCancel: @escaping () -> Void = {},
     onBack: @escaping () -> Void = {},
     onContinue: @escaping () -> Void = {}
@@ -19,6 +23,8 @@ struct PairingSectionView: View {
     self.model = model
     self.localization = localization
     self.onRegenerateCode = onRegenerateCode
+    self.onApproveRequest = onApproveRequest
+    self.onRejectRequest = onRejectRequest
     self.onCancel = onCancel
     self.onBack = onBack
     self.onContinue = onContinue
@@ -89,6 +95,9 @@ struct PairingSectionView: View {
     VStack(alignment: .leading, spacing: 16) {
       endpointsPanel
       checklistPanel
+      if let request = model.pendingRequest {
+        pendingRequestPanel(request)
+      }
       codePanel
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -289,6 +298,51 @@ struct PairingSectionView: View {
     }
   }
 
+  private func pendingRequestPanel(_ request: PairingPendingRequestModel) -> some View {
+    WorkbenchPanel(title: request.title, subtitle: request.detail) {
+      VStack(alignment: .leading, spacing: 14) {
+        HStack(alignment: .top, spacing: 12) {
+          Image(systemName: "person.crop.circle.badge.questionmark")
+            .font(.system(size: 24, weight: .semibold))
+            .foregroundStyle(request.state.color)
+            .frame(width: 32)
+
+          VStack(alignment: .leading, spacing: 8) {
+            pairingRequestFact(label: localization.text("Source"), value: request.sourceLabel)
+            pairingRequestFact(label: localization.text("Request ID"), value: request.requestID)
+            pairingRequestFact(label: localization.text("Status"), value: request.statusLabel)
+          }
+        }
+
+        if request.isActionable {
+          HStack(spacing: 10) {
+            PrimaryActionButton(request.approveTitle, systemImage: "checkmark") {
+              onApproveRequest?()
+            }
+            ActionButton(request.rejectTitle, systemImage: "xmark") {
+              onRejectRequest?()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private func pairingRequestFact(label: String, value: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(label)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(SMColor.secondaryText)
+        .frame(width: 86, alignment: .leading)
+      Text(value)
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(SMColor.primaryText)
+        .textSelection(.enabled)
+        .lineLimit(2)
+        .minimumScaleFactor(0.82)
+    }
+  }
+
   private var inspector: some View {
     WorkbenchPanel(title: model.inspector.title, subtitle: model.inspector.subtitle) {
       VStack(alignment: .leading, spacing: 16) {
@@ -455,6 +509,7 @@ struct PairingSectionModel {
   let expiry: PairingExpirySummary
   let checklist: [PairingChecklistItem]
   let code: PairingCodePanelModel
+  let pendingRequest: PairingPendingRequestModel?
   let inspector: PairingInspectorModel
   let cancelTitle: String
   let backTitle: String
@@ -474,6 +529,7 @@ struct PairingSectionModel {
     expiry: PairingExpirySummary,
     checklist: [PairingChecklistItem],
     code: PairingCodePanelModel,
+    pendingRequest: PairingPendingRequestModel? = nil,
     inspector: PairingInspectorModel,
     cancelTitle: String = "Cancel",
     backTitle: String = "Back",
@@ -492,6 +548,7 @@ struct PairingSectionModel {
     self.expiry = expiry
     self.checklist = checklist
     self.code = code
+    self.pendingRequest = pendingRequest
     self.inspector = inspector
     self.cancelTitle = cancelTitle
     self.backTitle = backTitle
@@ -607,6 +664,18 @@ struct PairingCodePanelModel {
   let value: String
   let caption: String
   let helperText: String?
+}
+
+struct PairingPendingRequestModel {
+  let title: String
+  let detail: String
+  let sourceLabel: String
+  let requestID: String
+  let statusLabel: String
+  let approveTitle: String
+  let rejectTitle: String
+  let state: PairingVisualState
+  let isActionable: Bool
 }
 
 struct PairingInspectorModel {

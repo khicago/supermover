@@ -220,9 +220,10 @@ peer validation before receiver upload routes are exposed or used.
 
 The `serve` command is wired as a low-information target listener for pairing
 and, when a profile is already paired with complete profile-selected network
-material, as an authenticated receiver listener. `pair` can consume the pairing
-endpoint with an operator-entered verification code to write a local pairing
-receipt and update profile target pins. `discover` has a low-information
+material, as an authenticated receiver listener. `pair` can create a target-side
+pairing request with an operator-entered verification code, then waits for the
+target operator to approve that request before it writes a local pairing receipt
+and updates profile target pins. `discover` has a low-information
 explicit-address adapter plus bounded sparse UDP LAN browse/advertise
 subcommands. `push --network` is wired as the source-side profile-backed
 network path:
@@ -241,10 +242,13 @@ go run ./cmd/supermover push --network --profile <source-profile> --session <ses
 Their help and usage validation are implemented so scripts can depend on the
 shape of the flow. `serve` validates the target profile and target root, binds
 the requested pairing listen address, exposes low-information `/v1/discovery`,
-prints the verification code on the target console, and returns `/v1/pairing`
-bootstrap material only when that code is presented. If profile network material
-is absent, receiver upload routes remain disabled. If a paired profile has
-complete `network.receiver_url` plus `network.local_tls_identity`, `serve`
+prints the verification code on the target console, and rejects the legacy
+direct `/v1/pairing` bootstrap path. Sources POST `/v1/pairing/requests` with
+the verification code; the target-side operator approves or rejects the pending
+request before `/v1/pairing/requests/{id}` returns bootstrap material. If
+profile network material is absent, receiver upload routes remain disabled. If a
+paired profile has complete `network.receiver_url` plus
+`network.local_tls_identity`, `serve`
 derives the receiver listen address from that URL, loads the local certificate
 and key from the profile, validates pairing trust and the target certificate
 SPKI pin, then mounts receiver begin/status/chunk/commit routes behind pinned
@@ -252,13 +256,16 @@ TLS 1.3 mutual authentication. `discover --address` returns untrusted
 operator-provided address hints; with no configured source it waits for the
 requested timeout and returns an empty hint list. `discover browse` listens for
 sparse UDP LAN advertisements and reports unique, duplicate, or ambiguous
-candidates without auto-selecting. `discover advertise --profile <path>` sends
+candidates without auto-selecting. `serve --ready-file` records the current
+pending/approved/rejected pairing request plus a local operator token for the
+app's same-machine approve/reject controls; this token is runtime operator
+control data, not profile SSOT. `discover advertise --profile <path>` sends
 sparse profile-backed LAN advertisements containing only service, protocol,
 ephemeral nonce, and minimal capability flags. `--address`, browse candidates,
 and LAN presence still disclose peer address metadata. `pair` validates the
-verification code, writes a local `control.PairingReceipt`, updates the
-profile's pinned target identity fields, and writes a profile snapshot for
-audit. The profile schema
+verification code, creates the target-side request, waits for approval, writes a
+local `control.PairingReceipt`, updates the profile's pinned target identity
+fields, and writes a profile snapshot for audit. The profile schema
 defines `network.receiver_url` and `network.local_tls_identity` as the SSOT for
 operator network connection material; these are references and pins, not a
 runtime override surface. `push --network` reads the profile, pairing receipt
@@ -322,8 +329,9 @@ Current skeleton limits:
   pairing and network material validate.
 - `discover browse` is sparse UDP LAN browsing, not mDNS/DNS-SD, and does not
   trust any address.
-- `pair` writes local pairing evidence only after operator verification. It is
-  not a defense against active endpoint deception before a non-dry-run
+- `pair` writes local pairing evidence only after verification-code request
+  creation and target approval. It is not a defense against active endpoint
+  deception before a non-dry-run
   `push --network` validates the pinned TLS peer.
 
 Transfer daemon behavior, continuous watcher/network sync, broad arbitrary

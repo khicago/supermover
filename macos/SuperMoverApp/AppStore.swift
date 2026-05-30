@@ -2698,6 +2698,7 @@ final class AppStore: ObservableObject {
     private var processControllers: [SupervisedProcessSlot: ProcessController] = [:]
     private var serveReadyFilePaths: [SupervisedProcessSlot: String] = [:]
     private var serveReadyFileContextSignatures: [SupervisedProcessSlot: String] = [:]
+    private var lastServePairingRequestEventKey: String?
     private var networkPushBaselineFilePaths: [SupervisedProcessSlot: String] = [:]
     private var networkPushBaselineContextSignatures: [SupervisedProcessSlot: String] = [:]
 
@@ -4943,6 +4944,7 @@ final class AppStore: ObservableObject {
         syncNetworkDiscoverRunSnapshot = nil
         syncNetworkLoopSnapshot = nil
         serveReadinessSnapshot = nil
+        lastServePairingRequestEventKey = nil
         artifactReadProblems = []
     }
 
@@ -5202,6 +5204,7 @@ final class AppStore: ObservableObject {
             serveReadyFilePaths[.targetServe] = readyURL.path
             serveReadyFileContextSignatures[.targetServe] = contextSignature
             serveReadinessSnapshot = nil
+            lastServePairingRequestEventKey = nil
             return baseArguments + ["--ready-file", readyURL.path]
         }
         if kind == .networkPush {
@@ -5219,6 +5222,72 @@ final class AppStore: ObservableObject {
             return nil
         }
         return URL(fileURLWithPath: path)
+    }
+
+    func approvePendingPairingRequest() {
+        decidePendingPairingRequest(action: "approve", eventTitle: "pairing request approved")
+    }
+
+    func rejectPendingPairingRequest() {
+        decidePendingPairingRequest(action: "reject", eventTitle: "pairing request rejected")
+    }
+
+    private func decidePendingPairingRequest(action: String, eventTitle: String) {
+        guard let readiness = serveReadinessSnapshot,
+              let request = readiness.pairing_request,
+              request.status == "pending" else {
+            note = "No pending pairing request is available for operator confirmation."
+            return
+        }
+        guard let token = readiness.operator_token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty else {
+            note = "Target serve did not expose a local operator confirmation token. Restart target serve from this app."
+            return
+        }
+        guard let url = pairingRequestDecisionURL(address: readiness.address, requestID: request.id, action: action) else {
+            note = "Pending pairing request address is not a valid target serve URL."
+            return
+        }
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue(token, forHTTPHeaderField: "X-Supermover-Operator-Token")
+        note = "Sending target operator \(action) for pairing request \(request.id)."
+
+        Task {
+            do {
+                let (_, response) = try await URLSession.shared.data(for: urlRequest)
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                await MainActor.run {
+                    if (200..<300).contains(statusCode) {
+                        let verb = action == "approve" ? "approved" : "rejected"
+                        self.note = "Target operator \(verb) pairing request \(request.id)."
+                        self.appendAppEvent(
+                            severity: action == "approve" ? .info : .review,
+                            title: eventTitle,
+                            detail: "request=\(request.id) source=\(request.sourceLabel)"
+                        )
+                        self.refreshServeReadinessFromFileIfCurrent(slot: .targetServe, kind: .serve)
+                    } else {
+                        self.note = "Target operator \(action) failed for pairing request \(request.id): HTTP \(statusCode)."
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.note = "Target operator \(action) failed for pairing request \(request.id): \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func pairingRequestDecisionURL(address: String, requestID: String, action: String) -> URL? {
+        guard action == "approve" || action == "reject" else {
+            return nil
+        }
+        let pathSegmentAllowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard let encodedID = requestID.addingPercentEncoding(withAllowedCharacters: pathSegmentAllowed) else {
+            return nil
+        }
+        return URL(string: "http://\(address)/v1/pairing/requests/\(encodedID)/\(action)")
     }
 
     private func networkPushBaselineFileURL(for slot: SupervisedProcessSlot, kind: SuperMoverTaskKind) -> URL? {
@@ -5251,7 +5320,38 @@ final class AppStore: ObservableObject {
             return
         }
         serveReadinessSnapshot = decoded
+        recordServePairingRequestEventIfNeeded(decoded)
         note = "\(slot.title): \(decoded.summaryLine)"
+    }
+
+    private func recordServePairingRequestEventIfNeeded(_ readiness: ServeReadinessSnapshot) {
+        guard let request = readiness.pairing_request else {
+            lastServePairingRequestEventKey = nil
+            return
+        }
+        let key = "\(request.id):\(request.status)"
+        guard key != lastServePairingRequestEventKey else {
+            return
+        }
+        lastServePairingRequestEventKey = key
+        let severity: AppEventSeverity
+        let title: String
+        switch request.status {
+        case "approved":
+            severity = .info
+            title = "pairing request approved"
+        case "rejected", "expired":
+            severity = .review
+            title = "pairing request \(request.status)"
+        default:
+            severity = .info
+            title = "pairing request received"
+        }
+        appendAppEvent(
+            severity: severity,
+            title: title,
+            detail: "request=\(request.id) source=\(request.sourceLabel)"
+        )
     }
 
     func installServeReadyFileForTesting(_ path: String, contextSignature: String) {
