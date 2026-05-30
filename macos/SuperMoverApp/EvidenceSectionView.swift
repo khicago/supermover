@@ -2516,6 +2516,7 @@ private struct EvidenceRawPreview {
   let truncated: Bool
 }
 
+#if DEBUG && canImport(PreviewsMacros)
 #Preview {
   let previewLocalization = AppChromeLocalization(language: .english)
   EvidenceSectionView(
@@ -2709,3 +2710,4 @@ private struct EvidenceRawPreview {
   .padding()
   .background(SMColor.appBackground)
 }
+#endif

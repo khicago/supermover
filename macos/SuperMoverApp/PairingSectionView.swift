@@ -669,6 +669,7 @@ enum PairingVisualState {
   }
 }
 
+#if DEBUG && canImport(PreviewsMacros)
 #Preview {
   PairingSectionView(
     model: PairingSectionModel(
@@ -798,3 +799,4 @@ enum PairingVisualState {
   .padding(24)
   .background(SMColor.appBackground)
 }
+#endif

@@ -547,6 +547,7 @@ private struct DevicesInspectorView: View {
   }
 }
 
+#if DEBUG && canImport(PreviewsMacros)
 #Preview {
   DevicesSectionView(
     model: DevicesSectionModel(
@@ -660,3 +661,4 @@ private struct DevicesInspectorView: View {
   .background(SMColor.appBackground)
   .frame(width: 1320, height: 860)
 }
+#endif

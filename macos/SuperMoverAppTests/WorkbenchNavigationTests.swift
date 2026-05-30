@@ -157,6 +157,40 @@ final class WorkbenchNavigationTests: XCTestCase {
         XCTAssertTrue(source.contains("Text(hiddenCatalogProblemCountMessage(problems.count - 5))"))
     }
 
+    func testSwiftUIPreviewsAreExcludedFromCommandLineBuildsWithoutPreviewMacros() throws {
+        let appRoot = appSourceRootURL()
+        let swiftFiles = FileManager.default
+            .enumerator(at: appRoot, includingPropertiesForKeys: nil)?
+            .compactMap { $0 as? URL }
+            .filter { $0.pathExtension == "swift" } ?? []
+
+        for fileURL in swiftFiles {
+            let source = try String(contentsOf: fileURL, encoding: .utf8)
+            var searchRange = source.startIndex..<source.endIndex
+            while let previewRange = source.range(of: "#Preview", range: searchRange) {
+                let prefix = source[..<previewRange.lowerBound]
+                let lastPreviewGuard = prefix.range(
+                    of: "#if DEBUG && canImport(PreviewsMacros)",
+                    options: .backwards
+                )
+                let lastEndif = prefix.range(of: "#endif", options: .backwards)
+                let relativePath = fileURL.path.replacingOccurrences(of: appRoot.path + "/", with: "")
+
+                XCTAssertNotNil(
+                    lastPreviewGuard,
+                    "\(relativePath) contains #Preview without the command-line build guard."
+                )
+                if let lastPreviewGuard {
+                    XCTAssertTrue(
+                        lastEndif == nil || lastEndif!.lowerBound < lastPreviewGuard.lowerBound,
+                        "\(relativePath) contains #Preview outside the active command-line build guard."
+                    )
+                }
+                searchRange = previewRange.upperBound..<source.endIndex
+            }
+        }
+    }
+
     func testSidebarNavigationLocalizedLabelsDoNotChangeNavigationIdentity() {
         let simplifiedChinese = AppChromeLocalization(language: .simplifiedChinese)
 
@@ -212,11 +246,14 @@ final class WorkbenchNavigationTests: XCTestCase {
     }
 
     private func appSource(named fileName: String) throws -> String {
-        let repoRoot = AcceptanceScriptHarness.repoRootURL()
-        let sourceURL = repoRoot
-            .appendingPathComponent("macos")
-            .appendingPathComponent("SuperMoverApp")
+        let sourceURL = appSourceRootURL()
             .appendingPathComponent(fileName)
         return try String(contentsOf: sourceURL, encoding: .utf8)
+    }
+
+    private func appSourceRootURL() -> URL {
+        AcceptanceScriptHarness.repoRootURL()
+            .appendingPathComponent("macos")
+            .appendingPathComponent("SuperMoverApp")
     }
 }
