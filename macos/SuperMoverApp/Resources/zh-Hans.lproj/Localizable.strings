@@ -13,11 +13,11 @@
 "settings.commandInputs.title" = "命令输入";
 "settings.commandInputs.subtitle" = "这些值用于生成 CLI 命令。它们不会覆盖已保存的迁移配置策略。";
 "settings.displayPreferences.title" = "显示偏好";
-"settings.displayPreferences.subtitle" = "仅作用于这个应用窗口的外观。语言切换在全局应用栏里。";
+"settings.displayPreferences.subtitle" = "选择这个应用窗口的外观和界面语言。";
 "settings.displayOnlyNotice.title" = "仅影响显示";
 "settings.displayOnlyNotice.detail" = "不会更改命令预览、迁移配置文件、证据包或 CLI 输出。";
 "settings.appearance.title" = "外观";
-"appChrome.language.title" = "界面语言";
+"settings.language.title" = "界面语言";
 "sidebar.tagline" = "可审计迁移";
 "sidebar.workstation.title" = "工作站";
 "sidebar.role.label" = "角色";

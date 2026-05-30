@@ -11,7 +11,7 @@ Checked surfaces:
 2. Prepare, Connect, Move, Verify/Repair, Evidence, Task Dispatch, and Settings
    visible page chrome
 3. auxiliary panels embedded inside owner pages
-4. localized resource coverage for app chrome
+4. global UI preference ownership and localized resource coverage for app chrome
 5. repository operating rules for root-cause sweeps, DRY, page contracts, and
    localization boundaries
 
@@ -27,6 +27,9 @@ three defects from one boundary mistake:
 - Chinese UI could still show English buttons or panel titles.
 - Future agents had no repository-level rule forcing root-cause analysis,
   sibling sweeps, DRY ownership, and localization coverage before closeout.
+- The interface-language control was made global but then placed beside the
+  sidebar brand title. That mixed app identity with settings chrome and caused
+  the title to wrap in narrow sidebar widths.
 
 The fix is to make app chrome ownership explicit: shared page chrome,
 navigation labels, owner-mode strips, task display names, and auxiliary panel
@@ -57,6 +60,10 @@ operator-entered text remain unlocalized.
   labels, and count/empty-state messages now route through localization. Shared
   `GateState` and `EvidenceArtifactFamily` helpers replace scattered
   `.title.capitalized` and duplicate evidence-stage switches.
+- Follow-up ownership gap: interface language switching remains one global
+  preference binding, but the control now lives in Settings > Display
+  Preferences instead of the sidebar brand header. The sidebar header is
+  brand-only and the title is constrained to one line.
 
 ## Sweep Results
 
@@ -73,6 +80,10 @@ operator-entered text remain unlocalized.
   found later: raw Control Room model chrome, `GateState.title.capitalized`,
   direct evidence `artifact.family.title`, and interpolated English evidence
   count messages.
+- Follow-up sidebar sweep found no remaining product-code `globalLanguageMenu`,
+  old `appChrome.language.title` owner key, or "language lives in global app
+  chrome" copy. The only language preference binding in `ContentView` is the
+  Settings display-preference picker.
 
 ## Validation
 

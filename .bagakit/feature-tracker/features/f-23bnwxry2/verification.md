@@ -1932,8 +1932,7 @@
     picker and now keeps appearance-only display preferences.
   - Green evidence:
     - `swift test --package-path macos --filter 'WorkbenchChromeTests|WorkbenchNavigationTests|UIPreferencesTests'`:
-      pass after adding compact-header top-chrome and global-language owner
-      guards.
+      pass after adding compact-header top-chrome and language-owner guards.
     - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`:
       pass.
     - `swift build --package-path macos --product SuperMoverApp`: pass.
@@ -1977,6 +1976,33 @@
     installed-app transfer success, Local Network/firewall prompt evidence,
     signed/notarized distribution readiness, Merkle/current-source proof, or
     final T-011 release closure.
+- Step: T-011 language control owner follow-up.
+  - Outcome: the language selector was global state but rendered inside the
+    sidebar brand header. That mixed settings chrome with app identity and could
+    wrap the "SuperMover" title in narrow sidebar widths.
+  - Outcome: the sidebar header is now brand-only; the product title is
+    constrained to one line; the single language preference binding lives in
+    Settings > Display Preferences beside appearance.
+  - Green evidence:
+    - `swift test --package-path macos --filter 'UIPreferencesTests|WorkbenchNavigationTests'`:
+      pass with 26 selected tests.
+    - `plutil -lint macos/SuperMoverApp/Resources/en.lproj/Localizable.strings macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`:
+      pass.
+    - Product-code scan for stale sidebar language owner strings:
+      no hits for `globalLanguageMenu`, `appChrome.language.title`, or the old
+      global-app-chrome wording.
+    - Literal localization key scan across Swift app sources:
+      0 missing keys and 0 duplicate resource keys for `en` and `zh-Hans`.
+    - `feature-tracker validate-tracker --root .`: pass.
+    - `git diff --check`: pass.
+  - Detail:
+    Updated notes are recorded in
+    `artifacts/app-layout-stability-T-011.md`,
+    `artifacts/app-chrome-i18n-dry-T-011.md`, and
+    `artifacts/recent-issue-root-cause-sweep-T-011.md`.
+  - Boundary:
+    This is an app chrome owner-placement fix. It does not change the stored
+    language preference model and does not translate raw audit evidence.
 
 ## Residual Risks
 

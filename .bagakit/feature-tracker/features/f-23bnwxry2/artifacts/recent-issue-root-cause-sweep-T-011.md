@@ -14,6 +14,8 @@ Recent issues checked:
    window top or capable of moving out of view.
 4. i18n appeared complete by resource-key scan but still left visible English
    in Control Room, transfer state, and Evidence interpretation panels.
+5. The global language selector sat beside the sidebar brand title, causing
+   "SuperMover" to wrap and mixing settings chrome with product identity.
 
 ## Findings
 
@@ -82,9 +84,7 @@ Recent issues checked:
   on Connect, Move, and Verify/Repair.
 - Follow-up root cause: the first compact-header pass changed typography and
   padding, but the compact state still read like an in-page strip rather than a
-  fused top chrome surface. Separately, `UIPreferencesStore.language` was global
-  state, but its only visible control lived in the Settings aside, making i18n
-  feel page-owned.
+  fused top chrome surface.
 - Sweep: checked the shared workbench chrome metrics, fixed owner-mode toolbar
   path, sidebar navigation, `DetailPageHost` sticky-header behavior, and every
   top-level/merged section route. Control Room remains a custom page, but it
@@ -101,9 +101,7 @@ Recent issues checked:
   also distinct from its page title.
 - Result: compact detail headers now use a shared full-bleed material treatment
   with edge divider, shadow, and top-in transition so the scroll state visibly
-  merges into top chrome. Interface language switching moved to a persistent
-  global sidebar-header menu, leaving Settings with appearance-only display
-  preferences.
+  merges into top chrome.
 - Boundary: this is layout-stability evidence only. It does not replace a
   future full visual QA pass across real window sizes.
 - Key refs:
@@ -114,6 +112,30 @@ Recent issues checked:
   - `macos/SuperMoverApp/TransferSectionView.swift`
   - `macos/SuperMoverApp/EvidenceSectionView.swift`
   - `macos/SuperMoverAppTests/WorkbenchChromeTests.swift`
+  - `macos/SuperMoverAppTests/WorkbenchNavigationTests.swift`
+
+### Language Control Ownership
+
+- Root cause: `UIPreferencesStore.language` was a single global state, but its
+  control was rendered inside `sidebarHeader` next to the product brand. That
+  made a settings action compete with identity chrome and created the observed
+  title wrapping in constrained sidebar widths.
+- Sweep: checked `ContentView`, Settings display preferences, UI preference
+  resources, sidebar navigation tests, app localization tests, and resource
+  keys for the old `globalLanguageMenu`, `appChrome.language.title`, and
+  "language lives in global app chrome" wording.
+- Result: the sidebar header is brand-only, the product title is constrained to
+  one line, and the single language binding now lives in Settings > Display
+  Preferences beside appearance. No per-page language switchers were added.
+- Boundary: this is the owner-placement fix for the global preference control.
+  It does not change the underlying locale persistence model or translate raw
+  audit evidence.
+- Key refs:
+  - `macos/SuperMoverApp/ContentView.swift`
+  - `macos/SuperMoverApp/AppChromeLocalization.swift`
+  - `macos/SuperMoverApp/Resources/en.lproj/Localizable.strings`
+  - `macos/SuperMoverApp/Resources/zh-Hans.lproj/Localizable.strings`
+  - `macos/SuperMoverAppTests/UIPreferencesTests.swift`
   - `macos/SuperMoverAppTests/WorkbenchNavigationTests.swift`
 
 ### Visible I18n Coverage

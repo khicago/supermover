@@ -93,21 +93,30 @@ final class WorkbenchNavigationTests: XCTestCase {
         XCTAssertTrue(stripSource.contains("Spacer(minLength: 0)"))
     }
 
-    func testLanguageSwitchingLivesInGlobalSidebarChrome() throws {
+    func testLanguageSwitchingLivesInSettingsDisplayPreferences() throws {
         let source = try contentViewSource()
 
-        XCTAssertTrue(source.contains("private var globalLanguageMenu: some View"))
-        XCTAssertTrue(source.contains("globalLanguageMenu"))
-        XCTAssertFalse(
-            source.contains("private var languagePreferencePicker"),
-            "Language switching is global app chrome, not a Settings-page control."
-        )
-        XCTAssertTrue(source.contains("appChromeLocalization.text(.globalLanguageMenuTitle)"))
+        XCTAssertFalse(source.contains("private var globalLanguageMenu: some View"))
+        XCTAssertTrue(source.contains("private var languagePreferencePicker: some View"))
+        XCTAssertTrue(source.contains("languagePreferencePicker"))
+        XCTAssertTrue(source.contains("appChromeLocalization.text(.languagePickerTitle)"))
         XCTAssertEqual(
             source.components(separatedBy: "$uiPreferences.language").count - 1,
             1,
-            "ContentView should bind language selection only from the global app chrome menu."
+            "ContentView should expose one global language selection control in Settings."
         )
+
+        guard
+            let headerStart = source.range(of: "private var sidebarHeader: some View"),
+            let nextView = source.range(of: "\n  private var sidebarStatusStrip", range: headerStart.upperBound..<source.endIndex)
+        else {
+            return XCTFail("Expected sidebarHeader source section")
+        }
+        let headerSource = String(source[headerStart.lowerBound..<nextView.lowerBound])
+
+        XCTAssertFalse(headerSource.contains("$uiPreferences.language"))
+        XCTAssertFalse(headerSource.contains("languagePreferencePicker"))
+        XCTAssertFalse(headerSource.contains("globe"))
     }
 
     func testContentViewVisibleModelChromeDoesNotBypassLocalization() throws {

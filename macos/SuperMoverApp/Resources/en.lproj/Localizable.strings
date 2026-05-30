@@ -13,11 +13,11 @@
 "settings.commandInputs.title" = "Command Inputs";
 "settings.commandInputs.subtitle" = "These values build CLI commands. They do not override saved migration config policy.";
 "settings.displayPreferences.title" = "Display Preferences";
-"settings.displayPreferences.subtitle" = "Local appearance for this app window. Language lives in the global app chrome.";
+"settings.displayPreferences.subtitle" = "Choose this app window's appearance and interface language.";
 "settings.displayOnlyNotice.title" = "Display only";
 "settings.displayOnlyNotice.detail" = "Does not change command previews, migration config files, evidence bundles, or CLI output.";
 "settings.appearance.title" = "Appearance";
-"appChrome.language.title" = "Interface Language";
+"settings.language.title" = "Interface Language";
 "sidebar.tagline" = "Auditable migration";
 "sidebar.workstation.title" = "Workstation";
 "sidebar.role.label" = "Role";

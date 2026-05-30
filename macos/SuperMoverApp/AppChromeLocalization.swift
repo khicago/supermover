@@ -21,7 +21,7 @@ struct AppChromeLocalization {
         case displayOnlyNoticeTitle = "settings.displayOnlyNotice.title"
         case displayOnlyNoticeDetail = "settings.displayOnlyNotice.detail"
         case appearancePickerTitle = "settings.appearance.title"
-        case globalLanguageMenuTitle = "appChrome.language.title"
+        case languagePickerTitle = "settings.language.title"
         case sidebarTagline = "sidebar.tagline"
         case sidebarWorkstationTitle = "sidebar.workstation.title"
         case sidebarRoleLabel = "sidebar.role.label"
@@ -264,14 +264,14 @@ struct AppChromeLocalization {
         case .displayPreferencesTitle:
             return "Display Preferences"
         case .displayPreferencesSubtitle:
-            return "Local appearance for this app window. Language lives in the global app chrome."
+            return "Choose this app window's appearance and interface language."
         case .displayOnlyNoticeTitle:
             return "Display only"
         case .displayOnlyNoticeDetail:
             return "Does not change command previews, migration config files, evidence bundles, or CLI output."
         case .appearancePickerTitle:
             return "Appearance"
-        case .globalLanguageMenuTitle:
+        case .languagePickerTitle:
             return "Interface Language"
         case .sidebarTagline:
             return "Auditable migration"

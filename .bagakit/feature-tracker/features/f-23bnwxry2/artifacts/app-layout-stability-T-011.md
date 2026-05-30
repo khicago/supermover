@@ -39,9 +39,10 @@ vertical scrolling or window resizing.
   shared full-bleed compact presentation with material, edge divider, shadow,
   and a top-in transition. This remains a shared `WorkbenchHeaderBar`
   responsibility, not page-specific animation code.
-- Keep interface language switching in persistent global app chrome. Settings
-  keeps local appearance only; language selection is owned by the shared sidebar
-  header menu so pages cannot drift into separate i18n controls.
+- Keep interface language switching as one app-wide preference under Settings
+  > Display Preferences. The sidebar header stays brand-only so settings chrome
+  cannot crowd or wrap the product title, and pages cannot drift into separate
+  i18n controls.
 
 ## Non-goals
 
@@ -75,5 +76,6 @@ vertical scrolling or window resizing.
   prevents owner mode controls from reintroducing a title/subtitle header.
 - `WorkbenchChromeTests/testCompactDetailHeaderUsesIntegratedTopChromeTreatment`
   pins compact detail headers to the full-bleed material top-chrome treatment.
-- `WorkbenchNavigationTests/testLanguageSwitchingLivesInGlobalSidebarChrome`
-  prevents language selection from returning as a Settings-page-only control.
+- `WorkbenchNavigationTests/testLanguageSwitchingLivesInSettingsDisplayPreferences`
+  prevents language selection from returning to the sidebar brand header or
+  drifting into multiple page-owned controls.
