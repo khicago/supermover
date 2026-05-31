@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "feat_id": "f-22znw2utc",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Prepare managed agent daemon lifecycle implementation slice",
+      "status": "done",
+      "summary": "Add managed daemon lifecycle surfaces around profile SSOT and existing `serve` behavior.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "GOTMPDIR=$PWD/.tmp/go-build go test -count=1 ./internal/agentdaemon ./internal/control ./internal/cli",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "GOTMPDIR=$PWD/.tmp/go-build go test -count=1 ./internal/agentdaemon ./internal/cli ./internal/pairserve ./internal/receiverserve ./internal/profile ./internal/control ./internal/status ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "GOTMPDIR=$PWD/.tmp/go-build go run ./cmd/supermover daemon --help && GOTMPDIR=$PWD/.tmp/go-build go run ./cmd/supermover daemon logs --help && GOTMPDIR=$PWD/.tmp/go-build go run ./cmd/supermover daemon restart --help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check -- README.md docs/control-plane.md docs/plan.md docs/runbook.md docs/status.md docs/troubleshooting.md docs/v1-scope.md internal/agentdaemon/daemon.go internal/agentdaemon/daemon_test.go internal/cli/cli.go internal/cli/cli_test.go internal/control/control.go internal/control/control_test.go",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented today: foreground `daemon install`, `daemon run --foreground`, `daemon status`, and `daemon stop` persist scoped lifecycle artifacts under the target control plane.",
+        "Missing after T-001: logs, restart behavior, detached/OS service manager integration, LAN browsing, and ongoing sync.",
+        "Non-goal: runtime overrides that bypass profile SSOT, claiming detached daemon behavior, LAN browsing, or ongoing sync."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Complete daemon logs and restart lifecycle closure",
+      "status": "done",
+      "summary": "Add the remaining log and restart lifecycle semantics before treating agent daemon lifecycle as complete.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented in current working tree: foreground daemon redacted lifecycle events, `daemon logs`, `daemon restart` intent writing/consumption, restart listener cycling in the same foreground process, locked daemon state/intent updates, and central control-plane boundary checks for restart/events artifacts.",
+        "Restart command output is pending intent evidence until consumed by a running foreground daemon; it does not prove liveness, OS service restart, crash recovery, or PID signaling.",
+        "Remaining missing: detached process supervision, OS service management, automatic crash restart, stale PID liveness proof, LAN browsing, file watching, and ongoing sync.",
+        "Keep profile files as SSOT and avoid runtime overrides for daemon configuration."
+      ]
+    }
+  ]
+}

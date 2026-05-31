@@ -5,49 +5,8 @@
     {
       "feat_id": "f-22tnwsds8",
       "depends_on": [],
-      "dependents": [
-        "f-22vnwgwjj",
-        "f-22wnwd5pe",
-        "f-22znw2utc",
-        "f-234nwra8e"
-      ],
+      "dependents": [],
       "layer": 0
-    },
-    {
-      "feat_id": "f-22vnwgwjj",
-      "depends_on": [
-        "f-22tnwsds8"
-      ],
-      "dependents": [],
-      "layer": 1
-    },
-    {
-      "feat_id": "f-22wnwd5pe",
-      "depends_on": [
-        "f-22tnwsds8"
-      ],
-      "dependents": [],
-      "layer": 1
-    },
-    {
-      "feat_id": "f-22znw2utc",
-      "depends_on": [
-        "f-22tnwsds8"
-      ],
-      "dependents": [
-        "f-23bnwxry2"
-      ],
-      "layer": 1
-    },
-    {
-      "feat_id": "f-234nwra8e",
-      "depends_on": [
-        "f-22tnwsds8"
-      ],
-      "dependents": [
-        "f-239nwv337"
-      ],
-      "layer": 1
     },
     {
       "feat_id": "f-236nwqshz",
@@ -78,13 +37,11 @@
     },
     {
       "feat_id": "f-239nwv337",
-      "depends_on": [
-        "f-234nwra8e"
-      ],
+      "depends_on": [],
       "dependents": [
         "f-23anwj5su"
       ],
-      "layer": 2
+      "layer": 0
     },
     {
       "feat_id": "f-23anwj5su",
@@ -95,18 +52,10 @@
         "f-239nwv337"
       ],
       "dependents": [],
-      "layer": 3
-    },
-    {
-      "feat_id": "f-23bnwxry2",
-      "depends_on": [
-        "f-22znw2utc"
-      ],
-      "dependents": [],
       "layer": 2
     },
     {
-      "feat_id": "f-23cnw4s2v",
+      "feat_id": "f-23bnwxry2",
       "depends_on": [],
       "dependents": [],
       "layer": 0
@@ -119,28 +68,18 @@
         "f-22tnwsds8",
         "f-236nwqshz",
         "f-237nwzbyq",
-        "f-23cnw4s2v"
-      ]
-    },
-    {
-      "layer": 1,
-      "feat_ids": [
-        "f-22vnwgwjj",
-        "f-22wnwd5pe",
-        "f-22znw2utc",
-        "f-234nwra8e",
-        "f-238nwybkh"
-      ]
-    },
-    {
-      "layer": 2,
-      "feat_ids": [
         "f-239nwv337",
         "f-23bnwxry2"
       ]
     },
     {
-      "layer": 3,
+      "layer": 1,
+      "feat_ids": [
+        "f-238nwybkh"
+      ]
+    },
+    {
+      "layer": 2,
       "feat_ids": [
         "f-23anwj5su"
       ]
@@ -150,8 +89,10 @@
     "f-236nwqshz depends on archived feat f-233nwduwz; treated as already satisfied",
     "f-237nwzbyq depends on archived feat f-233nwduwz; treated as already satisfied",
     "f-239nwv337 depends on archived feat f-233nwduwz; treated as already satisfied",
+    "f-239nwv337 depends on archived feat f-234nwra8e; treated as already satisfied",
     "f-23bnwxry2 depends on archived feat f-226nwy2vy; treated as already satisfied",
     "f-23bnwxry2 depends on archived feat f-227nw2p2n; treated as already satisfied",
+    "f-23bnwxry2 depends on archived feat f-22znw2utc; treated as already satisfied",
     "f-23bnwxry2 depends on archived feat f-232nwu2nw; treated as already satisfied",
     "f-23bnwxry2 depends on archived feat f-235nwsp4y; treated as already satisfied"
   ]

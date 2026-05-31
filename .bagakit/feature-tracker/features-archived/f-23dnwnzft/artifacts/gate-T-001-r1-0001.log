@@ -1,0 +1,15 @@
+project_type=non_ui
+execution_root=.
+workspace_mode=current_tree
+execution_detail=current_tree uses the tracker root
+result=fail
+reasons:
+- command failed: TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...
+- command failed: TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...
+commands:
+- TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./... => fail (1)
+- TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./... => fail (1)
+- go mod tidy -diff => pass (0)
+- git diff --check => pass (0)
+- go run ./cmd/supermover help => pass (0)
+- go run ./cmd/supermover version => pass (0)

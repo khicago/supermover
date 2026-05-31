@@ -3,7 +3,7 @@
   "generated_by": "bagakit-feature-tracker",
   "feature_id_issuance": {
     "scheme": "feature-tracker-id-v1-c3n2g4",
-    "next_cursor": 42
+    "next_cursor": 43
   },
   "features": [
     {
@@ -217,7 +217,7 @@
     {
       "feat_id": "f-22vnwgwjj",
       "title": "Traffic privacy level 2 release acceptance",
-      "status": "done",
+      "status": "archived",
       "workspace_mode": "current_tree",
       "branch": "",
       "worktree_name": ""
@@ -225,7 +225,7 @@
     {
       "feat_id": "f-22wnwd5pe",
       "title": "Broad network recovery acceptance",
-      "status": "done",
+      "status": "archived",
       "workspace_mode": "current_tree",
       "branch": "",
       "worktree_name": ""
@@ -249,7 +249,7 @@
     {
       "feat_id": "f-22znw2utc",
       "title": "Agent daemon lifecycle",
-      "status": "done",
+      "status": "archived",
       "workspace_mode": "current_tree",
       "branch": "",
       "worktree_name": ""
@@ -273,7 +273,7 @@
     {
       "feat_id": "f-234nwra8e",
       "title": "Richer prune and release workflow",
-      "status": "done",
+      "status": "archived",
       "workspace_mode": "current_tree",
       "branch": "",
       "worktree_name": ""
@@ -337,7 +337,15 @@
     {
       "feat_id": "f-23cnw4s2v",
       "title": "macOS workbench information architecture simplification",
-      "status": "done",
+      "status": "archived",
+      "workspace_mode": "current_tree",
+      "branch": "",
+      "worktree_name": ""
+    },
+    {
+      "feat_id": "f-23dnwnzft",
+      "title": "Interactive pairing ceremony",
+      "status": "archived",
       "workspace_mode": "current_tree",
       "branch": "",
       "worktree_name": ""

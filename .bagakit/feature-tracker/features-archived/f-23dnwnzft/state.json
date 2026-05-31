@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "feat_id": "f-23dnwnzft",
+  "title": "Interactive pairing ceremony",
+  "slug": "interactive-pairing-ceremony",
+  "goal": "Implement an app-first pairing ceremony where discovery remains an untrusted hint, source operators explicitly send a pairing request, target operators receive and approve or reject that request, both sides surface status notifications, and durable pairing receipts/profile pins are written only after explicit human confirmation.",
+  "status": "archived",
+  "workspace_mode": "current_tree",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 2
+  },
+  "gate": {
+    "last_result": "pass",
+    "last_task_id": "T-001",
+    "last_check_commands": [
+      {
+        "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go mod tidy -diff",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "git diff --check",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go run ./cmd/supermover help",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go run ./cmd/supermover version",
+        "exit_code": 0,
+        "status": "pass"
+      }
+    ],
+    "last_log_path": ".bagakit/feature-tracker/features/f-23dnwnzft/artifacts/gate-T-001-r2-0001.log"
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=current_tree; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-001"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => fail"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-001 => done"
+    },
+    {
+      "action": "feat_archived",
+      "detail": "moved + cleaned"
+    }
+  ],
+  "closed_from_status": "done",
+  "archived_cleanup": {
+    "workspace_mode": "current_tree",
+    "base_ref": "main",
+    "branch_merged": false,
+    "worktree_removed": false,
+    "worktree_pruned": false,
+    "branch_deleted": false,
+    "note": "worktree mode removes/prunes worktree and deletes merged branch; current_tree/proposal_only only archive feat metadata",
+    "preserved_root_entries": [
+      "artifacts/closeout-preserved-root/proposal.md"
+    ]
+  }
+}

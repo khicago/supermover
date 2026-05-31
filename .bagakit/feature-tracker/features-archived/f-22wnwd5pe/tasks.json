@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "feat_id": "f-22wnwd5pe",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Prepare broad network recovery acceptance implementation slice",
+      "status": "done",
+      "summary": "Define and later implement interruption and resume acceptance across bounded network failure modes.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented today: bounded same-session/network resume evidence and persisted in-flight resume evidence.",
+        "Worker B T-001 slice adds deterministic networkrun source-stop-after-progress acceptance: retry resumes from receiver status, merges prior privacy-overhead evidence, and publishes matching target content.",
+        "Missing closure: kill, restart, receiver crash, interrupted-transfer, and retry/reconcile acceptance matrix.",
+        "Non-goal: claiming arbitrary interruption recovery before the matrix passes."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Complete bounded network recovery acceptance matrix",
+      "status": "done",
+      "summary": "Close the bounded same-profile, same-session command-level recovery matrix, and explicitly keep process-kill, power-loss, daemon/OS restart, receiver crash UX, network recover, and broad retry/reconcile outside the implemented claim.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Keeps the T-001 bounded same-session retry slice separate from broad arbitrary interruption recovery.",
+        "Implemented matrix rows cover source interruption, receiver listener restart over preserved target state with prior auditable payload-overhead evidence, commit-only retry, published retry, and fail-closed missing/bad prior evidence.",
+        "Do not claim arbitrary process-kill recovery, power-loss recovery, daemon/OS restart recovery, receiver crash UX, network recover, or broad retry/reconcile completion from this task."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "feat_id": "f-23cnw4s2v",
+  "title": "macOS workbench information architecture simplification",
+  "slug": "macos-workbench-ia-simplification",
+  "goal": "Simplify the native app workbench information architecture by separating Control Room/Home from workflow sections, merging overlapping pages, and reducing text-heavy surfaces into icon/tooltip/detail-on-demand patterns while preserving evidence-first migration safety.",
+  "status": "archived",
+  "workspace_mode": "current_tree",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 0
+  },
+  "gate": {
+    "last_result": "pass",
+    "last_task_id": "T-005",
+    "last_check_commands": [
+      {
+        "command": "swift test --package-path macos --filter WorkbenchNavigationTests",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "swift build --package-path macos --product SuperMoverApp",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "git diff --check",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "swift run --package-path macos SuperMoverApp launch smoke, terminated after it stayed running for 4s",
+        "exit_code": 0,
+        "status": "pass"
+      }
+    ],
+    "last_log_path": null
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "proposal_artifacts_updated",
+      "detail": "Recorded IA diagnosis, three design drafts, recommended direction, acceptance criteria, and implementation tasks."
+    },
+    {
+      "action": "design_board_created",
+      "detail": "Added artifacts/workbench-ia-design-board.html with three IA visual drafts and a recommended hybrid direction."
+    },
+    {
+      "action": "design_board_rendered",
+      "detail": "Rendered artifacts/workbench-ia-design-board.png at 1920px desktop width after checking layout for overlap."
+    },
+    {
+      "action": "low_fidelity_visual_rejected",
+      "detail": "User judged the initial design board worse than the implemented app; retained it only as IA exploration, not as visual target."
+    },
+    {
+      "action": "current_language_hifi_created",
+      "detail": "Added artifacts/workbench-ia-current-language.html/png as the corrected high-fidelity direction based on the existing SwiftUI visual system."
+    },
+    {
+      "action": "current_tree_implementation_started",
+      "detail": "Implemented Home-separated grouped navigation and owner-page routing in ContentView/SidebarNavigation; WorkbenchNavigationTests cover taxonomy and merged internal pages."
+    },
+    {
+      "action": "low_density_status_reduced",
+      "detail": "Changed sidebar non-available labels to icon+hover help and shortened owner mode strip text without hiding blocking safety text."
+    },
+    {
+      "action": "feature_done",
+      "detail": "Completed grouped Home/Workflow/Evidence/System navigation, owner-page routing, low-density status reduction, model tests, build, diff check, and app launch smoke."
+    },
+    {
+      "action": "feat_archived",
+      "detail": "moved + cleaned"
+    }
+  ],
+  "closed_from_status": "done",
+  "archived_cleanup": {
+    "workspace_mode": "current_tree",
+    "base_ref": "main",
+    "branch_merged": false,
+    "worktree_removed": false,
+    "worktree_pruned": false,
+    "branch_deleted": false,
+    "note": "worktree mode removes/prunes worktree and deletes merged branch; current_tree/proposal_only only archive feat metadata",
+    "preserved_root_entries": [
+      "artifacts/closeout-preserved-root/proposal.md"
+    ]
+  }
+}

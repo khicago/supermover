@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "feat_id": "f-23dnwnzft",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Implement interactive pairing request ceremony",
+      "status": "done",
+      "summary": "Add a real request/approve/reject pairing flow across target serve, source pair, and macOS app state so discovery remains an untrusted hint and durable pairing artifacts are written only after explicit target-side confirmation.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go test -p=1 -count=1 ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "TMPDIR=$PWD/.tmp/testtmp GOTMPDIR=$PWD/.tmp/go-build GOCACHE=$PWD/.tmp/gocache go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover help",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover version",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": []
+    }
+  ]
+}

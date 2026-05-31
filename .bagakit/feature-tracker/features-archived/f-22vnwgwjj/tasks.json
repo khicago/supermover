@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "feat_id": "f-22vnwgwjj",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Prepare traffic privacy level 2 acceptance implementation slice",
+      "status": "done",
+      "summary": "Turn the current-path level 2 padding, batching, jitter, and overhead evidence into repeatable release acceptance with operator-facing output.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go vet ./...",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go mod tidy -diff",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "go run ./cmd/supermover drift acknowledge --help",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Implemented today: level 2 traffic-shape controls and applied-overhead evidence on the profile-backed network path.",
+        "Missing closure: repeatable acceptance matrix, fixtures, release summary, and docs that explicitly reject anonymity claims.",
+        "Non-goal: new anonymity guarantees or support for unwired transports."
+      ]
+    }
+  ]
+}

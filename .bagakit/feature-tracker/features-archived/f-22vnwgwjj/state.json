@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "feat_id": "f-22vnwgwjj",
+  "title": "Traffic privacy level 2 release acceptance",
+  "slug": "traffic-privacy-level-2-release-acceptance",
+  "goal": "Add repeatable release acceptance evidence and operator-facing summary for traffic privacy level 2 on the current profile-backed network path, explicitly documenting residual metadata leakage and that level 2 is bounded traffic-shape protection, not anonymity.",
+  "status": "archived",
+  "workspace_mode": "current_tree",
+  "base_ref": "main",
+  "branch": "",
+  "worktree_name": "",
+  "worktree_path": "",
+  "current_task_id": null,
+  "counters": {
+    "gate_fail_streak": 0,
+    "no_progress_rounds": 0,
+    "round_count": 3
+  },
+  "gate": {
+    "last_result": "pass",
+    "last_task_id": "T-001",
+    "last_check_commands": [
+      {
+        "command": "go test -count=1 ./internal/driftreview ./internal/cli ./internal/verify ./internal/report ./internal/health",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go vet ./...",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go mod tidy -diff",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "git diff --check",
+        "exit_code": 0,
+        "status": "pass"
+      },
+      {
+        "command": "go run ./cmd/supermover drift acknowledge --help",
+        "exit_code": 0,
+        "status": "pass"
+      }
+    ],
+    "last_log_path": ".bagakit/feature-tracker/features/f-22vnwgwjj/artifacts/gate-T-001-r3-0001.log"
+  },
+  "history": [
+    {
+      "action": "feat_created",
+      "detail": "workspace_mode=proposal_only; base_ref=main; root_branch=main"
+    },
+    {
+      "action": "dag_dependencies_updated",
+      "detail": "depends_on=f-22tnwsds8"
+    },
+    {
+      "action": "workspace_assigned",
+      "detail": "proposal_only -> current_tree; root_branch=main"
+    },
+    {
+      "action": "task_started",
+      "detail": "T-001"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_gate",
+      "detail": "T-001 => pass"
+    },
+    {
+      "action": "task_finished",
+      "detail": "T-001 => done"
+    },
+    {
+      "action": "feat_archived",
+      "detail": "moved + cleaned"
+    }
+  ],
+  "depends_on": [
+    "f-22tnwsds8"
+  ],
+  "closed_from_status": "done",
+  "archived_cleanup": {
+    "workspace_mode": "current_tree",
+    "base_ref": "main",
+    "branch_merged": false,
+    "worktree_removed": false,
+    "worktree_pruned": false,
+    "branch_deleted": false,
+    "note": "worktree mode removes/prunes worktree and deletes merged branch; current_tree/proposal_only only archive feat metadata",
+    "preserved_root_entries": [
+      "artifacts/closeout-preserved-root/proposal.md",
+      "artifacts/closeout-preserved-root/spec-delta.md",
+      "artifacts/closeout-preserved-root/verification.md"
+    ]
+  }
+}

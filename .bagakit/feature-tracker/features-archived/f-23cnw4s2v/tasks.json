@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "feat_id": "f-23cnw4s2v",
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Lock the navigation taxonomy and concept ownership map",
+      "status": "done",
+      "summary": "Turn the proposal taxonomy into the local UI model: Home, Workflow, Evidence, and System groups, with one owner page for each migration concept.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "swift test --package-path macos --filter WorkbenchNavigationTests",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "swift build --package-path macos --product SuperMoverApp",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Home is the default landing page and is not a peer workflow section.",
+        "Prepare owns profile and role inputs; Connect owns device and trust state; Move owns transfer and sync execution; Verify & Repair owns verification, drift, reconcile, and prune.",
+        "Evidence Vault remains the raw durable artifact owner.",
+        "Implemented in AppSection.homeSection, AppSection.sidebarGroups, topLevelNavigationSections, ownerSection, and WorkbenchNavigationTests."
+      ]
+    },
+    {
+      "id": "T-002",
+      "title": "Separate Home from grouped workflow navigation",
+      "status": "done",
+      "summary": "Refactor the sidebar so Control Room/Home is visually independent from workflow sections while preserving default selection and role-aware availability.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "swift test --package-path macos --filter WorkbenchNavigationTests",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "swift build --package-path macos --product SuperMoverApp",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Replace the flat Sections list with explicit navigation groups.",
+        "Keep selectedSection defaulting to the home/control room surface.",
+        "Add model-level tests if the grouping can be represented without fragile view inspection.",
+        "ContentView now renders Home outside the grouped Workflow/Evidence/System navigation cards instead of iterating AppSection.allCases."
+      ]
+    },
+    {
+      "id": "T-003",
+      "title": "Merge overlapping top-level pages into owner pages",
+      "status": "done",
+      "summary": "Collapse Devices plus Pairing into Connect, Transfer plus Sync into Move, and Verification plus Drift Review into Verify & Repair without deleting underlying wired controls.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "swift test --package-path macos --filter WorkbenchNavigationTests",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "swift build --package-path macos --product SuperMoverApp",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Use segmented controls or local tabs inside owner pages where modes still need separation.",
+        "Do not change CLI behavior or profile-backed command contracts in this task.",
+        "Old concepts should remain reachable through the merged owner pages during the first pass.",
+        "ContentView now routes Pairing through Connect, Sync through Move, and Drift Review through Verify & Repair owner surfaces with mode strips."
+      ]
+    },
+    {
+      "id": "T-004",
+      "title": "Reduce low-density explanatory UI into icon and detail-on-demand patterns",
+      "status": "done",
+      "summary": "Replace repeated subtitles and long status explanations with icon-first status rows, hover/help affordances, and detail drawers while keeping blocking safety text visible.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "swift test --package-path macos --filter WorkbenchNavigationTests",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "swift build --package-path macos --product SuperMoverApp",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Use SF Symbols already present in the app style.",
+        "Do not hide actionable failure reasons behind hover only.",
+        "Raw command lines and evidence paths should move to explicit detail surfaces or Evidence Vault links.",
+        "Sidebar non-available states now use icon-only status affordances with hover help; owner mode strip copy is shorter while blocking safety text remains visible."
+      ]
+    },
+    {
+      "id": "T-005",
+      "title": "Validate the simplified workbench shell",
+      "status": "done",
+      "summary": "Run Swift tests and a manual app smoke to prove the simplified shell opens correctly, preserves evidence access, and does not overclaim migration capability.",
+      "gate_result": "pass",
+      "last_gate_commands": [
+        {
+          "command": "swift test --package-path macos --filter WorkbenchNavigationTests",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "swift build --package-path macos --product SuperMoverApp",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "git diff --check",
+          "exit_code": 0,
+          "status": "pass"
+        },
+        {
+          "command": "swift run --package-path macos SuperMoverApp launch smoke, terminated after it stayed running for 4s",
+          "exit_code": 0,
+          "status": "pass"
+        }
+      ],
+      "last_commit_hash": null,
+      "notes": [
+        "Expected checks include targeted Swift tests, go tests if shared contracts change, git diff --check, and an app launch smoke.",
+        "Final docs must keep design proposal, wired UI behavior, and roadmap capability separate.",
+        "Model tests, build, diff check, and a 4s app launch smoke passed."
+      ]
+    }
+  ]
+}
